@@ -68,6 +68,28 @@ func CallGrokAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 	model := resolvePayloadModelForGrok(payload)
 	stream := isStreamRequested(payload)
 
+	// Image models are served by the dedicated xAI images endpoint, not
+	// chat.completions. Extract the prompt, generate one image, and surface it as
+	// an inline markdown data-URI through the shared callback (mirrors the handler
+	// image path but keeps chat clients working).
+	if isGrokImageModel(model) {
+		prompt := extractGrokImagePrompt(payload)
+		if strings.TrimSpace(prompt) == "" {
+			return fmt.Errorf("grok image: no prompt found in request")
+		}
+		b64, mime, imgErr := CallGrokImageAPI(account, &CodexImageRequest{Model: model, Prompt: prompt, N: 1})
+		if imgErr != nil {
+			return imgErr
+		}
+		if callback.OnImage != nil {
+			callback.OnImage(b64, mime, false)
+		}
+		if callback.OnComplete != nil {
+			callback.OnComplete(estimateTokens(prompt), 0)
+		}
+		return nil
+	}
+
 	// Build OpenAI-compatible request body
 	var reqBody map[string]interface{}
 	var err error
@@ -147,6 +169,37 @@ func resolvePayloadModelForGrok(payload *KiroPayload) string {
 	}
 	if payload.SourceOpenAI != nil {
 		return payload.SourceOpenAI.Model
+	}
+	return ""
+}
+
+// extractGrokImagePrompt pulls the text prompt for image generation from the
+// preserved source request (last user message wins).
+func extractGrokImagePrompt(payload *KiroPayload) string {
+	if payload == nil {
+		return ""
+	}
+	if payload.SourceOpenAI != nil {
+		for i := len(payload.SourceOpenAI.Messages) - 1; i >= 0; i-- {
+			m := payload.SourceOpenAI.Messages[i]
+			if m.Role != "user" {
+				continue
+			}
+			if s := extractOpenAIMessageText(m.Content); strings.TrimSpace(s) != "" {
+				return s
+			}
+		}
+	}
+	if payload.SourceClaude != nil {
+		for i := len(payload.SourceClaude.Messages) - 1; i >= 0; i-- {
+			m := payload.SourceClaude.Messages[i]
+			if m.Role != "user" {
+				continue
+			}
+			if s, _, _ := extractClaudeUserContent(m.Content); strings.TrimSpace(s) != "" {
+				return s
+			}
+		}
 	}
 	return ""
 }

@@ -183,6 +183,182 @@ func generateAntigravityProjectID() string {
 	return fmt.Sprintf("%s-%s-%s", adj, noun, short)
 }
 
+// ==================== Image generation ====================
+
+// agImageAspectRatios maps common OpenAI image sizes to Gemini aspect ratios.
+// Mirrors 9router's sizeToAspectRatio (imageProviders/_base.js).
+var agImageAspectRatios = map[string]string{
+	"1024x1024": "1:1",
+	"1024x1792": "9:16",
+	"1792x1024": "16:9",
+	"1024x1536": "2:3",
+	"1536x1024": "3:2",
+}
+
+// sizeToAspectRatio converts an OpenAI size string to a Gemini aspect ratio,
+// defaulting to 1:1 for unknown/empty sizes.
+func sizeToAspectRatio(size string) string {
+	if ar, ok := agImageAspectRatios[strings.TrimSpace(size)]; ok {
+		return ar
+	}
+	return "1:1"
+}
+
+// parseImageInputToInline converts a data URI or raw base64 string into a Gemini
+// inlineData part for image editing. Returns nil for unusable input.
+func parseImageInputToInline(input string) *GeminiInlineData {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+	// data:image/png;base64,....
+	if strings.HasPrefix(input, "data:") {
+		semi := strings.Index(input, ";base64,")
+		if semi > 5 {
+			mime := input[5:semi]
+			data := input[semi+len(";base64,"):]
+			if mime != "" && data != "" {
+				return &GeminiInlineData{MimeType: mime, Data: data}
+			}
+		}
+		return nil
+	}
+	// Raw base64 (assume PNG); guard against obvious URLs.
+	if !strings.HasPrefix(input, "http") && len(input) > 100 {
+		return &GeminiInlineData{MimeType: "image/png", Data: input}
+	}
+	return nil
+}
+
+// CallAntigravityImageAPI generates an image via the Antigravity (Gemini) Cloud
+// Code endpoint and returns the first result as base64. Unlike the chat path this
+// uses the NON-streaming generateContent endpoint with requestType "image_gen"
+// (mirrors 9router executors/antigravity.js image branch). Returns (b64, mime, err).
+func CallAntigravityImageAPI(account *config.Account, req *CodexImageRequest) (b64 string, mimeType string, err error) {
+	if account == nil {
+		return "", "", fmt.Errorf("antigravity image: account is nil")
+	}
+	if req == nil {
+		return "", "", fmt.Errorf("antigravity image: request is nil")
+	}
+
+	// Build parts: text prompt + optional reference image (for edits).
+	parts := []GeminiPart{}
+	imageInput := strings.TrimSpace(req.Image)
+	if imageInput == "" && len(req.Images) > 0 {
+		imageInput = strings.TrimSpace(req.Images[0])
+	}
+	if inline := parseImageInputToInline(imageInput); inline != nil {
+		parts = append(parts, GeminiPart{InlineData: inline})
+	}
+	parts = append(parts, GeminiPart{Text: req.Prompt})
+
+	sessionID := strings.TrimSpace(account.AGSessionID)
+	if sessionID == "" {
+		sessionID = uuid.New().String() + fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	projectID := strings.TrimSpace(account.AGProjectID)
+	if projectID == "" {
+		projectID = generateAntigravityProjectID()
+	}
+
+	// image_gen needs an imageConfig on generationConfig, which the shared
+	// GeminiGenConfig struct doesn't carry — build the request as a raw map.
+	inner := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{"role": "user", "parts": parts},
+		},
+		"generationConfig": map[string]interface{}{
+			"temperature":     1.0,
+			"topP":            0.95,
+			"topK":            40,
+			"maxOutputTokens": 8192,
+			"imageConfig":     map[string]interface{}{"aspectRatio": sizeToAspectRatio(req.Size)},
+		},
+		"sessionId": sessionID,
+	}
+	envelope := map[string]interface{}{
+		"project":     projectID,
+		"model":       req.Model,
+		"userAgent":   "antigravity",
+		"requestType": "image_gen",
+		"requestId":   "image-" + uuid.New().String(),
+		"request":     inner,
+	}
+
+	reqBody, err := json.Marshal(envelope)
+	if err != nil {
+		return "", "", fmt.Errorf("antigravity image: marshal request: %w", err)
+	}
+	if logger.GetLevel() == logger.LevelDebug {
+		logger.Debugf("[AntigravityImage] Request payload: %s", string(reqBody))
+	}
+
+	client := GetClientForProxy(ResolveAccountProxyURL(account))
+	userAgent := fmt.Sprintf("antigravity/%s %s/%s", agUserAgentVersion, runtime.GOOS, runtime.GOARCH)
+
+	var lastErr error
+	for _, base := range agBaseURLs {
+		// Image generation uses the non-streaming generateContent action.
+		url := base + "/v1internal:generateContent"
+		httpReq, reqErr := http.NewRequest(http.MethodPost, url, strings.NewReader(string(reqBody)))
+		if reqErr != nil {
+			lastErr = reqErr
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+account.AccessToken)
+		httpReq.Header.Set("User-Agent", userAgent)
+		httpReq.Header.Set("x-request-source", "local")
+		httpReq.Header.Set("X-Machine-Session-Id", sessionID)
+		httpReq.Header.Set("Accept", "application/json")
+
+		resp, doErr := client.Do(httpReq)
+		if doErr != nil {
+			lastErr = doErr
+			logger.Warnf("[AntigravityImage] host %s failed: %v", base, doErr)
+			continue
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, base, string(respBody))
+			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
+				return "", "", lastErr
+			}
+			logger.Warnf("[AntigravityImage] host %s error: %v", base, lastErr)
+			continue
+		}
+
+		var parsed geminiSSEResponse
+		if err := json.Unmarshal(respBody, &parsed); err != nil {
+			return "", "", fmt.Errorf("antigravity image: decode response: %w", err)
+		}
+		candidates := parsed.Candidates
+		if parsed.Response != nil {
+			candidates = parsed.Response.Candidates
+		}
+		for _, c := range candidates {
+			for _, part := range c.Content.Parts {
+				if part.InlineData != nil && part.InlineData.Data != "" {
+					mime := part.InlineData.MimeType
+					if mime == "" {
+						mime = "image/png"
+					}
+					return part.InlineData.Data, mime, nil
+				}
+			}
+		}
+		return "", "", fmt.Errorf("antigravity image: no image in response")
+	}
+
+	if lastErr != nil {
+		return "", "", lastErr
+	}
+	return "", "", fmt.Errorf("antigravity image: all hosts failed")
+}
+
 // ==================== SSE parsing ====================
 
 // geminiSSEResponse is the shape of each Antigravity SSE data line.
@@ -302,7 +478,13 @@ func parseGeminiSSE(body io.Reader, callback *KiroStreamCallback) error {
 			if part.Text != "" && callback.OnText != nil {
 				callback.OnText(part.Text, part.Thought)
 			}
-			// InlineData (images) is not surfaced as text; skipped for now.
+			if part.InlineData != nil && part.InlineData.Data != "" && callback.OnImage != nil {
+				mime := part.InlineData.MimeType
+				if mime == "" {
+					mime = "image/png"
+				}
+				callback.OnImage(part.InlineData.Data, mime, false)
+			}
 		}
 	}
 

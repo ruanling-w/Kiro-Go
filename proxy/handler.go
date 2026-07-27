@@ -1418,6 +1418,14 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 				}
 				processClaudeText(text, isThinking, false)
 			},
+			OnImage: func(b64 string, mime string, partial bool) {
+				if partial || b64 == "" {
+					return
+				}
+				md := imageMarkdownDataURI(b64, mime)
+				rawContentBuilder.WriteString(md)
+				processClaudeText(md, false, false)
+			},
 			OnToolUse: func(tu KiroToolUse) {
 				processClaudeText("", false, true)
 				rawContentBuilder.WriteString(tu.Name)
@@ -1847,6 +1855,12 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 			OnToolUse: func(tu KiroToolUse) {
 				toolUses = append(toolUses, tu)
 			},
+			OnImage: func(b64, mime string, partial bool) {
+				if partial || b64 == "" {
+					return
+				}
+				content += imageMarkdownDataURI(b64, mime)
+			},
 			OnComplete: func(inTok, outTok int) {
 				inputTokens = inTok
 				outputTokens = outTok
@@ -1985,8 +1999,9 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleImageGenerations serves POST /v1/images/generations and /v1/images/edits
-// (OpenAI images-compat). Only Codex accounts with an image model (gpt-*-image)
-// can serve these; the pool routes by model. Returns {created, data:[{b64_json}]}.
+// (OpenAI images-compat). Routes by model to the owning upstream — Codex
+// (gpt-*-image), Grok (grok-*-image), or Antigravity (gemini-*-image); the pool
+// routes accounts by model. Returns {created, data:[{b64_json}]}.
 func (h *Handler) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method Not Allowed", 405)
@@ -2011,8 +2026,29 @@ func (h *Handler) handleImageGenerations(w http.ResponseWriter, r *http.Request)
 	if req.Model == "" {
 		req.Model = "gpt-5.5-image"
 	}
-	if !isCodexImageModel(req.Model) {
-		h.sendOpenAIError(w, 400, "invalid_request_error", "model must be a Codex image model (e.g. gpt-5.5-image)")
+
+	// Route by model to the owning upstream. Each image model is served by exactly
+	// one provider (Codex / Grok / Antigravity); the pool routes accounts by model.
+	var (
+		wantAccount func(*config.Account) bool
+		callImage   func(*config.Account, *CodexImageRequest) (string, string, error)
+		providerErr string
+	)
+	switch {
+	case isGrokImageModel(req.Model):
+		wantAccount = isGrokAccount
+		callImage = CallGrokImageAPI
+		providerErr = "no available Grok account for image generation"
+	case isAntigravityImageModel(req.Model):
+		wantAccount = isAntigravityAccount
+		callImage = CallAntigravityImageAPI
+		providerErr = "no available Antigravity account for image generation"
+	case isCodexImageModel(req.Model):
+		wantAccount = isCodexAccount
+		callImage = CallCodexImageAPI
+		providerErr = "no available Codex account for image generation"
+	default:
+		h.sendOpenAIError(w, 400, "invalid_request_error", "model must be an image model (e.g. gpt-5.5-image, grok-2-image-1212, gemini-3.1-flash-image)")
 		return
 	}
 
@@ -2023,7 +2059,7 @@ func (h *Handler) handleImageGenerations(w http.ResponseWriter, r *http.Request)
 		if account == nil {
 			break
 		}
-		if !isCodexAccount(account) {
+		if !wantAccount(account) {
 			excluded[account.ID] = true
 			continue
 		}
@@ -2034,7 +2070,7 @@ func (h *Handler) handleImageGenerations(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
-		b64, mimeType, err := CallCodexImageAPI(account, &req)
+		b64, mimeType, err := callImage(account, &req)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2051,11 +2087,20 @@ func (h *Handler) handleImageGenerations(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	msg := "no available Codex account for image generation"
+	msg := providerErr
 	if lastErr != nil {
 		msg = lastErr.Error()
 	}
 	h.sendOpenAIError(w, 502, "server_error", msg)
+}
+
+// imageMarkdownDataURI renders a generated image as a markdown data-URI so any
+// chat-completions client can display it inline without a new response field.
+func imageMarkdownDataURI(b64, mime string) string {
+	if mime == "" {
+		mime = "image/png"
+	}
+	return fmt.Sprintf("\n![image](data:%s;base64,%s)\n", mime, b64)
 }
 
 // handleOpenAIStream OpenAI 流式响应
@@ -2364,6 +2409,29 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 				flusher.Flush()
 				responseStarted = true
 			},
+			OnImage: func(b64 string, mime string, partial bool) {
+				// Only surface the final image; partials would bloat the stream.
+				if partial || b64 == "" {
+					return
+				}
+				md := imageMarkdownDataURI(b64, mime)
+				rawContentBuilder.WriteString(md)
+				chunk := map[string]interface{}{
+					"id":      chatID,
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   model,
+					"choices": []map[string]interface{}{{
+						"index":         0,
+						"delta":         map[string]string{"content": md},
+						"finish_reason": nil,
+					}},
+				}
+				data, _ := json.Marshal(chunk)
+				fmt.Fprintf(w, "data: %s\n\n", string(data))
+				flusher.Flush()
+				responseStarted = true
+			},
 			OnComplete: func(inTok, outTok int) {
 				inputTokens = inTok
 				outputTokens = outTok
@@ -2517,6 +2585,12 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 				}
 			},
 			OnToolUse:  func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
+			OnImage: func(b64, mime string, partial bool) {
+				if partial || b64 == "" {
+					return
+				}
+				content += imageMarkdownDataURI(b64, mime)
+			},
 			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
 			OnCredits:  func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {

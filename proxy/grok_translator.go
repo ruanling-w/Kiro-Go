@@ -42,6 +42,14 @@ var grokModels = []grokModel{
 	{"grok-2-image-1212", "Grok 2 Image"},
 }
 
+// isGrokImageModel reports whether a model id targets Grok/xAI image generation.
+// These are served by the separate xAI images endpoint (not chat.completions).
+func isGrokImageModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(m, "grok-") && strings.Contains(m, "image") &&
+		!strings.Contains(m, "video")
+}
+
 // grokModelIDs returns the model ids for pool routing.
 func grokModelIDs() []string {
 	ids := make([]string, len(grokModels))

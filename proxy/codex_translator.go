@@ -101,8 +101,14 @@ func codexModelInfos() []ModelInfo {
 }
 
 // isCodexImageModel reports whether a model id targets Codex image generation.
+// Grok (grok-*-image) and Antigravity (gemini-*-image) image models also end in
+// "-image" but are served by their own upstreams, so they are excluded here.
 func isCodexImageModel(model string) bool {
-	return strings.HasSuffix(strings.TrimSpace(model), "-image")
+	m := strings.TrimSpace(model)
+	if isGrokImageModel(m) || isAntigravityImageModel(m) {
+		return false
+	}
+	return strings.HasSuffix(m, "-image")
 }
 
 // codexReviewUpstream maps a "-review" (or any virtual) model id to its real

@@ -130,6 +130,14 @@ var antigravityModels = []struct {
 	{"gemini-3.1-flash-image", "Gemini 3.1 Flash (Image)"},
 }
 
+// isAntigravityImageModel reports whether a model id targets Antigravity image
+// generation. These use the non-streaming generateContent path with an
+// image_gen request type (see CallAntigravityImageAPI), not the SSE agent path.
+func isAntigravityImageModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(m, "gemini-") && strings.Contains(m, "image")
+}
+
 // antigravityModelIDs returns the model ids Antigravity accounts serve. Registered
 // with the pool so gemini-* requests route to Antigravity accounts.
 func antigravityModelIDs() []string {
