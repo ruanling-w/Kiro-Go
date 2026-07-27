@@ -299,7 +299,6 @@ import {
     renderEndpointCode('openaiResponsesEndpoint', baseUrl + '/v1/responses');
     renderEndpointCode('modelsEndpoint', baseUrl + '/v1/models');
     renderEndpointCode('statsEndpoint', baseUrl + '/v1/stats');
-    setTimeout(checkUpdate, 2000);
   }
   export async function loadStats() {
     const res = await api('/status');
