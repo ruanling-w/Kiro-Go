@@ -1016,33 +1016,49 @@ func UpdatePreferredEndpoint(endpoint string) error {
 	return Save()
 }
 
+// defaultModelFallbackChain is the built-in fallback chain applied to ANY client
+// model when the operator has not configured an explicit chain for it. When the
+// native pool for the requested model is exhausted, requests spill over to
+// Antigravity: Claude 4.6 first, then Gemini 3.1 Pro. The client-facing model
+// name is preserved; only the upstream payload ModelID is rewritten (see
+// proxy/model_fallback.go). Targets equal to the requested model are skipped by
+// the caller, so requesting one of these ids natively is safe.
+var defaultModelFallbackChain = []ModelFallbackTarget{
+	{Model: "claude-sonnet-4-6"},
+	{Model: "gemini-pro-agent"},
+}
+
 // GetModelFallback returns the ordered fallback targets for a requested model.
-// Matching is case-insensitive on the model id. Returns nil when no chain is configured.
+// Matching is case-insensitive on the model id. An operator-configured chain for
+// the model takes precedence; otherwise the built-in defaultModelFallbackChain is
+// returned so cross-provider spillover works out of the box.
 func GetModelFallback(model string) []ModelFallbackTarget {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()
-	if cfg == nil || len(cfg.ModelFallback) == 0 {
-		return nil
-	}
 	key := strings.ToLower(strings.TrimSpace(model))
 	if key == "" {
 		return nil
 	}
-	// Exact match first (case-insensitive).
-	for k, v := range cfg.ModelFallback {
-		if strings.ToLower(strings.TrimSpace(k)) == key {
-			out := make([]ModelFallbackTarget, 0, len(v))
-			for _, t := range v {
-				m := strings.TrimSpace(t.Model)
-				if m == "" {
-					continue
+	// Operator-configured chain takes precedence (exact, case-insensitive match).
+	if cfg != nil {
+		for k, v := range cfg.ModelFallback {
+			if strings.ToLower(strings.TrimSpace(k)) == key {
+				out := make([]ModelFallbackTarget, 0, len(v))
+				for _, t := range v {
+					m := strings.TrimSpace(t.Model)
+					if m == "" {
+						continue
+					}
+					out = append(out, ModelFallbackTarget{Model: m})
 				}
-				out = append(out, ModelFallbackTarget{Model: m})
+				return out
 			}
-			return out
 		}
 	}
-	return nil
+	// No explicit chain: fall back to the built-in default.
+	out := make([]ModelFallbackTarget, len(defaultModelFallbackChain))
+	copy(out, defaultModelFallbackChain)
+	return out
 }
 
 // UpdateModelFallback replaces the entire model-fallback map and persists.
