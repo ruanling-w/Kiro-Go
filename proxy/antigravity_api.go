@@ -25,10 +25,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// agBaseURLs are the Antigravity Cloud Code hosts, tried in order.
+// agBaseURLs are the Antigravity Cloud Code hosts, tried in order. This must match
+// the production host used by auth/antigravity.go (fetchAvailableModels) and 9router's
+// antigravity provider. The internal "daily-" / ".sandbox" hosts return HTTP 404
+// "Requested entity was not found" for normal accounts and must not be used.
 var agBaseURLs = []string{
-	"https://daily-cloudcode-pa.googleapis.com",
-	"https://daily-cloudcode-pa.sandbox.googleapis.com",
+	"https://cloudcode-pa.googleapis.com",
 }
 
 // agUserAgentVersion mirrors the real Antigravity binary version string.
