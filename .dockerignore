@@ -26,6 +26,11 @@ kiro-go.exe~
 *.test
 *.out
 
+# Frontend deps + build output (installed/built inside the image)
+web/frontend/node_modules
+web/frontend/dist
+web/dist
+
 # Docs / compose (not needed in image build context)
 docker-compose.yml
 README.md

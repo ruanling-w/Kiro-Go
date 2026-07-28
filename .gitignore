@@ -12,6 +12,11 @@
 /data/
 *.log
 
+# Frontend deps + build output
+/web/frontend/node_modules/
+/web/frontend/dist/
+/web/dist/
+
 # Editor / OS
 .idea/
 .vscode/

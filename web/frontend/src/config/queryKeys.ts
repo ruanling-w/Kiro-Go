@@ -1,0 +1,23 @@
+// Centralized React Query keys — no magic strings scattered across hooks.
+// Mutations invalidate against these so cache invalidation stays consistent.
+export const qk = {
+  status: ['status'] as const,
+  stats: ['stats'] as const,
+  version: ['version'] as const,
+  accounts: ['accounts'] as const,
+  accountFull: (id: string) => ['accounts', id, 'full'] as const,
+  accountModels: (id: string) => ['accounts', id, 'models'] as const,
+  accountOverage: (id: string) => ['accounts', id, 'overage'] as const,
+  providerModels: (provider: string) => ['providers', provider, 'models'] as const,
+  apiKeys: ['api-keys'] as const,
+  apiKeyIps: (id: string) => ['api-keys', id, 'ips'] as const,
+  logs: ['logs'] as const,
+  settings: ['settings'] as const,
+  thinking: ['thinking'] as const,
+  endpoint: ['endpoint'] as const,
+  proxy: ['proxy'] as const,
+  promptFilter: ['prompt-filter'] as const,
+  telegram: ['telegram'] as const,
+  security: ['security', 'settings'] as const,
+  blockedIps: ['security', 'blocked-ips'] as const,
+}

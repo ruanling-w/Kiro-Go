@@ -550,7 +550,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 公开的 Key 查询页面（无需管理员密码，凭 Key 自身鉴权）
 	case path == "/check" || path == "/check/" || path == "/check/key":
-		h.serveStatic(w, r, "web/check.html")
+		h.serveStatic(w, r, "web/dist/check.html")
 	case path == "/check/api/lookup" && r.Method == "POST":
 		h.handleCheckKeyLookup(w, r)
 
@@ -2735,23 +2735,28 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 // ==================== 管理 API ====================
 
 func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
-	// 验证密码
-	password := r.Header.Get("X-Admin-Password")
-	if password == "" {
-		cookie, _ := r.Cookie("admin_password")
-		if cookie != nil {
-			password = cookie.Value
-		}
-	}
+	path := strings.TrimPrefix(r.URL.Path, "/admin/api")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// Hardening headers for the admin surface.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 
-	if password != config.GetPassword() {
-		w.WriteHeader(401)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+	// Login/logout are unauthenticated by design (login mints the session;
+	// logout only destroys whatever session the caller already holds).
+	if path == "/login" && r.Method == "POST" {
+		h.handleAdminLogin(w, r)
+		return
+	}
+	if path == "/logout" && r.Method == "POST" {
+		h.handleAdminLogout(w, r)
 		return
 	}
 
-	path := strings.TrimPrefix(r.URL.Path, "/admin/api")
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// Authenticate: prefer the session cookie; fall back to the legacy
+	// X-Admin-Password header for backward compatibility.
+	if !h.authorizeAdmin(w, r) {
+		return
+	}
 
 	switch {
 	case path == "/accounts" && r.Method == "GET":
@@ -4672,6 +4677,12 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
+	}
+
+	// Changing the admin password invalidates every existing session so old
+	// sessions cannot outlive the credential they were minted under.
+	if req.Password != "" {
+		adminAuth.invalidateAll()
 	}
 
 	// 更新超额使用设置

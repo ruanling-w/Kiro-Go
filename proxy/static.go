@@ -65,17 +65,32 @@ func staticCacheControl(ext string) string {
 	}
 }
 
+// adminDistRoot is the built React SPA output (Vite build.outDir). All admin
+// assets and the SPA entry point live here.
+const adminDistRoot = "web/dist"
+
 func (h *Handler) serveAdminPage(w http.ResponseWriter, r *http.Request) {
-	h.serveStatic(w, r, "web/index.html")
+	h.serveStatic(w, r, adminDistRoot+"/index.html")
 }
 
 func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, "/admin/")
 	// Guard against path traversal: clean the relative path and reject anything
-	// that escapes the web/ root. path.Clean collapses ".." segments; a leading
+	// that escapes the dist root. path.Clean collapses ".." segments; a leading
 	// ".." after cleaning means the request tried to escape.
 	clean := path.Clean("/" + rel) // always rooted, strips ../
-	fp := "web" + clean            // clean starts with "/"
+	fp := adminDistRoot + clean     // clean starts with "/"
+
+	// SPA fallback: a path with no file extension is a client-side React Router
+	// route (e.g. /admin/accounts), not a real asset — serve index.html so the
+	// SPA can boot and route. Real missing assets (with an extension) still 404
+	// via serveStatic.
+	if path.Ext(clean) == "" {
+		if _, err := os.Stat(fp); err != nil {
+			h.serveStatic(w, r, adminDistRoot+"/index.html")
+			return
+		}
+	}
 	h.serveStatic(w, r, fp)
 }
 
