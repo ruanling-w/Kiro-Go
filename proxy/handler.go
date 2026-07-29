@@ -78,6 +78,8 @@ type Handler struct {
 	runtimeStore *store.Store
 	// Per-API-key client IP stats (lifetime flushed to store; RPM is RAM-only).
 	ipTrack *ipTracker
+	// Fan-out of live log entries to admin SSE subscribers.
+	logHub *logHub
 }
 
 type thinkingStreamSource int
@@ -268,6 +270,7 @@ func NewHandler() *Handler {
 		promptCache:       newPromptCacheTracker(defaultPromptCacheTTL),
 		ipTrack:           newIPTracker(),
 		tokenRefreshLocks: make(map[string]*sync.Mutex),
+		logHub:            newLogHub(),
 	}
 
 	// Runtime SQLite (logs + key IP lifetime). Fail-open on error.
@@ -379,13 +382,13 @@ func (h *Handler) refreshAllAccounts() {
 			continue
 		}
 
-		// 检查 token 是否需要刷新
-		if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
+		refreshToken := func() error {
+			if account.RefreshToken == "" {
+				return fmt.Errorf("no refresh token")
+			}
 			newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
 			if err != nil {
-				logger.Warnf("[BackgroundRefresh] Token refresh failed for %s: %v", account.Email, err)
-				h.handleAccountFailureEx(account, err, true)
-				continue
+				return err
 			}
 			account.AccessToken = newAccessToken
 			if newRefreshToken != "" {
@@ -398,10 +401,27 @@ func (h *Handler) refreshAllAccounts() {
 				account.ProfileArn = profileArn
 				config.UpdateAccountProfileArn(account.ID, profileArn)
 			}
+			return nil
+		}
+
+		// 检查 token 是否需要刷新
+		if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
+			if err := refreshToken(); err != nil {
+				logger.Warnf("[BackgroundRefresh] Token refresh failed for %s: %v", account.Email, err)
+				h.handleAccountFailureEx(account, err, true)
+				continue
+			}
 		}
 
 		// 刷新账户信息
 		info, err := RefreshAccountInfo(account)
+		if err != nil && isCodexUsageAuthError(err) && account.RefreshToken != "" {
+			if refreshErr := refreshToken(); refreshErr == nil {
+				info, err = RefreshAccountInfo(account)
+			} else {
+				logger.Warnf("[BackgroundRefresh] Codex token refresh failed for %s: %v", account.Email, refreshErr)
+			}
+		}
 		if err != nil {
 			logger.Warnf("[BackgroundRefresh] Failed to refresh %s: %v", account.Email, err)
 			continue
@@ -1778,6 +1798,13 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 		h.logPending = h.logPending[1:]
 	}
 	h.logPending = append(h.logPending, entry)
+
+	// Broadcast before releasing requestLogsMu so subscribe+snapshot can establish
+	// one atomic stream boundary with no missing or duplicated startup entry.
+	// logHub.broadcast is non-blocking per subscriber.
+	if h.logHub != nil {
+		h.logHub.broadcast(entry)
+	}
 	h.requestLogsMu.Unlock()
 }
 
@@ -2584,7 +2611,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 					content += text
 				}
 			},
-			OnToolUse:  func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
+			OnToolUse: func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
 			OnImage: func(b64, mime string, partial bool) {
 				if partial || b64 == "" {
 					return
@@ -2868,6 +2895,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetLogs(w, r)
 	case path == "/logs" && r.Method == "DELETE":
 		h.apiClearLogs(w, r)
+	case path == "/logs/stream" && r.Method == "GET":
+		h.apiStreamLogs(w, r)
 	case path == "/generate-machine-id" && r.Method == "GET":
 		h.apiGenerateMachineId(w, r)
 	case path == "/thinking" && r.Method == "GET":
@@ -3807,19 +3836,19 @@ func (h *Handler) apiCompleteGrok(w http.ResponseWriter, r *http.Request) {
 // by the loopback poll flow and the manual paste flow.
 func (h *Handler) persistGrokResult(w http.ResponseWriter, result *auth.XaiResult) {
 	account := config.Account{
-		ID:               auth.GenerateAccountID(),
-		Email:            result.Email,
-		AccessToken:      result.AccessToken,
-		RefreshToken:     result.RefreshToken,
-		AuthMethod:       "grok",
-		Provider:         "grok",
-		GrokAuthType:     "oauth",
-		GrokIDToken:      result.IDToken,
-		Scopes:           result.Scopes,
-		ExpiresAt:        time.Now().Unix() + int64(result.ExpiresIn),
-		LastRefresh:      time.Now().Unix(),
-		Enabled:          true,
-		MachineId:        config.GenerateMachineId(),
+		ID:           auth.GenerateAccountID(),
+		Email:        result.Email,
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+		AuthMethod:   "grok",
+		Provider:     "grok",
+		GrokAuthType: "oauth",
+		GrokIDToken:  result.IDToken,
+		Scopes:       result.Scopes,
+		ExpiresAt:    time.Now().Unix() + int64(result.ExpiresIn),
+		LastRefresh:  time.Now().Unix(),
+		Enabled:      true,
+		MachineId:    config.GenerateMachineId(),
 	}
 
 	// Resolve the subscription badge from the OAuth tier claim. The access_token
@@ -4626,7 +4655,6 @@ func (h *Handler) apiUpdatePromptFilter(w http.ResponseWriter, r *http.Request) 
 	}
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
-
 
 func (h *Handler) apiGetTelegram(w http.ResponseWriter, r *http.Request) {
 	cfg := config.GetTelegramConfig()

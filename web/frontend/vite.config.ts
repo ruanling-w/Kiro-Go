@@ -49,8 +49,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/admin/api': 'http://localhost:8080',
-      '/check/api': 'http://localhost:8080',
+      // Explicit config (not the string shorthand) so SSE (/admin/api/logs/stream)
+      // isn't buffered: changeOrigin fixes the Host header and http-proxy streams
+      // text/event-stream through without waiting for the response to close.
+      '/admin/api': { target: 'http://localhost:8080', changeOrigin: true },
+      '/check/api': { target: 'http://localhost:8080', changeOrigin: true },
     },
   },
 })

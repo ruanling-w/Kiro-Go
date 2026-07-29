@@ -9,6 +9,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"kiro-go/auth"
@@ -22,6 +23,23 @@ import (
 )
 
 const codexWhamUsageURL = "https://chatgpt.com/backend-api/wham/usage"
+
+// CodexUsageHTTPError describes an HTTP failure returned by ChatGPT WHAM.
+// The body is intentionally truncated so upstream responses cannot leak large
+// or sensitive payloads into logs/errors.
+type CodexUsageHTTPError struct {
+	Status int
+	Body   string
+}
+
+func (e *CodexUsageHTTPError) Error() string {
+	return fmt.Sprintf("codex usage: upstream %d: %s", e.Status, e.Body)
+}
+
+func isCodexUsageAuthError(err error) bool {
+	var upstream *CodexUsageHTTPError
+	return errors.As(err, &upstream) && (upstream.Status == http.StatusUnauthorized || upstream.Status == http.StatusForbidden)
+}
 
 // CodexUsageSnapshot is the normalized result of a WHAM usage fetch.
 type CodexUsageSnapshot struct {
@@ -71,7 +89,10 @@ func FetchCodexUsage(account *config.Account) (*CodexUsageSnapshot, error) {
 		return nil, fmt.Errorf("codex usage: read body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("codex usage: upstream %d: %s", resp.StatusCode, truncateForErr(string(body), 240))
+		return nil, &CodexUsageHTTPError{
+			Status: resp.StatusCode,
+			Body:   truncateForErr(string(body), 240),
+		}
 	}
 
 	snap, err := parseCodexWhamUsage(body)
@@ -192,6 +213,20 @@ func parseCodexWhamUsage(body []byte) (*CodexUsageSnapshot, error) {
 	appendWindows("", normalBody, normal)
 	appendWindows("review", reviewBody, review)
 
+	// An HTTP 200 error envelope or an upstream schema change must not be treated
+	// as a successful empty snapshot, otherwise it would erase cached quota.
+	creditsValid := false
+	if rc, ok := raw["rate_limit_reset_credits"].(map[string]interface{}); ok {
+		_, creditsValid = numericValue(rc["available_count"])
+	}
+	limitSignal := snap.LimitReached
+	if reviewBody != nil && asBool(reviewBody["limit_reached"]) {
+		limitSignal = true
+	}
+	if snap.Plan == "" && !creditsValid && len(snap.Windows) == 0 && !limitSignal {
+		return nil, fmt.Errorf("codex usage: unrecognized response schema")
+	}
+
 	if logger.GetLevel() == logger.LevelDebug {
 		logger.Debugf("[CodexUsage] plan=%s windows=%d limitReached=%v credits=%d",
 			snap.Plan, len(snap.Windows), snap.LimitReached, snap.ResetCredits)
@@ -279,7 +314,7 @@ func parseCodexResetTime(v interface{}) string {
 
 func firstMap(vals ...interface{}) map[string]interface{} {
 	for _, v := range vals {
-		if m, ok := v.(map[string]interface{}); ok && m != nil {
+		if m, ok := v.(map[string]interface{}); ok && len(m) > 0 {
 			return m
 		}
 	}
@@ -308,6 +343,28 @@ func firstNonNil(vals ...interface{}) interface{} {
 		}
 	}
 	return nil
+}
+
+func numericValue(v interface{}) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, !math.IsNaN(t) && !math.IsInf(t, 0)
+	case float32:
+		f := float64(t)
+		return f, !math.IsNaN(f) && !math.IsInf(f, 0)
+	case int:
+		return float64(t), true
+	case int64:
+		return float64(t), true
+	case json.Number:
+		f, err := t.Float64()
+		return f, err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		return f, err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
+	default:
+		return 0, false
+	}
 }
 
 func asFloat(v interface{}) float64 {

@@ -524,8 +524,41 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 			continue
 		}
 
-		eventType := extractEventType(msgBuf[0:headersLength])
+		eventType, messageType, exceptionType := extractEventStreamHeaders(msgBuf[0:headersLength])
 		payloadBytes := msgBuf[headersLength : len(msgBuf)-4]
+
+		// AWS signals mid-stream failures as exception frames (":message-type" is
+		// "exception", carrying an ":exception-type" and a JSON {"message": ...}).
+		// These frames have no ":event-type", so before this guard they matched no
+		// switch case and were silently dropped — the loop then hit EOF and the
+		// stream returned nil, surfacing to clients as a generation that just
+		// "stops" mid-answer (common on Opus 4.8/5 under throttling/internal
+		// errors). Turn them into a real error so the caller retries another
+		// account or emits a proper error event instead of a clean message_stop.
+		if messageType == "exception" || exceptionType != "" {
+			msg := exceptionType
+			if len(payloadBytes) > 0 {
+				var exc map[string]interface{}
+				if json.Unmarshal(payloadBytes, &exc) == nil {
+					if m, ok := exc["message"].(string); ok && m != "" {
+						if msg != "" {
+							msg = msg + ": " + m
+						} else {
+							msg = m
+						}
+					}
+				}
+			}
+			if msg == "" {
+				msg = "unknown upstream exception"
+			}
+			streamErr := fmt.Errorf("kiro stream exception: %s", msg)
+			if callback.OnError != nil {
+				callback.OnError(streamErr)
+			}
+			return streamErr
+		}
+
 		if len(payloadBytes) == 0 {
 			continue
 		}
@@ -556,8 +589,15 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 		case "toolUseEvent":
 			currentToolUse = handleToolUseEvent(event, currentToolUse, callback)
 		case "meteringEvent":
+			// Kiro gửi usage TÍCH LŨY của cả lượt (snapshot), có thể nhiều frame/lượt.
+			// Dùng last-wins (ghi đè) chứ không cộng dồn, nếu không credit bị tính trùng.
+			// Verified với kiro-cli: giá trị cuối = credit thật của lượt.
 			if usage, ok := event["usage"].(float64); ok {
-				totalCredits += usage
+				totalCredits = usage
+			} else if nested, ok := event["meteringEvent"].(map[string]interface{}); ok {
+				if usage, ok := nested["usage"].(float64); ok {
+					totalCredits = usage
+				}
 			}
 		case "contextUsageEvent":
 			if pct, ok := event["contextUsagePercentage"].(float64); ok {
@@ -863,8 +903,12 @@ func firstBoolField(m map[string]interface{}, keys ...string) bool {
 	return false
 }
 
-// extractEventType extracts the event type string from AWS Event Stream message headers.
-func extractEventType(headers []byte) string {
+// extractEventStreamHeaders decodes the AWS Event Stream message headers and
+// returns the values relevant to dispatch: ":event-type" (normal events),
+// ":message-type" ("event" or "exception"), and ":exception-type" (present on
+// exception frames). Exception frames carry no ":event-type", so the caller
+// must inspect messageType/exceptionType to detect mid-stream failures.
+func extractEventStreamHeaders(headers []byte) (eventType, messageType, exceptionType string) {
 	offset := 0
 	for offset < len(headers) {
 		if offset >= len(headers) {
@@ -894,8 +938,13 @@ func extractEventType(headers []byte) string {
 			}
 			value := string(headers[offset : offset+valueLen])
 			offset += valueLen
-			if name == ":event-type" {
-				return value
+			switch name {
+			case ":event-type":
+				eventType = value
+			case ":message-type":
+				messageType = value
+			case ":exception-type":
+				exceptionType = value
 			}
 			continue
 		}
@@ -914,5 +963,5 @@ func extractEventType(headers []byte) string {
 			break
 		}
 	}
-	return ""
+	return eventType, messageType, exceptionType
 }

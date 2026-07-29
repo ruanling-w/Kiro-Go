@@ -17,6 +17,8 @@ import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { HamsterLoader } from '@/components/shared/HamsterLoader'
+import { CodexQuota } from './CodexQuota'
+import { bucketOf } from '@/config/providers'
 import { useAccountFull } from '@/hooks/queries/useAccounts'
 import {
   useUpdateAccount,
@@ -83,8 +85,12 @@ export function AccountDetailDialog({ account, onClose }: Props) {
     }
   }
 
-  const overageOn = (full.data?.overageStatus ?? account?.overageStatus) === 'enabled'
-  const overageCapable = (full.data?.overageCapability ?? account?.overageCapability) !== 'none'
+  const detailAccount = full.data ?? account
+  const overageOn = (detailAccount?.overageStatus ?? account?.overageStatus) === 'enabled'
+  const overageCapable = (detailAccount?.overageCapability ?? account?.overageCapability) !== 'none'
+  const isCodex = detailAccount
+    ? bucketOf(detailAccount.provider) === 'codex' || detailAccount.authMethod?.toLowerCase() === 'codex'
+    : false
 
   return (
     <Dialog open={!!account} onOpenChange={(o) => !o && onClose()}>
@@ -100,6 +106,15 @@ export function AccountDetailDialog({ account, onClose }: Props) {
             <Field label={t('detail.email')}>
               <p className="truncate text-sm text-muted-foreground">{account?.email || account?.id}</p>
             </Field>
+
+            {isCodex && detailAccount && (
+              <CodexQuota
+                windows={detailAccount.codexQuota}
+                limitReached={detailAccount.codexLimitReached}
+                resetCredits={detailAccount.codexResetCredits}
+                detail
+              />
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="nickname">{t('detail.nickname')}</Label>

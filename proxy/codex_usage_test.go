@@ -2,6 +2,10 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -74,14 +78,75 @@ func TestParseCodexWhamUsage_BasicWindows(t *testing.T) {
 }
 
 type configWindow struct {
-	UsedPct float64
-	ResetAt string
+	UsedPct  float64
+	ResetAt  string
 	LimitHit bool
-	Label string
+	Label    string
 }
 
 func TestParseCodexWhamUsage_InvalidJSON(t *testing.T) {
 	if _, err := parseCodexWhamUsage([]byte(`{`)); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestCodexUsageHTTPErrorClassification(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		err := &CodexUsageHTTPError{Status: status, Body: "expired"}
+		if !isCodexUsageAuthError(err) {
+			t.Fatalf("status %d should be auth error", status)
+		}
+		wrapped := fmt.Errorf("wrapped: %w", err)
+		var typed *CodexUsageHTTPError
+		if !errors.As(wrapped, &typed) {
+			t.Fatalf("typed error was not preserved: %v", wrapped)
+		}
+	}
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway, http.StatusInternalServerError} {
+		if isCodexUsageAuthError(&CodexUsageHTTPError{Status: status}) {
+			t.Fatalf("status %d should remain a transient error", status)
+		}
+	}
+}
+
+func TestCodexUsageHTTPErrorBoundedBody(t *testing.T) {
+	body := strings.Repeat("x", 1000)
+	err := &CodexUsageHTTPError{Status: http.StatusInternalServerError, Body: truncateForErr(body, 240)}
+	if len(err.Error()) > 280 {
+		t.Fatalf("error was not bounded: %d bytes", len(err.Error()))
+	}
+}
+
+func TestParseCodexWhamUsage_UnrecognizedSchema(t *testing.T) {
+	payloads := [][]byte{
+		[]byte(`{"error":"temporarily unavailable"}`),
+		[]byte(`{"summary":{}}`),
+		[]byte(`{"rate_limit":{}}`),
+		[]byte(`{"rate_limit_reset_credits":null}`),
+		[]byte(`{"rate_limit_reset_credits":{"available_count":null}}`),
+		[]byte(`{"plan_type":123}`),
+	}
+	for _, payload := range payloads {
+		if _, err := parseCodexWhamUsage(payload); err == nil {
+			t.Fatalf("expected unrecognized schema error for %s", payload)
+		}
+	}
+}
+
+func TestParseCodexWhamUsage_EmptyPrimaryFallsBack(t *testing.T) {
+	body := []byte(`{
+		"rate_limit": {},
+		"rate_limits_by_limit_id": {
+			"codex": {
+				"primary_window": {"used_percent": 25}
+			}
+		}
+	}`)
+	snap, err := parseCodexWhamUsage(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(snap.Windows) != 1 || snap.Windows[0].UsedPct != 25 {
+		t.Fatalf("expected fallback window, got %#v", snap.Windows)
 	}
 }

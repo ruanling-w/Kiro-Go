@@ -7,6 +7,7 @@ import (
 	"kiro-go/config"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,6 +77,92 @@ func TestParseEventStreamFinishesPendingToolUseOnEOF(t *testing.T) {
 	}
 	if got := toolUses[0].Input["server"]; got != "ida-pro-mcp" {
 		t.Fatalf("expected parsed tool input, got %#v", toolUses[0].Input)
+	}
+}
+
+func TestParseEventStreamReturnsErrorOnExceptionFrame(t *testing.T) {
+	// A mid-stream exception frame: some text arrives, then AWS sends an
+	// exception (":message-type" = "exception") with no ":event-type". Before the
+	// fix this frame was dropped and the stream returned nil (clean stop); now it
+	// must surface as an error so the caller can retry or emit a real error.
+	stream := bytes.NewReader(bytes.Join([][]byte{
+		awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "partial answer"}),
+		awsEventStreamFrameWithHeaders(t, map[string]string{
+			":message-type":   "exception",
+			":exception-type": "ThrottlingException",
+		}, map[string]interface{}{"message": "Too many requests"}),
+	}, nil))
+
+	var gotText string
+	var completed bool
+	var onErr error
+	err := parseEventStream(stream, &KiroStreamCallback{
+		OnText:     func(text string, _ bool) { gotText += text },
+		OnComplete: func(_, _ int) { completed = true },
+		OnError:    func(e error) { onErr = e },
+	})
+
+	if err == nil {
+		t.Fatalf("expected error from exception frame, got nil")
+	}
+	if completed {
+		t.Fatalf("expected no completion callback on exception")
+	}
+	if onErr == nil {
+		t.Fatalf("expected OnError callback to fire")
+	}
+	if gotText != "partial answer" {
+		t.Fatalf("expected text before exception to be delivered, got %q", gotText)
+	}
+	if !strings.Contains(err.Error(), "ThrottlingException") || !strings.Contains(err.Error(), "Too many requests") {
+		t.Fatalf("expected exception type and message in error, got %q", err.Error())
+	}
+}
+
+func TestParseEventStreamMeteringLastWins(t *testing.T) {
+	// Kiro emits the turn's CUMULATIVE credit in each meteringEvent (a snapshot,
+	// not a per-frame delta). Multiple frames can arrive in one turn. The parser
+	// must take the last value (last-wins), not sum them — summing double-counts
+	// and inflates credit. Verified against kiro-cli: last value == real cost.
+	stream := bytes.NewReader(bytes.Join([][]byte{
+		awsEventStreamFrame(t, "meteringEvent", map[string]interface{}{"usage": 0.5}),
+		awsEventStreamFrame(t, "meteringEvent", map[string]interface{}{"usage": 1.25}),
+	}, nil))
+
+	var credits float64
+	var gotCredits bool
+	err := parseEventStream(stream, &KiroStreamCallback{
+		OnCredits: func(c float64) {
+			credits = c
+			gotCredits = true
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if !gotCredits {
+		t.Fatalf("expected OnCredits to fire")
+	}
+	if credits != 1.25 {
+		t.Fatalf("expected last-wins credit 1.25 (not summed 1.75), got %v", credits)
+	}
+}
+
+func TestParseEventStreamMeteringNestedPayload(t *testing.T) {
+	// Some meteringEvent payloads are double-wrapped: {"meteringEvent":{"usage":N}}.
+	stream := bytes.NewReader(awsEventStreamFrame(t, "meteringEvent", map[string]interface{}{
+		"meteringEvent": map[string]interface{}{"usage": 2.0},
+	}))
+
+	var credits float64
+	err := parseEventStream(stream, &KiroStreamCallback{
+		OnCredits: func(c float64) { credits = c },
+	})
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if credits != 2.0 {
+		t.Fatalf("expected nested payload credit 2.0, got %v", credits)
 	}
 }
 
@@ -249,19 +336,29 @@ func assertProxyURL(t *testing.T, got *url.URL, want string) {
 
 func awsEventStreamFrame(t *testing.T, eventType string, payload map[string]interface{}) []byte {
 	t.Helper()
+	return awsEventStreamFrameWithHeaders(t, map[string]string{":event-type": eventType}, payload)
+}
+
+// awsEventStreamFrameWithHeaders builds a frame with arbitrary string headers,
+// used to simulate exception frames (":message-type"/":exception-type") that
+// carry no ":event-type".
+func awsEventStreamFrameWithHeaders(t *testing.T, stringHeaders map[string]string, payload map[string]interface{}) []byte {
+	t.Helper()
 
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	headerValue := []byte(eventType)
-	headers := make([]byte, 0, 1+len(":event-type")+1+2+len(headerValue))
-	headers = append(headers, byte(len(":event-type")))
-	headers = append(headers, []byte(":event-type")...)
-	headers = append(headers, byte(7))
-	headers = append(headers, byte(len(headerValue)>>8), byte(len(headerValue)))
-	headers = append(headers, headerValue...)
+	var headers []byte
+	for name, value := range stringHeaders {
+		v := []byte(value)
+		headers = append(headers, byte(len(name)))
+		headers = append(headers, []byte(name)...)
+		headers = append(headers, byte(7))
+		headers = append(headers, byte(len(v)>>8), byte(len(v)))
+		headers = append(headers, v...)
+	}
 
 	totalLength := 12 + len(headers) + len(payloadBytes) + 4
 	frame := make([]byte, 12, totalLength)

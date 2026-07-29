@@ -699,10 +699,10 @@ func grokTierToTitle(tier int) string {
 	}
 }
 
-// refreshCodexInfo resolves subscription info for a Codex (ChatGPT) account.
-// OpenAI's usage endpoint is not called (kept simple, mirroring Grok); the plan
-// is read from the stored plan type or decoded from the id_token. Usage/trial
-// fields are left empty so the panel hides the quota bar.
+// refreshCodexInfo resolves subscription and live WHAM quota for a Codex
+// (ChatGPT) account. Authentication failures propagate so the account refresh
+// handler can rotate the token and retry once; temporary usage-service failures
+// remain soft so they do not disable the account or erase cached quota.
 func refreshCodexInfo(account *config.Account, info *config.AccountInfo) (*config.AccountInfo, error) {
 	// Plan from stored claim / id_token first (always available offline).
 	plan := strings.TrimSpace(account.CodexPlanType)
@@ -711,8 +711,10 @@ func refreshCodexInfo(account *config.Account, info *config.AccountInfo) (*confi
 	}
 
 	// Live WHAM usage: session/weekly/review windows + reset credits.
-	// Soft-fail so a temporary WHAM outage still updates the plan badge.
 	if snap, err := FetchCodexUsage(account); err != nil {
+		if isCodexUsageAuthError(err) {
+			return nil, err
+		}
 		logger.Warnf("[Codex] usage fetch failed for %s: %v", account.Email, err)
 	} else if snap != nil {
 		info.CodexQuotaFetched = true

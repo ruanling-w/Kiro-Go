@@ -7,6 +7,15 @@
 
 export type ProviderKey = 'kiro' | 'antigravity' | 'grok' | 'codex' | 'remotekiro'
 
+export interface CodexQuotaWindow {
+  key: string
+  label?: string
+  usedPct: number
+  remaining?: number
+  resetAt?: string
+  limitHit?: boolean
+}
+
 export interface AccountListItem {
   id: string
   email: string
@@ -56,12 +65,12 @@ export interface AccountListItem {
   agQuota: unknown
 
   grokAuthType: string
-  codexAuthType: string
-  codexPlanType: string
-  codexAccountId: string
-  codexQuota: unknown
-  codexLimitReached: boolean
-  codexResetCredits: number
+  codexAuthType?: string
+  codexPlanType?: string
+  codexAccountId?: string
+  codexQuota?: CodexQuotaWindow[]
+  codexLimitReached?: boolean
+  codexResetCredits?: number
 
   // Runtime stats from the pool.
   requestCount: number

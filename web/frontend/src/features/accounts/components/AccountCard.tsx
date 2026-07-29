@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { StatusBadge, type StatusTone } from '@/components/shared/StatusBadge'
 import { UsageBar } from '@/components/shared/UsageBar'
 import { ProviderIcon } from '@/components/shared/ProviderIcon'
+import { CodexQuota } from './CodexQuota'
 import { useUiStore } from '@/stores/uiStore'
 import { maskEmail } from '@/lib/mask'
 import { formatNumber, formatRelativeSeconds } from '@/lib/format'
@@ -52,6 +53,7 @@ export function AccountCard({
 
   const status = statusTone(a)
   const bucket = bucketOf(a.provider)
+  const isCodex = bucket === 'codex' || a.authMethod?.toLowerCase() === 'codex'
   const email = privacy ? maskEmail(a.email || a.id) : a.email || a.id
 
   const SelIcon = selected ? CheckSquare : Square
@@ -115,6 +117,13 @@ export function AccountCard({
           label={t('accounts.trialQuota')}
           used={a.trialUsageCurrent}
           limit={a.trialUsageLimit}
+        />
+      )}
+      {isCodex && (
+        <CodexQuota
+          windows={a.codexQuota}
+          limitReached={a.codexLimitReached}
+          resetCredits={a.codexResetCredits}
         />
       )}
 

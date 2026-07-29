@@ -1,14 +1,13 @@
-// Logs — xterm terminal view + toolbar. Filters: status (all/success/error),
-// per-API-key (dropdown sourced from useApiKeys, deep-linkable via ?apiKey=<id>),
-// and a quick search term. Auto-refresh polls every 5s (useLogs). Clear goes
-// through the shared ConfirmDialog (never native confirm — fixes the old bug).
+// Logs — live SSE stream + xterm renderer. Filters (status / per-API-key /
+// search) run client-side over the live buffer. The Live switch pauses/resumes
+// the SSE connection. Clear goes through the shared ConfirmDialog and also
+// empties the local buffer immediately.
 import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { RefreshCw, Trash2, Search } from 'lucide-react'
+import { Trash2, Search } from 'lucide-react'
 import { toast } from 'sonner'
-import type { RequestLog } from '@/types/log'
-import { useLogs } from '@/hooks/queries/useLogs'
+import { useLogStream } from '@/hooks/queries/useLogStream'
 import { useClearLogs } from '@/hooks/mutations/useLogMutations'
 import { useApiKeys } from '@/hooks/queries/useApiKeys'
 import { PageHeader } from '@/components/shared/PageHeader'
@@ -17,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
 import {
   Select,
   SelectContent,
@@ -31,12 +31,12 @@ type StatusFilter = 'all' | 'success' | 'error'
 export default function LogsPage() {
   const { t } = useTranslation()
   const [params, setParams] = useSearchParams()
-  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [live, setLive] = useState(true)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [search, setSearch] = useState('')
   const [clearOpen, setClearOpen] = useState(false)
 
-  const logs = useLogs(autoRefresh)
+  const stream = useLogStream(!live)
   const clearLogs = useClearLogs()
   const apiKeys = useApiKeys()
 
@@ -49,21 +49,47 @@ export default function LogsPage() {
     setParams(next, { replace: true })
   }
 
-  const filtered = useMemo(() => {
-    const list = logs.data ?? []
-    return list.filter((log: RequestLog) => {
-      if (statusFilter === 'success' && log.status !== 'success') return false
-      if (statusFilter === 'error' && log.status === 'success') return false
-      if (apiKeyFilter && log.apiKeyId !== apiKeyFilter) return false
-      return true
-    })
-  }, [logs.data, statusFilter, apiKeyFilter])
-
   const keyNames = useMemo(() => {
     const map = new Map<string, string>()
     for (const k of apiKeys.data ?? []) map.set(k.id, k.name || t('apiKeys.unnamed'))
     return map
   }, [apiKeys.data, t])
+
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    return stream.logs.filter((log) => {
+      if (statusFilter === 'success' && log.status !== 'success') return false
+      if (statusFilter === 'error' && log.status === 'success') return false
+      if (apiKeyFilter && log.apiKeyId !== apiKeyFilter) return false
+      if (term) {
+        const keyName = log.apiKeyId ? keyNames.get(log.apiKeyId) ?? '' : ''
+        const haystack = [
+          log.model,
+          log.endpoint,
+          log.provider,
+          log.accountId,
+          log.clientIp,
+          log.errorType,
+          log.error,
+          keyName,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+        if (!haystack.includes(term)) return false
+      }
+      return true
+    })
+  }, [stream.logs, statusFilter, apiKeyFilter, search, keyNames])
+
+  const statusBadge = {
+    connecting: { variant: 'secondary' as const, label: t('logs.reconnecting') },
+    live: { variant: 'default' as const, label: t('logs.live') },
+    error: { variant: 'destructive' as const, label: t('logs.connectionLost') },
+  }[live ? stream.status : ('paused' as never)] ?? {
+    variant: 'outline' as const,
+    label: t('logs.paused'),
+  }
 
   return (
     <div className="space-y-5">
@@ -71,10 +97,7 @@ export default function LogsPage() {
         title={t('logs.title')}
         actions={
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => logs.refetch()}>
-              <RefreshCw className="size-4" />
-              {t('logs.refresh')}
-            </Button>
+            <Badge variant={statusBadge.variant}>{statusBadge.label}</Badge>
             <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
               <Trash2 className="size-4" />
               {t('logs.clear')}
@@ -120,8 +143,8 @@ export default function LogsPage() {
         </Select>
 
         <div className="flex items-center gap-2">
-          <Switch id="auto" checked={autoRefresh} onCheckedChange={setAutoRefresh} />
-          <Label htmlFor="auto" className="text-sm">{t('logs.autoRefresh')}</Label>
+          <Switch id="live" checked={live} onCheckedChange={setLive} />
+          <Label htmlFor="live" className="text-sm">{t('logs.autoRefresh')}</Label>
         </div>
       </div>
 
@@ -135,7 +158,10 @@ export default function LogsPage() {
         destructive
         onConfirm={() =>
           clearLogs.mutate(undefined, {
-            onSuccess: () => toast.success(t('logs.cleared')),
+            onSuccess: () => {
+              stream.clear()
+              toast.success(t('logs.cleared'))
+            },
             onError: () => toast.error(t('common.failed')),
           })
         }
