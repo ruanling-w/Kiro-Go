@@ -86,6 +86,7 @@ type Account struct {
 	// GrokAuthType is one of "apikey" | "oauth".
 	GrokAPIKey   string `json:"grokApiKey,omitempty"`
 	GrokAuthType string `json:"grokAuthType,omitempty"`
+	GrokIDToken  string `json:"grokIdToken,omitempty"` // OAuth id_token retained for tier claim (access_token has none)
 
 	// Codex (OpenAI ChatGPT) fields. Provider == "codex" / AuthMethod == "codex".
 	// AccessToken/RefreshToken/ExpiresAt/Email are reused from the shared block above.

@@ -3814,12 +3814,23 @@ func (h *Handler) persistGrokResult(w http.ResponseWriter, result *auth.XaiResul
 		AuthMethod:       "grok",
 		Provider:         "grok",
 		GrokAuthType:     "oauth",
+		GrokIDToken:      result.IDToken,
 		Scopes:           result.Scopes,
 		ExpiresAt:        time.Now().Unix() + int64(result.ExpiresIn),
-		SubscriptionType: "PRO",
 		LastRefresh:      time.Now().Unix(),
 		Enabled:          true,
 		MachineId:        config.GenerateMachineId(),
+	}
+
+	// Resolve the subscription badge from the OAuth tier claim. The access_token
+	// carries no "tier", so decode the id_token; fall back to the access_token in
+	// case xAI moves the claim. Tier 0 (no claim) leaves the badge unset.
+	if tier := auth.DecodeXaiTokenTier(result.IDToken); tier != 0 {
+		account.SubscriptionType = grokTierToSubscription(tier)
+		account.SubscriptionTitle = grokTierToTitle(tier)
+	} else if tier := auth.DecodeXaiTokenTier(result.AccessToken); tier != 0 {
+		account.SubscriptionType = grokTierToSubscription(tier)
+		account.SubscriptionTitle = grokTierToTitle(tier)
 	}
 
 	if err := config.AddAccount(account); err != nil {

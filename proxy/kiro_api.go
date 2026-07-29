@@ -644,7 +644,20 @@ func antigravityTierToSubscription(tier string) string {
 // accounts carry no token, so tier resolves to 0 and the badge is left unchanged.
 // Usage/trial fields are left empty on purpose so the panel hides the quota bar.
 func refreshGrokInfo(account *config.Account, info *config.AccountInfo) (*config.AccountInfo, error) {
-	tier := auth.DecodeXaiTokenTier(account.AccessToken)
+	// The "tier" claim lives in the id_token, not the OAuth access_token; decode
+	// the id_token first and fall back to the access_token in case xAI moves it.
+	tier := auth.DecodeXaiTokenTier(account.GrokIDToken)
+	if tier == 0 {
+		tier = auth.DecodeXaiTokenTier(account.AccessToken)
+	}
+	// A 0 tier means neither token carried the claim (e.g. an API-key account, or
+	// an OAuth account signed in before the id_token was persisted). Blanking the
+	// badge would wipe the subscription set at login, so keep the current values.
+	if tier == 0 {
+		info.SubscriptionType = account.SubscriptionType
+		info.SubscriptionTitle = account.SubscriptionTitle
+		return info, nil
+	}
 	info.SubscriptionType = grokTierToSubscription(tier)
 	info.SubscriptionTitle = grokTierToTitle(tier)
 	return info, nil

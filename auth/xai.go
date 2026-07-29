@@ -105,6 +105,7 @@ type xaiCapture struct {
 type XaiResult struct {
 	AccessToken  string
 	RefreshToken string
+	IDToken      string
 	ExpiresIn    int
 	Email        string
 	Scopes       string
@@ -285,6 +286,7 @@ func (s *XaiSession) exchange(code string) (*XaiResult, error) {
 	return &XaiResult{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
+		IDToken:      idToken,
 		ExpiresIn:    expiresIn,
 		Email:        decodeXaiIDTokenEmail(idToken),
 		Scopes:       scope,
