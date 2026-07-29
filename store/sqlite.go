@@ -11,6 +11,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	schemaVersion = 2
+	schemaVersion = 3
 	driverName    = "sqlite"
 )
 
@@ -68,12 +69,15 @@ func Open(path string) (*Store, error) {
 		_ = f.Close()
 	}
 
-	db, err := sql.Open(driverName, path)
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=foreign_keys(1)"}).String()
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open: %w", err)
 	}
-	// Single connection keeps SQLite simple under WAL for our write pattern.
+	// Keep SQLite simple under WAL. The DSN applies foreign_keys to every new
+	// connection, including replacements created after lifetime recycling.
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(time.Hour)
 
 	s := &Store{db: db, path: path}
@@ -175,9 +179,46 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		}
 	}
 
-	if ver < schemaVersion {
-		if _, err := s.db.Exec(`UPDATE schema_version SET version = ?`, schemaVersion); err != nil {
+	// v3: normalized combo configuration and persistent round-robin state.
+	if ver <= 3 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("store: begin combo migration: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		statements := []string{
+			`CREATE TABLE IF NOT EXISTS combos (
+			  id TEXT PRIMARY KEY,
+			  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			  strategy TEXT NOT NULL DEFAULT '',
+			  sticky_limit INTEGER NOT NULL DEFAULT 1,
+			  revision INTEGER NOT NULL DEFAULT 1,
+			  created_at INTEGER NOT NULL,
+			  updated_at INTEGER NOT NULL
+			)`,
+			`CREATE TABLE IF NOT EXISTS combo_models (
+			  combo_id TEXT NOT NULL REFERENCES combos(id) ON DELETE CASCADE,
+			  position INTEGER NOT NULL,
+			  model TEXT NOT NULL,
+			  PRIMARY KEY (combo_id, position)
+			)`,
+			`CREATE TABLE IF NOT EXISTS combo_rotation (
+			  combo_id TEXT PRIMARY KEY REFERENCES combos(id) ON DELETE CASCADE,
+			  revision INTEGER NOT NULL,
+			  model_index INTEGER NOT NULL DEFAULT 0,
+			  use_count INTEGER NOT NULL DEFAULT 0
+			)`,
+		}
+		for _, statement := range statements {
+			if _, err := tx.Exec(statement); err != nil {
+				return fmt.Errorf("store: combo migration: %w", err)
+			}
+		}
+		if _, err := tx.Exec(`UPDATE schema_version SET version = ?`, schemaVersion); err != nil {
 			return fmt.Errorf("store: bump schema_version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("store: commit combo migration: %w", err)
 		}
 	}
 	return nil
@@ -193,11 +234,14 @@ func (s *Store) Path() string {
 
 // Close closes the underlying DB. Safe on nil.
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.db == nil {
+		return nil
+	}
 	err := s.db.Close()
 	s.db = nil
 	return err
