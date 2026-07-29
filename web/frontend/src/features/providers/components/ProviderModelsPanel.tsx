@@ -43,7 +43,7 @@ export function ProviderModelsPanel({ provider, onClose }: Props) {
 
   return (
     <Dialog open={!!provider} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="w-[calc(100%-2rem)] sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>
             {meta ? t(meta.labelKey) : ''} · {t('providers.supportedModels')}
@@ -68,9 +68,9 @@ export function ProviderModelsPanel({ provider, onClose }: Props) {
           ) : filtered.length === 0 ? (
             <EmptyState title={t('providers.noModels')} />
           ) : (
-            <ul className="divide-y">
+            <ul className="grid grid-cols-1 gap-x-6 sm:grid-cols-2 lg:grid-cols-3">
               {filtered.map((m) => (
-                <li key={m.id} className="flex items-center justify-between gap-3 py-2.5">
+                <li key={m.id} className="flex items-center justify-between gap-3 border-b py-2.5">
                   <div className="min-w-0">
                     <p className="truncate font-medium">{m.name || m.id}</p>
                     <p className="truncate font-mono text-xs text-muted-foreground">{m.id}</p>

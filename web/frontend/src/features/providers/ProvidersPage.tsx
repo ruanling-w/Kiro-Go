@@ -12,6 +12,7 @@ import { PageHeader } from '@/components/shared/PageHeader'
 import { HamsterLoader } from '@/components/shared/HamsterLoader'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { ProviderIcon } from '@/components/shared/ProviderIcon'
 import { cn } from '@/lib/utils'
 import { ProviderModelsPanel } from './components/ProviderModelsPanel'
 
@@ -58,7 +59,6 @@ export default function ProvidersPage() {
           </Card>
 
           {PROVIDERS.map((p) => {
-            const Icon = p.icon
             const count = counts.get(p.key) ?? 0
             return (
               <Card
@@ -71,7 +71,7 @@ export default function ProvidersPage() {
               >
                 <div className="flex items-center gap-3">
                   <div className={cn('flex size-11 items-center justify-center rounded-xl bg-muted', p.color)}>
-                    <Icon className="size-6" />
+                    <ProviderIcon provider={p.key} className="size-6" />
                   </div>
                   <div>
                     <h3 className="font-semibold">{t(p.labelKey)}</h3>

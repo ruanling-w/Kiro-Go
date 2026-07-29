@@ -38,13 +38,13 @@ export interface AccountListItem {
   subscriptionTitle: string
 
   daysRemaining: number
-  usageCurent: number
+  usageCurrent: number
   usageLimit: number
   usagePercent: number
   nextResetDate: string
   lastRefresh: number
 
-  trialUsageCurent: number
+  trialUsageCurrent: number
   trialUsageLimit: number
   trialUsagePercent: number
   trialStatus: string

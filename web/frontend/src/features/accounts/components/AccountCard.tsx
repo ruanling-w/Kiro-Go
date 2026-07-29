@@ -98,20 +98,22 @@ export function AccountCard({
       </div>
 
       {a.subscriptionTitle && (
-        <p className="text-xs text-muted-foreground">{a.subscriptionTitle}</p>
+        <span className="inline-flex w-fit items-center rounded-md bg-[image:var(--brand-gradient)] px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-white shadow-[0_2px_8px_-2px_var(--glow)]">
+          {a.subscriptionTitle}
+        </span>
       )}
 
       {a.usageLimit > 0 && (
         <UsageBar
           label={t('accounts.mainQuota')}
-          used={a.usageCurent}
+          used={a.usageCurrent}
           limit={a.usageLimit}
         />
       )}
       {a.trialUsageLimit > 0 && (
         <UsageBar
           label={t('accounts.trialQuota')}
-          used={a.trialUsageCurent}
+          used={a.trialUsageCurrent}
           limit={a.trialUsageLimit}
         />
       )}

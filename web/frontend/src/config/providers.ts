@@ -10,6 +10,8 @@ export interface ProviderMeta {
   descKey: string
   icon: LucideIcon
   color: string
+  /** Brand logo under public/ (served at /admin/). Falls back to `icon` when absent. */
+  logo?: string
   /** Which raw account.provider values map into this bucket. */
   match: (provider: string) => boolean
 }
@@ -21,6 +23,7 @@ export const PROVIDERS: ProviderMeta[] = [
     descKey: 'providerDesc.kiro',
     icon: Boxes,
     color: 'text-violet-500',
+    logo: '/admin/kiro.svg',
     match: (p) => p === 'kiro' || p === '' || p === 'builderid' || p === 'iam-sso' || p === 'kiro-sso',
   },
   {
@@ -29,6 +32,7 @@ export const PROVIDERS: ProviderMeta[] = [
     descKey: 'providerDesc.antigravity',
     icon: Sparkles,
     color: 'text-sky-500',
+    logo: '/admin/antigravity-color.svg',
     match: (p) => p === 'antigravity',
   },
   {
@@ -37,6 +41,7 @@ export const PROVIDERS: ProviderMeta[] = [
     descKey: 'providerDesc.grok',
     icon: Bot,
     color: 'text-orange-500',
+    logo: '/admin/grok.webp',
     match: (p) => p === 'grok',
   },
   {
@@ -45,6 +50,7 @@ export const PROVIDERS: ProviderMeta[] = [
     descKey: 'providerDesc.codex',
     icon: Terminal,
     color: 'text-emerald-500',
+    logo: '/admin/codex-color.svg',
     match: (p) => p === 'codex',
   },
   {

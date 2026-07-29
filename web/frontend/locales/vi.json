@@ -8,6 +8,7 @@
   "login.error": "Sai mật khẩu",
   "login.connectError": "Kết nối thất bại",
   "login.secureNote": "Truy cập quản trị an toàn",
+  "login.brandTagline": "Bảng điều khiển hợp nhất cho các tài khoản AI của bạn",
   "login.submitting": "Đang đăng nhập…",
   "login.passwordRequired": "Vui lòng nhập mật khẩu",
   "status.running": "Đang chạy",

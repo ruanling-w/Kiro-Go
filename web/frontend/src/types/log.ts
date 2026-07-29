@@ -5,13 +5,13 @@ export interface RequestLog {
   endpoint: string
   model: string
   status: string
+  error?: string
   errorType?: string
   tokens: number
   credits: number
   duration: number
   provider?: string
-  account?: string
-  ip?: string
-  apiKey?: string
+  accountId?: string
+  clientIp?: string
   apiKeyId?: string
 }

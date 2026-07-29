@@ -8,6 +8,7 @@
   "login.error": "Wrong password",
   "login.connectError": "Connection failed",
   "login.secureNote": "Secure admin access",
+  "login.brandTagline": "Unified control panel for your AI provider accounts.",
   "login.submitting": "Signing in…",
   "login.passwordRequired": "Password is required",
   "status.running": "Running",

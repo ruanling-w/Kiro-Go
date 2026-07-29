@@ -8,6 +8,7 @@
   "login.error": "密码错误",
   "login.connectError": "连接失败",
   "login.secureNote": "安全管理访问",
+  "login.brandTagline": "统一管理你的 AI 账户控制台",
   "login.submitting": "登录中…",
   "login.passwordRequired": "请输入密码",
   "status.running": "运行中",
