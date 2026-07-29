@@ -68,7 +68,17 @@ export function LoginPage() {
   }
 
   return (
-    <div className="relative flex min-h-dvh items-center justify-center bg-background px-4">
+    <div className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-background px-4">
+      {/* Ambient teal field — static radial washes, no motion, so the login
+          reads as an instrument surface without distracting from the form. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -z-10 opacity-70 dark:opacity-50"
+        style={{
+          background:
+            'radial-gradient(60% 50% at 15% 20%, var(--glow), transparent 70%), radial-gradient(50% 45% at 85% 85%, oklch(0.66 0.13 220 / 30%), transparent 70%)',
+        }}
+      />
       <div className="absolute right-4 top-4 flex items-center gap-1">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -93,15 +103,19 @@ export function LoginPage() {
         </Button>
       </div>
 
-      <div className="w-full max-w-sm rounded-2xl border bg-card p-8 shadow-sm">
+      <div className="w-full max-w-sm rounded-2xl border bg-card/90 p-8 shadow-[0_20px_60px_-24px_var(--glow)] backdrop-blur-sm ring-1 ring-primary/10">
         <div className="mb-6 flex flex-col items-center text-center">
-          <img
-            src="/admin/logo.png"
-            alt=""
-            className="mb-3 size-24 rounded-2xl object-contain"
-            onError={(e) => (e.currentTarget.style.display = 'none')}
-          />
-          <h1 className="text-2xl font-semibold">{t('app.title')}</h1>
+          <div className="mb-3 flex size-24 items-center justify-center rounded-3xl bg-[image:var(--brand-gradient)] p-1 shadow-[0_8px_28px_-8px_var(--glow)]">
+            <div className="flex size-full items-center justify-center rounded-[calc(var(--radius)*2)] bg-card">
+              <img
+                src="/admin/logo.png"
+                alt=""
+                className="size-16 rounded-2xl object-contain"
+                onError={(e) => (e.currentTarget.style.display = 'none')}
+              />
+            </div>
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('app.title')}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{t('login.subtitle')}</p>
         </div>
 

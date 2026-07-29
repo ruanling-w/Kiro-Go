@@ -59,11 +59,11 @@ export function RequestsChart({ logs, loading }: { logs: RequestLog[]; loading: 
       <AreaChart data={data} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
         <defs>
           <linearGradient id="gradSuccess" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={CHART_SERIES[0]} stopOpacity={0.3} />
+            <stop offset="5%" stopColor={CHART_SERIES[0]} stopOpacity={0.38} />
             <stop offset="95%" stopColor={CHART_SERIES[0]} stopOpacity={0} />
           </linearGradient>
           <linearGradient id="gradFailed" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={CHART_SERIES[1]} stopOpacity={0.3} />
+            <stop offset="5%" stopColor={CHART_SERIES[1]} stopOpacity={0.38} />
             <stop offset="95%" stopColor={CHART_SERIES[1]} stopOpacity={0} />
           </linearGradient>
         </defs>
@@ -81,6 +81,7 @@ export function RequestsChart({ logs, loading }: { logs: RequestLog[]; loading: 
           stroke={CHART_SERIES[0]}
           strokeWidth={2}
           fill="url(#gradSuccess)"
+          activeDot={{ r: 4, strokeWidth: 2, stroke: axis.tooltip.background as string }}
         />
         <Area
           type="monotone"
@@ -89,6 +90,7 @@ export function RequestsChart({ logs, loading }: { logs: RequestLog[]; loading: 
           stroke={CHART_SERIES[1]}
           strokeWidth={2}
           fill="url(#gradFailed)"
+          activeDot={{ r: 4, strokeWidth: 2, stroke: axis.tooltip.background as string }}
         />
       </AreaChart>
     </ResponsiveContainer>

@@ -11,6 +11,7 @@
   "login.submitting": "Signing in…",
   "login.passwordRequired": "Password is required",
   "status.running": "Running",
+  "status.live": "Live",
   "footer.status": "Status",
   "footer.resources": "Resources",
   "stats.accounts": "Accounts",

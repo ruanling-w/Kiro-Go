@@ -9,8 +9,9 @@ import { useAccounts } from '@/hooks/queries/useAccounts'
 import { useApiKeys } from '@/hooks/queries/useApiKeys'
 import { useLogs } from '@/hooks/queries/useLogs'
 import { PageHeader } from '@/components/shared/PageHeader'
-import { StatCard } from '@/components/shared/StatCard'
+import { StatCard, type StatTone } from '@/components/shared/StatCard'
 import { HamsterLoader } from '@/components/shared/HamsterLoader'
+import { Stagger, StaggerItem } from '@/components/ui/animate/FadeIn'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { formatCompact, formatNumber, formatUptime } from '@/lib/format'
 import { RequestsChart } from './components/RequestsChart'
@@ -32,6 +33,16 @@ export default function DashboardPage() {
     return (s.successRequests / s.totalRequests) * 100
   }, [s])
 
+  // Success rate drives the Requests tile's health tone.
+  const requestsTone: StatTone =
+    !s || s.totalRequests === 0
+      ? 'default'
+      : successRate >= 98
+        ? 'success'
+        : successRate >= 90
+          ? 'warning'
+          : 'danger'
+
   return (
     <div className="space-y-6">
       <PageHeader title={t('nav.overview')} />
@@ -39,31 +50,44 @@ export default function DashboardPage() {
       {status.isPending ? (
         <HamsterLoader label={t('detail.loading')} />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StatCard
-            icon={Users}
-            label={t('stats.accounts')}
-            value={formatNumber(s?.accounts ?? 0)}
-            hint={`${formatNumber(s?.available ?? 0)} · ${t('stats.capacity')}`}
-          />
-          <StatCard
-            icon={Activity}
-            label={t('stats.requests')}
-            value={formatCompact(s?.totalRequests ?? 0)}
-            hint={`${successRate.toFixed(1)}% · ${t('stats.reliability')}`}
-          />
-          <StatCard
-            icon={Cpu}
-            label={t('stats.tokens')}
-            value={formatCompact(s?.totalTokens ?? 0)}
-          />
-          <StatCard
-            icon={Coins}
-            label={t('stats.credits')}
-            value={formatCompact(s?.totalCredits ?? 0)}
-            hint={s ? formatUptime(s.uptime) : undefined}
-          />
-        </div>
+        <Stagger className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StaggerItem>
+            <StatCard
+              icon={Users}
+              label={t('stats.accounts')}
+              count={s?.accounts ?? 0}
+              format={formatNumber}
+              hint={`${formatNumber(s?.available ?? 0)} · ${t('stats.capacity')}`}
+            />
+          </StaggerItem>
+          <StaggerItem>
+            <StatCard
+              icon={Activity}
+              label={t('stats.requests')}
+              count={s?.totalRequests ?? 0}
+              format={formatCompact}
+              tone={requestsTone}
+              hint={`${successRate.toFixed(1)}% · ${t('stats.reliability')}`}
+            />
+          </StaggerItem>
+          <StaggerItem>
+            <StatCard
+              icon={Cpu}
+              label={t('stats.tokens')}
+              count={s?.totalTokens ?? 0}
+              format={formatCompact}
+            />
+          </StaggerItem>
+          <StaggerItem>
+            <StatCard
+              icon={Coins}
+              label={t('stats.credits')}
+              count={s?.totalCredits ?? 0}
+              format={formatCompact}
+              hint={s ? formatUptime(s.uptime) : undefined}
+            />
+          </StaggerItem>
+        </Stagger>
       )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

@@ -11,6 +11,7 @@
   "login.submitting": "Đang đăng nhập…",
   "login.passwordRequired": "Vui lòng nhập mật khẩu",
   "status.running": "Đang chạy",
+  "status.live": "Trực tiếp",
   "footer.status": "Trạng thái",
   "footer.resources": "Tài nguyên",
   "stats.accounts": "Tài khoản",

@@ -57,12 +57,21 @@ export function AccountCard({
   const SelIcon = selected ? CheckSquare : Square
 
   return (
-    <Card className={cn('flex flex-col gap-3 p-4', selected && 'ring-2 ring-ring')}>
+    <Card
+      interactive
+      className={cn(
+        'flex flex-col gap-3 p-4',
+        selected && 'ring-2 ring-primary/60 shadow-[0_8px_24px_-14px_var(--glow)]',
+      )}
+    >
       <div className="flex items-start gap-3">
         <button
           type="button"
           onClick={() => toggleSelected(a.id)}
-          className="mt-0.5 text-muted-foreground hover:text-foreground"
+          className={cn(
+            'mt-0.5 transition-colors hover:text-foreground',
+            selected ? 'text-primary' : 'text-muted-foreground',
+          )}
           aria-label={t('accounts.selectAccount')}
         >
           <SelIcon className="size-4.5" />
