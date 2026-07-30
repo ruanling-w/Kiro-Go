@@ -60,6 +60,48 @@ func TestResolveComboRouteRegistryUnavailable(t *testing.T) {
 	}
 }
 
+func TestResolveComboRouteDirectModelWinsCollision(t *testing.T) {
+	h := comboValidationHandler()
+	h.publishCombo(store.Combo{ID: "collision", Name: "gpt-4", Revision: 1, Strategy: "fallback", Models: []store.ComboModel{{Model: "a"}}})
+	route, err := h.resolveComboRoute("gpt-4")
+	if err != nil || route != nil {
+		t.Fatalf("direct model shadowed: route=%+v err=%v", route, err)
+	}
+}
+
+func TestResolveComboRouteUnknownHealthyRegistryReturnsDirect(t *testing.T) {
+	h := comboValidationHandler()
+	route, err := h.resolveComboRoute("future-direct-model")
+	if err != nil || route != nil {
+		t.Fatalf("unknown direct route=%+v err=%v", route, err)
+	}
+}
+
+func TestLookupComboSnapshotDoesNotReserveRoundRobin(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	combo, err := st.CreateCombo(store.Combo{ID: "c1", Name: "rr", Strategy: "round-robin", StickyLimit: 1, Models: []store.ComboModel{{Model: "a"}, {Model: "b"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := comboValidationHandler()
+	h.runtimeStore = st
+	h.publishCombo(combo)
+	if snapshot, ok := h.lookupComboSnapshot("RR"); !ok || snapshot.ID != combo.ID {
+		t.Fatalf("snapshot=%+v ok=%v", snapshot, ok)
+	}
+	first, err := h.resolveComboRoute("rr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Candidates[0].Model != "a" {
+		t.Fatalf("read-only lookup consumed rotation: %+v", first.Candidates)
+	}
+}
+
 func TestResolveComboRouteDirectModelReturnsNil(t *testing.T) {
 	h := comboValidationHandler()
 	route, err := h.resolveComboRoute("gpt-4")
