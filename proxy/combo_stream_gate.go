@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 )
 
@@ -68,8 +69,13 @@ func (g *streamCommitGate) Commit() error {
 	g.dst.WriteHeader(status)
 	g.committed = true
 	if g.buffer.Len() > 0 {
-		if _, err := g.dst.Write(g.buffer.Bytes()); err != nil {
+		data := g.buffer.Bytes()
+		n, err := g.dst.Write(data)
+		if err != nil {
 			return err
+		}
+		if n != len(data) {
+			return io.ErrShortWrite
 		}
 	}
 	g.buffer.Reset()
