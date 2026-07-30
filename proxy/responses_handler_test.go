@@ -6,6 +6,7 @@ import (
 	"io"
 	"kiro-go/config"
 	accountpool "kiro-go/pool"
+	"kiro-go/store"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,6 +15,48 @@ import (
 	"time"
 )
 
+func TestResponsesComboStreamRejectedWithoutReservation(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	combo, err := st.CreateCombo(store.Combo{ID: "c1", Name: "rr", Strategy: "round-robin", StickyLimit: 1, Models: []store.ComboModel{{Model: "a"}, {Model: "b"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := comboValidationHandler()
+	h.runtimeStore = st
+	h.publishCombo(combo)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"rr","stream":true,"input":"hello"}`))
+	rec := httptest.NewRecorder()
+	h.handleOpenAIResponses(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Type != "invalid_request_error" || !strings.Contains(body.Error.Message, "Streaming Combo") {
+		t.Fatalf("error=%+v", body.Error)
+	}
+	first, err := h.resolveComboRoute("rr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Candidates[0].Model != "a" {
+		t.Fatalf("stream rejection consumed rotation: %+v", first.Candidates)
+	}
+}
 func TestResponsesParseStringInput(t *testing.T) {
 	raw := json.RawMessage(`"hello world"`)
 	msgs, err := parseResponsesInput(raw)
