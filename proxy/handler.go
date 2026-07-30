@@ -2170,16 +2170,39 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 解析模型和 thinking 模式
+	// Preserve the exact client identity for public Combo responses.
+	requestedModel := req.Model
 	thinkingCfg := config.GetThinkingConfig()
 	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
+	if req.Stream {
+		// Streaming keeps the existing direct execution path until the protocol
+		// commit gate is implemented; importantly it does not reserve rotation.
+		req.Model = actualModel
+		estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
+		kiroPayload := OpenAIToKiro(&req, thinking)
+		h.handleOpenAIStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyIDFromContext(r.Context()), clientIPFromContext(r.Context()))
+		return
+	}
+	resolved, resolveErr := h.resolveComboRoute(actualModel)
+	if resolveErr != nil {
+		h.sendOpenAIError(w, http.StatusServiceUnavailable, "server_error", resolveErr.Error())
+		return
+	}
+	if resolved != nil && resolved.Combo.Strategy == "fusion" {
+		h.sendOpenAIError(w, 501, "invalid_request_error", "Fusion Combo routing is not enabled yet")
+		return
+	}
 	req.Model = actualModel
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 
-	kiroPayload := OpenAIToKiro(&req, thinking)
-
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	clientIP := clientIPFromContext(r.Context())
+	if resolved != nil {
+		resolved.RequestedModel = requestedModel
+		h.handleOpenAIComboNonStream(w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
+		return
+	}
+	kiroPayload := OpenAIToKiro(&req, thinking)
 	if req.Stream {
 		h.handleOpenAIStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, clientIP)
 	} else {
