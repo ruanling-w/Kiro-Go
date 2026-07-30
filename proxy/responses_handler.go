@@ -103,8 +103,26 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 		openaiReq.MaxTokens = *req.MaxOutputTokens
 	}
 
+	requestedModel := req.Model
 	thinkingCfg := config.GetThinkingConfig()
 	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
+	var comboRoute *comboRouteSnapshot
+	if req.Stream {
+		if combo, ok := h.lookupComboSnapshot(actualModel); ok {
+			h.sendOpenAIError(w, http.StatusNotImplemented, "invalid_request_error", "Streaming Combo routing is not enabled yet for "+combo.Name)
+			return
+		}
+	} else {
+		comboRoute, err = h.resolveComboRoute(actualModel)
+		if err != nil {
+			h.sendOpenAIError(w, http.StatusServiceUnavailable, "invalid_request_error", err.Error())
+			return
+		}
+		if comboRoute != nil && comboRoute.Combo.Strategy == "fusion" {
+			h.sendOpenAIError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo routing is not enabled yet")
+			return
+		}
+	}
 	openaiReq.Model = actualModel
 
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(openaiReq)
@@ -117,6 +135,12 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	if req.Stream {
 		h.handleResponsesStream(w, kiroPayload, actualModel, thinking, estimatedInputTokens,
 			apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
+		return
+	}
+
+	if comboRoute != nil {
+		comboRoute.RequestedModel = requestedModel
+		h.handleResponsesComboNonStream(w, openaiReq, comboRoute, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 		return
 	}
 
