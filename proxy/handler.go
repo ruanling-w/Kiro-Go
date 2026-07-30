@@ -1209,9 +1209,27 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 解析模型和 thinking 模式
+	requestedModel := req.Model
 	thinkingCfg := config.GetThinkingConfig()
 	actualModel, thinking := resolveClaudeThinkingMode(req.Model, req.Thinking, thinkingCfg.Suffix)
+	if req.Stream {
+		if combo, ok := h.lookupComboSnapshot(actualModel); ok {
+			h.sendClaudeError(w, http.StatusNotImplemented, "invalid_request_error", "Streaming Combo routing is not enabled yet for "+combo.Name)
+			return
+		}
+	}
+	var comboRoute *comboRouteSnapshot
+	if !req.Stream {
+		comboRoute, err = h.resolveComboRoute(actualModel)
+		if err != nil {
+			h.sendClaudeError(w, http.StatusServiceUnavailable, "api_error", err.Error())
+			return
+		}
+		if comboRoute != nil && comboRoute.Combo.Strategy == "fusion" {
+			h.sendClaudeError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo routing is not enabled yet")
+			return
+		}
+	}
 	req.Model = actualModel
 	effectiveReq := cloneClaudeRequestForThinking(&req, thinking)
 	thinkingResponseOpts := resolveClaudeThinkingResponseOptions(req.Thinking, thinkingCfg.ClaudeFormat)
@@ -1224,7 +1242,10 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	// Stream or non-stream
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	clientIP := clientIPFromContext(r.Context())
-	if req.Stream {
+	if comboRoute != nil {
+		comboRoute.RequestedModel = requestedModel
+		h.handleClaudeComboNonStream(w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
+	} else if req.Stream {
 		h.handleClaudeStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, clientIP)
 	} else {
 		h.handleClaudeNonStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, clientIP)
