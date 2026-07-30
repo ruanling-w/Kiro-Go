@@ -251,6 +251,11 @@ type Config struct {
 	//   }
 	ModelFallback map[string][]ModelFallbackTarget `json:"modelFallback,omitempty"`
 
+	// ComboModelAdvertisement exposes validated, routable Combo names from /v1/models
+	// and /models. It defaults to false so upgrades do not change model discovery
+	// until operators deliberately enable the rollout gate.
+	ComboModelAdvertisement bool `json:"comboModelAdvertisement,omitempty"`
+
 	// AllowOverUsage allows accounts to continue serving requests even when their
 	// usage quota has been exhausted. When enabled, the pool will not skip accounts
 	// solely because usageCurrent >= usageLimit.
