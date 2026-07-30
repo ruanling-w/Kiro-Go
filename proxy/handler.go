@@ -2719,6 +2719,9 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		if eventThinkingOpen {
 			sendChunk("", 3)
 		}
+		if sse.Err() != nil {
+			return
+		}
 
 		if realInputTokens > 0 {
 			inputTokens = realInputTokens
@@ -2739,34 +2742,25 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			outputTokens += estimateApproxTokens(tc.Function.Arguments)
 		}
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
-		h.pool.RecordSuccess(account.ID)
-		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLogMeta("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
-
 		finishReason := "stop"
 		if len(toolCalls) > 0 {
 			finishReason = "tool_calls"
 		}
-
 		chunk := map[string]interface{}{
-			"id":      chatID,
-			"object":  "chat.completion.chunk",
-			"created": time.Now().Unix(),
-			"model":   model,
-			"choices": []map[string]interface{}{{
-				"index":         0,
-				"delta":         map[string]interface{}{},
-				"finish_reason": finishReason,
-			}},
-			"usage": map[string]int{
-				"prompt_tokens":     inputTokens,
-				"completion_tokens": outputTokens,
-				"total_tokens":      inputTokens + outputTokens,
-			},
+			"id": chatID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+			"choices": []map[string]interface{}{{"index": 0, "delta": map[string]interface{}{}, "finish_reason": finishReason}},
+			"usage":   map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens},
 		}
-		_ = sse.JSON(chunk)
-		_ = sse.Done()
+		if err := sse.JSON(chunk); err != nil {
+			return
+		}
+		if err := sse.Done(); err != nil {
+			return
+		}
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
+		h.pool.RecordSuccess(account.ID)
+		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
+		h.recordSuccessLogMeta("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 		return
 	}
 
