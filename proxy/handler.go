@@ -2352,6 +2352,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		h.sendOpenAIError(w, 500, "server_error", "Streaming not supported")
 		return
 	}
+	sse := newOpenAISSEWriter(w, flusher)
 
 	// 获取 thinking 输出格式配置
 	thinkingFormat := config.GetThinkingConfig().OpenAIFormat
@@ -2485,9 +2486,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 					}},
 				}
 			}
-			data, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "data: %s\n\n", string(data))
-			flusher.Flush()
+			_ = sse.JSON(chunk)
 			responseStarted = true
 		}
 
@@ -2642,9 +2641,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 					}},
 				}
 				toolCallIndex++
-				data, _ := json.Marshal(chunk)
-				fmt.Fprintf(w, "data: %s\n\n", string(data))
-				flusher.Flush()
+				_ = sse.JSON(chunk)
 				responseStarted = true
 			},
 			OnImage: func(b64 string, mime string, partial bool) {
@@ -2665,9 +2662,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 						"finish_reason": nil,
 					}},
 				}
-				data, _ := json.Marshal(chunk)
-				fmt.Fprintf(w, "data: %s\n\n", string(data))
-				flusher.Flush()
+				_ = sse.JSON(chunk)
 				responseStarted = true
 			},
 			OnComplete: func(inTok, outTok int) {
@@ -2683,6 +2678,11 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		}
 
 		err := CallProvider(account, payload, callback)
+		if sse.Err() != nil {
+			// A downstream write may have been partial. Never retry another account
+			// after attempting to publish a frame, and never record success.
+			return
+		}
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2710,11 +2710,8 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 					"message": err.Error(),
 				},
 			}
-			if data, mErr := json.Marshal(errChunk); mErr == nil {
-				fmt.Fprintf(w, "data: %s\n\n", string(data))
-			}
-			fmt.Fprint(w, "data: [DONE]\n\n")
-			flusher.Flush()
+			_ = sse.JSON(errChunk)
+			_ = sse.Done()
 			return
 		}
 
@@ -2768,10 +2765,8 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 				"total_tokens":      inputTokens + outputTokens,
 			},
 		}
-		data, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "data: %s\n\n", string(data))
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		_ = sse.JSON(chunk)
+		_ = sse.Done()
 		return
 	}
 
