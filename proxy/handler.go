@@ -2195,20 +2195,8 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	requestedModel := req.Model
 	thinkingCfg := config.GetThinkingConfig()
 	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
-	if req.Stream {
-		// Streaming keeps the existing direct execution path until the protocol
-		// commit gate is implemented. Detect configured Combos with a read-only
-		// lookup so unsupported requests do not consume round-robin rotation.
-		if combo, ok := h.lookupComboSnapshot(actualModel); ok {
-			h.sendOpenAIError(w, http.StatusNotImplemented, "invalid_request_error", "Streaming Combo routing is not enabled yet for "+combo.Name)
-			return
-		}
-		req.Model = actualModel
-		estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
-		kiroPayload := OpenAIToKiro(&req, thinking)
-		h.handleOpenAIStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyIDFromContext(r.Context()), clientIPFromContext(r.Context()))
-		return
-	}
+	// Resolve the Combo once for both stream and non-stream: round-robin
+	// reservation must be consumed exactly once per request.
 	resolved, resolveErr := h.resolveComboRoute(actualModel)
 	if resolveErr != nil {
 		h.sendOpenAIError(w, http.StatusServiceUnavailable, "server_error", resolveErr.Error())
@@ -2225,7 +2213,11 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	clientIP := clientIPFromContext(r.Context())
 	if resolved != nil {
 		resolved.RequestedModel = requestedModel
-		h.handleOpenAIComboNonStream(w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
+		if req.Stream {
+			h.handleOpenAIComboStream(w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
+		} else {
+			h.handleOpenAIComboNonStream(w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
+		}
 		return
 	}
 	kiroPayload := OpenAIToKiro(&req, thinking)
@@ -2341,11 +2333,73 @@ func imageMarkdownDataURI(b64, mime string) string {
 	return fmt.Sprintf("\n![image](data:%s;base64,%s)\n", mime, b64)
 }
 
+// setOpenAIStreamHeaders stages the SSE response headers on a sink. The sink is
+// the real http.ResponseWriter for direct requests and a streamCommitGate for
+// Combo routing, where headers must not reach the client before an attempt is
+// pinned.
+func setOpenAIStreamHeaders(sink http.ResponseWriter) {
+	sink.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	sink.Header().Set("Cache-Control", "no-cache")
+	sink.Header().Set("Connection", "keep-alive")
+}
+
+// emitOpenAIStreamTerminalError publishes the mid-stream failure chunk plus the
+// explicit [DONE] terminator. Without it the client sees the connection drop
+// mid-response with no signal (looks like the model stopped on its own).
+func emitOpenAIStreamTerminalError(sse *openAISSEWriter, chatID, publicModel string, cause error) {
+	errChunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   publicModel,
+		"choices": []map[string]interface{}{{
+			"index":         0,
+			"delta":         map[string]interface{}{},
+			"finish_reason": "error",
+		}},
+		"error": map[string]string{
+			"type":    "upstream_error",
+			"message": cause.Error(),
+		},
+	}
+	_ = sse.JSON(errChunk)
+	_ = sse.Done()
+}
+
+// openAIStreamAttempt carries everything a single OpenAI streaming attempt needs.
+//
+// effectiveModel is the upstream identity: pool routing, the Kiro payload model
+// and getContextWindowSize. publicModel is the client-facing identity written
+// into every wire "model" field. They are the same string for direct requests;
+// Combo routing keeps publicModel pinned to the Combo name the client sent while
+// effectiveModel walks the candidate list.
+type openAIStreamAttempt struct {
+	sse                  *openAISSEWriter
+	chatID               string
+	effectiveModel       string
+	publicModel          string
+	thinking             bool
+	thinkingFormat       string
+	estimatedInputTokens int
+}
+
+// openAIStreamAttemptResult reports what one attempt published and why it ended.
+// started means at least one public delta frame was handed to the sink, so the
+// caller may no longer switch account or model. finished means the terminal usage
+// chunk and [DONE] were both written, i.e. the attempt is billable.
+type openAIStreamAttemptResult struct {
+	started      bool
+	finished     bool
+	inputTokens  int
+	outputTokens int
+	credits      float64
+	upstreamErr  error
+	writeErr     error
+}
+
 // handleOpenAIStream OpenAI 流式响应
 func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
-	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	setOpenAIStreamHeaders(w)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -2379,388 +2433,39 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			continue
 		}
 
-		var toolCalls []ToolCall
-		var toolCallIndex int
-		var inputTokens, outputTokens int
-		var credits float64
-		var realInputTokens int
-		var rawContentBuilder strings.Builder
-		var rawReasoningBuilder strings.Builder
-		var textBuffer string
-		var inThinkingBlock bool
-		var dropTagThinking bool
-		var thinkingSource thinkingStreamSource
-		var thinkingStarted bool
-		var eventThinkingOpen bool
-		responseStarted := false
-
-		sendChunk := func(content string, thinkingState int) {
-			if content == "" && thinkingState == 2 {
-				return
-			}
-
-			var chunk map[string]interface{}
-
-			if thinkingState > 0 {
-				if !thinking {
-					return
-				}
-				switch thinkingFormat {
-				case "thinking":
-					var text string
-					switch thinkingState {
-					case 1:
-						text = "<thinking>" + content
-					case 2:
-						text = content
-					case 3:
-						text = content + "</thinking>"
-					}
-					if text == "" {
-						return
-					}
-					chunk = map[string]interface{}{
-						"id":      chatID,
-						"object":  "chat.completion.chunk",
-						"created": time.Now().Unix(),
-						"model":   model,
-						"choices": []map[string]interface{}{{
-							"index":         0,
-							"delta":         map[string]string{"content": text},
-							"finish_reason": nil,
-						}},
-					}
-				case "think":
-					var text string
-					switch thinkingState {
-					case 1:
-						text = "<think>" + content
-					case 2:
-						text = content
-					case 3:
-						text = content + "</think>"
-					}
-					if text == "" {
-						return
-					}
-					chunk = map[string]interface{}{
-						"id":      chatID,
-						"object":  "chat.completion.chunk",
-						"created": time.Now().Unix(),
-						"model":   model,
-						"choices": []map[string]interface{}{{
-							"index":         0,
-							"delta":         map[string]string{"content": text},
-							"finish_reason": nil,
-						}},
-					}
-				default:
-					if content == "" {
-						return
-					}
-					chunk = map[string]interface{}{
-						"id":      chatID,
-						"object":  "chat.completion.chunk",
-						"created": time.Now().Unix(),
-						"model":   model,
-						"choices": []map[string]interface{}{{
-							"index":         0,
-							"delta":         map[string]string{"reasoning_content": content},
-							"finish_reason": nil,
-						}},
-					}
-				}
-			} else {
-				if content == "" {
-					return
-				}
-				chunk = map[string]interface{}{
-					"id":      chatID,
-					"object":  "chat.completion.chunk",
-					"created": time.Now().Unix(),
-					"model":   model,
-					"choices": []map[string]interface{}{{
-						"index":         0,
-						"delta":         map[string]string{"content": content},
-						"finish_reason": nil,
-					}},
-				}
-			}
-			_ = sse.JSON(chunk)
-			responseStarted = true
-		}
-
-		processText := func(text string, isThinking bool, forceFlush bool) {
-			if isThinking && !thinking {
-				return
-			}
-
-			if isThinking {
-				if !allowReasoningSource(&thinkingSource) {
-					return
-				}
-				if !thinkingStarted {
-					sendChunk(text, 1)
-					thinkingStarted = true
-					eventThinkingOpen = true
-				} else {
-					sendChunk(text, 2)
-				}
-				return
-			}
-
-			if eventThinkingOpen {
-				sendChunk("", 3)
-				eventThinkingOpen = false
-				thinkingStarted = false
-			}
-
-			textBuffer += text
-
-			for {
-				if !inThinkingBlock {
-					thinkingStart := strings.Index(textBuffer, "<thinking>")
-					if thinkingStart != -1 {
-						if thinkingStart > 0 {
-							sendChunk(textBuffer[:thinkingStart], 0)
-						}
-						textBuffer = textBuffer[thinkingStart+10:]
-						inThinkingBlock = true
-						dropTagThinking = !allowTagSource(&thinkingSource)
-						thinkingStarted = false
-					} else if forceFlush || len([]rune(textBuffer)) > 50 {
-						runes := []rune(textBuffer)
-						safeLen := len(runes)
-						if !forceFlush {
-							safeLen = max(0, len(runes)-15)
-						}
-						if safeLen > 0 {
-							sendChunk(string(runes[:safeLen]), 0)
-							textBuffer = string(runes[safeLen:])
-						}
-						break
-					} else {
-						break
-					}
-				} else {
-					thinkingEnd := strings.Index(textBuffer, "</thinking>")
-					if thinkingEnd != -1 {
-						content := textBuffer[:thinkingEnd]
-						if !dropTagThinking {
-							if !thinkingStarted {
-								sendChunk(content, 1)
-								sendChunk("", 3)
-							} else {
-								sendChunk(content, 3)
-							}
-						}
-						textBuffer = textBuffer[thinkingEnd+11:]
-						inThinkingBlock = false
-						dropTagThinking = false
-						thinkingStarted = false
-					} else if forceFlush {
-						if textBuffer != "" {
-							if !dropTagThinking {
-								if !thinkingStarted {
-									sendChunk(textBuffer, 1)
-									sendChunk("", 3)
-								} else {
-									sendChunk(textBuffer, 3)
-								}
-							}
-							textBuffer = ""
-						}
-						inThinkingBlock = false
-						dropTagThinking = false
-						thinkingStarted = false
-						break
-					} else {
-						runes := []rune(textBuffer)
-						if len(runes) > 20 {
-							safeLen := len(runes) - 15
-							if safeLen > 0 {
-								if !dropTagThinking {
-									if !thinkingStarted {
-										sendChunk(string(runes[:safeLen]), 1)
-										thinkingStarted = true
-									} else {
-										sendChunk(string(runes[:safeLen]), 2)
-									}
-								}
-								textBuffer = string(runes[safeLen:])
-							}
-						}
-						break
-					}
-				}
-			}
-		}
-
-		callback := &KiroStreamCallback{
-			OnText: func(text string, isThinking bool) {
-				if text == "" {
-					return
-				}
-				if isThinking {
-					rawReasoningBuilder.WriteString(text)
-				} else {
-					rawContentBuilder.WriteString(text)
-				}
-				processText(text, isThinking, false)
-			},
-			OnToolUse: func(tu KiroToolUse) {
-				processText("", false, true)
-
-				args, _ := json.Marshal(tu.Input)
-				rawContentBuilder.WriteString(tu.Name)
-				rawContentBuilder.Write(args)
-				tc := ToolCall{ID: tu.ToolUseID, Type: "function"}
-				tc.Function.Name = tu.Name
-				tc.Function.Arguments = string(args)
-				toolCalls = append(toolCalls, tc)
-
-				chunk := map[string]interface{}{
-					"id":      chatID,
-					"object":  "chat.completion.chunk",
-					"created": time.Now().Unix(),
-					"model":   model,
-					"choices": []map[string]interface{}{{
-						"index": 0,
-						"delta": map[string]interface{}{
-							"tool_calls": []map[string]interface{}{{
-								"index": toolCallIndex,
-								"id":    tu.ToolUseID,
-								"type":  "function",
-								"function": map[string]string{
-									"name":      tu.Name,
-									"arguments": string(args),
-								},
-							}},
-						},
-						"finish_reason": nil,
-					}},
-				}
-				toolCallIndex++
-				_ = sse.JSON(chunk)
-				responseStarted = true
-			},
-			OnImage: func(b64 string, mime string, partial bool) {
-				// Only surface the final image; partials would bloat the stream.
-				if partial || b64 == "" {
-					return
-				}
-				md := imageMarkdownDataURI(b64, mime)
-				rawContentBuilder.WriteString(md)
-				chunk := map[string]interface{}{
-					"id":      chatID,
-					"object":  "chat.completion.chunk",
-					"created": time.Now().Unix(),
-					"model":   model,
-					"choices": []map[string]interface{}{{
-						"index":         0,
-						"delta":         map[string]string{"content": md},
-						"finish_reason": nil,
-					}},
-				}
-				_ = sse.JSON(chunk)
-				responseStarted = true
-			},
-			OnComplete: func(inTok, outTok int) {
-				inputTokens = inTok
-				outputTokens = outTok
-			},
-			OnCredits: func(c float64) {
-				credits = c
-			},
-			OnContextUsage: func(pct float64) {
-				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
-			},
-		}
-
-		err := CallProvider(account, payload, callback)
-		if sse.Err() != nil {
+		result := h.streamOpenAIAttempt(account, payload, openAIStreamAttempt{
+			sse:                  sse,
+			chatID:               chatID,
+			effectiveModel:       model,
+			publicModel:          model,
+			thinking:             thinking,
+			thinkingFormat:       thinkingFormat,
+			estimatedInputTokens: estimatedInputTokens,
+		})
+		if result.writeErr != nil {
 			// A downstream write may have been partial. Never retry another account
 			// after attempting to publish a frame, and never record success.
 			return
 		}
-		if err != nil {
+		if err := result.upstreamErr; err != nil {
 			lastErr = err
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
-			if !responseStarted {
+			if !result.started {
 				continue
 			}
 			h.recordFailureWithDetailsMeta("openai", model, account.ID, err, clientIP, apiKeyID, usedProvider)
-			// Stream already started, so we cannot retry another account. Emit an
-			// error chunk and terminate the stream explicitly, otherwise the client
-			// sees the connection drop mid-response with no signal (looks like the
-			// model stopped on its own).
-			errChunk := map[string]interface{}{
-				"id":      chatID,
-				"object":  "chat.completion.chunk",
-				"created": time.Now().Unix(),
-				"model":   model,
-				"choices": []map[string]interface{}{{
-					"index":         0,
-					"delta":         map[string]interface{}{},
-					"finish_reason": "error",
-				}},
-				"error": map[string]string{
-					"type":    "upstream_error",
-					"message": err.Error(),
-				},
-			}
-			_ = sse.JSON(errChunk)
-			_ = sse.Done()
+			// Stream already started, so we cannot retry another account.
+			emitOpenAIStreamTerminalError(sse, chatID, model, err)
 			return
 		}
-
-		processText("", false, true)
-		if eventThinkingOpen {
-			sendChunk("", 3)
-		}
-		if sse.Err() != nil {
+		if !result.finished {
 			return
 		}
-
-		if realInputTokens > 0 {
-			inputTokens = realInputTokens
-		} else if inputTokens <= 0 {
-			inputTokens = estimatedInputTokens
-		}
-		outputContent, extractedReasoning := extractThinkingFromContent(rawContentBuilder.String())
-		reasoningOutput := rawReasoningBuilder.String()
-		if thinking && reasoningOutput == "" && extractedReasoning != "" {
-			reasoningOutput = extractedReasoning
-		}
-		if !thinking {
-			reasoningOutput = ""
-		}
-		outputTokens = estimateApproxTokens(outputContent) + estimateApproxTokens(reasoningOutput)
-		for _, tc := range toolCalls {
-			outputTokens += estimateApproxTokens(tc.Function.Name)
-			outputTokens += estimateApproxTokens(tc.Function.Arguments)
-		}
-
-		finishReason := "stop"
-		if len(toolCalls) > 0 {
-			finishReason = "tool_calls"
-		}
-		chunk := map[string]interface{}{
-			"id": chatID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
-			"choices": []map[string]interface{}{{"index": 0, "delta": map[string]interface{}{}, "finish_reason": finishReason}},
-			"usage":   map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens},
-		}
-		if err := sse.JSON(chunk); err != nil {
-			return
-		}
-		if err := sse.Done(); err != nil {
-			return
-		}
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
+		h.recordSuccessForApiKey(apiKeyID, result.inputTokens, result.outputTokens, result.credits)
 		h.pool.RecordSuccess(account.ID)
-		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLogMeta("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
+		h.recordSuccessLogMeta("openai", model, account.ID, result.inputTokens+result.outputTokens, result.credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 		return
 	}
 
@@ -2771,6 +2476,389 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 
 	h.recordFailureWithDetailsMeta("openai", model, "", lastErr, clientIP, apiKeyID, "")
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
+}
+
+// streamOpenAIAttempt runs exactly one upstream call and publishes its OpenAI SSE
+// body (thinking state machine, tool-call chunks, image chunks, terminal usage
+// chunk and [DONE]) through at.sse. It performs no account/model selection, no
+// retry and no success/failure bookkeeping: callers own that policy, which is how
+// the direct account-fallback loop and Combo candidate routing share one body.
+func (h *Handler) streamOpenAIAttempt(account *config.Account, payload *KiroPayload, at openAIStreamAttempt) openAIStreamAttemptResult {
+	var result openAIStreamAttemptResult
+
+	sse := at.sse
+	chatID := at.chatID
+	// Every wire "model" field is the public identity, never the upstream one.
+	model := at.publicModel
+	thinking := at.thinking
+	thinkingFormat := at.thinkingFormat
+
+	var toolCalls []ToolCall
+	var toolCallIndex int
+	var inputTokens, outputTokens int
+	var credits float64
+	var realInputTokens int
+	var rawContentBuilder strings.Builder
+	var rawReasoningBuilder strings.Builder
+	var textBuffer string
+	var inThinkingBlock bool
+	var dropTagThinking bool
+	var thinkingSource thinkingStreamSource
+	var thinkingStarted bool
+	var eventThinkingOpen bool
+	responseStarted := false
+
+	sendChunk := func(content string, thinkingState int) {
+		if content == "" && thinkingState == 2 {
+			return
+		}
+
+		var chunk map[string]interface{}
+
+		if thinkingState > 0 {
+			if !thinking {
+				return
+			}
+			switch thinkingFormat {
+			case "thinking":
+				var text string
+				switch thinkingState {
+				case 1:
+					text = "<thinking>" + content
+				case 2:
+					text = content
+				case 3:
+					text = content + "</thinking>"
+				}
+				if text == "" {
+					return
+				}
+				chunk = map[string]interface{}{
+					"id":      chatID,
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   model,
+					"choices": []map[string]interface{}{{
+						"index":         0,
+						"delta":         map[string]string{"content": text},
+						"finish_reason": nil,
+					}},
+				}
+			case "think":
+				var text string
+				switch thinkingState {
+				case 1:
+					text = "<think>" + content
+				case 2:
+					text = content
+				case 3:
+					text = content + "</think>"
+				}
+				if text == "" {
+					return
+				}
+				chunk = map[string]interface{}{
+					"id":      chatID,
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   model,
+					"choices": []map[string]interface{}{{
+						"index":         0,
+						"delta":         map[string]string{"content": text},
+						"finish_reason": nil,
+					}},
+				}
+			default:
+				if content == "" {
+					return
+				}
+				chunk = map[string]interface{}{
+					"id":      chatID,
+					"object":  "chat.completion.chunk",
+					"created": time.Now().Unix(),
+					"model":   model,
+					"choices": []map[string]interface{}{{
+						"index":         0,
+						"delta":         map[string]string{"reasoning_content": content},
+						"finish_reason": nil,
+					}},
+				}
+			}
+		} else {
+			if content == "" {
+				return
+			}
+			chunk = map[string]interface{}{
+				"id":      chatID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   model,
+				"choices": []map[string]interface{}{{
+					"index":         0,
+					"delta":         map[string]string{"content": content},
+					"finish_reason": nil,
+				}},
+			}
+		}
+		if err := sse.JSON(chunk); err == nil {
+			responseStarted = true
+		}
+	}
+
+	processText := func(text string, isThinking bool, forceFlush bool) {
+		if isThinking && !thinking {
+			return
+		}
+
+		if isThinking {
+			if !allowReasoningSource(&thinkingSource) {
+				return
+			}
+			if !thinkingStarted {
+				sendChunk(text, 1)
+				thinkingStarted = true
+				eventThinkingOpen = true
+			} else {
+				sendChunk(text, 2)
+			}
+			return
+		}
+
+		if eventThinkingOpen {
+			sendChunk("", 3)
+			eventThinkingOpen = false
+			thinkingStarted = false
+		}
+
+		textBuffer += text
+
+		for {
+			if !inThinkingBlock {
+				thinkingStart := strings.Index(textBuffer, "<thinking>")
+				if thinkingStart != -1 {
+					if thinkingStart > 0 {
+						sendChunk(textBuffer[:thinkingStart], 0)
+					}
+					textBuffer = textBuffer[thinkingStart+10:]
+					inThinkingBlock = true
+					dropTagThinking = !allowTagSource(&thinkingSource)
+					thinkingStarted = false
+				} else if forceFlush || len([]rune(textBuffer)) > 50 {
+					runes := []rune(textBuffer)
+					safeLen := len(runes)
+					if !forceFlush {
+						safeLen = max(0, len(runes)-15)
+					}
+					if safeLen > 0 {
+						sendChunk(string(runes[:safeLen]), 0)
+						textBuffer = string(runes[safeLen:])
+					}
+					break
+				} else {
+					break
+				}
+			} else {
+				thinkingEnd := strings.Index(textBuffer, "</thinking>")
+				if thinkingEnd != -1 {
+					content := textBuffer[:thinkingEnd]
+					if !dropTagThinking {
+						if !thinkingStarted {
+							sendChunk(content, 1)
+							sendChunk("", 3)
+						} else {
+							sendChunk(content, 3)
+						}
+					}
+					textBuffer = textBuffer[thinkingEnd+11:]
+					inThinkingBlock = false
+					dropTagThinking = false
+					thinkingStarted = false
+				} else if forceFlush {
+					if textBuffer != "" {
+						if !dropTagThinking {
+							if !thinkingStarted {
+								sendChunk(textBuffer, 1)
+								sendChunk("", 3)
+							} else {
+								sendChunk(textBuffer, 3)
+							}
+						}
+						textBuffer = ""
+					}
+					inThinkingBlock = false
+					dropTagThinking = false
+					thinkingStarted = false
+					break
+				} else {
+					runes := []rune(textBuffer)
+					if len(runes) > 20 {
+						safeLen := len(runes) - 15
+						if safeLen > 0 {
+							if !dropTagThinking {
+								if !thinkingStarted {
+									sendChunk(string(runes[:safeLen]), 1)
+									thinkingStarted = true
+								} else {
+									sendChunk(string(runes[:safeLen]), 2)
+								}
+							}
+							textBuffer = string(runes[safeLen:])
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	callback := &KiroStreamCallback{
+		OnText: func(text string, isThinking bool) {
+			if text == "" {
+				return
+			}
+			if isThinking {
+				rawReasoningBuilder.WriteString(text)
+			} else {
+				rawContentBuilder.WriteString(text)
+			}
+			processText(text, isThinking, false)
+		},
+		OnToolUse: func(tu KiroToolUse) {
+			processText("", false, true)
+
+			args, _ := json.Marshal(tu.Input)
+			rawContentBuilder.WriteString(tu.Name)
+			rawContentBuilder.Write(args)
+			tc := ToolCall{ID: tu.ToolUseID, Type: "function"}
+			tc.Function.Name = tu.Name
+			tc.Function.Arguments = string(args)
+			toolCalls = append(toolCalls, tc)
+
+			chunk := map[string]interface{}{
+				"id":      chatID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   model,
+				"choices": []map[string]interface{}{{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"tool_calls": []map[string]interface{}{{
+							"index": toolCallIndex,
+							"id":    tu.ToolUseID,
+							"type":  "function",
+							"function": map[string]string{
+								"name":      tu.Name,
+								"arguments": string(args),
+							},
+						}},
+					},
+					"finish_reason": nil,
+				}},
+			}
+			toolCallIndex++
+			_ = sse.JSON(chunk)
+			responseStarted = true
+		},
+		OnImage: func(b64 string, mime string, partial bool) {
+			// Only surface the final image; partials would bloat the stream.
+			if partial || b64 == "" {
+				return
+			}
+			md := imageMarkdownDataURI(b64, mime)
+			rawContentBuilder.WriteString(md)
+			chunk := map[string]interface{}{
+				"id":      chatID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   model,
+				"choices": []map[string]interface{}{{
+					"index":         0,
+					"delta":         map[string]string{"content": md},
+					"finish_reason": nil,
+				}},
+			}
+			_ = sse.JSON(chunk)
+			responseStarted = true
+		},
+		OnComplete: func(inTok, outTok int) {
+			inputTokens = inTok
+			outputTokens = outTok
+		},
+		OnCredits: func(c float64) {
+			credits = c
+		},
+		OnContextUsage: func(pct float64) {
+			// Context percentage is reported against the upstream model window.
+			realInputTokens = int(pct * float64(getContextWindowSize(at.effectiveModel)) / 100.0)
+		},
+	}
+
+	err := CallProvider(account, payload, callback)
+	result.started = responseStarted
+	if writeErr := sse.Err(); writeErr != nil {
+		// A downstream write may have been partial (or the pre-commit buffer
+		// overflowed). Never retry another account after attempting to publish a
+		// frame, and never record success.
+		result.writeErr = writeErr
+		return result
+	}
+	if err != nil {
+		result.upstreamErr = err
+		return result
+	}
+
+	processText("", false, true)
+	if eventThinkingOpen {
+		sendChunk("", 3)
+	}
+	result.started = responseStarted
+	if writeErr := sse.Err(); writeErr != nil {
+		result.writeErr = writeErr
+		return result
+	}
+
+	if realInputTokens > 0 {
+		inputTokens = realInputTokens
+	} else if inputTokens <= 0 {
+		inputTokens = at.estimatedInputTokens
+	}
+	outputContent, extractedReasoning := extractThinkingFromContent(rawContentBuilder.String())
+	reasoningOutput := rawReasoningBuilder.String()
+	if thinking && reasoningOutput == "" && extractedReasoning != "" {
+		reasoningOutput = extractedReasoning
+	}
+	if !thinking {
+		reasoningOutput = ""
+	}
+	outputTokens = estimateApproxTokens(outputContent) + estimateApproxTokens(reasoningOutput)
+	for _, tc := range toolCalls {
+		outputTokens += estimateApproxTokens(tc.Function.Name)
+		outputTokens += estimateApproxTokens(tc.Function.Arguments)
+	}
+
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
+	chunk := map[string]interface{}{
+		"id": chatID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+		"choices": []map[string]interface{}{{"index": 0, "delta": map[string]interface{}{}, "finish_reason": finishReason}},
+		"usage":   map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens},
+	}
+	result.inputTokens = inputTokens
+	result.outputTokens = outputTokens
+	result.credits = credits
+	if writeErr := sse.JSON(chunk); writeErr != nil {
+		result.writeErr = writeErr
+		return result
+	}
+	result.started = true
+	if writeErr := sse.Done(); writeErr != nil {
+		result.writeErr = writeErr
+		return result
+	}
+	result.finished = true
+	return result
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
