@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"kiro-go/config"
 	"kiro-go/store"
 )
 
@@ -143,6 +144,9 @@ func TestReplaceComboPublishesSingleRegistryTransition(t *testing.T) {
 }
 
 func TestComboCRUDDoesNotAdvertiseUnroutableModelIDs(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatal(err)
+	}
 	h := comboValidationHandler()
 	h.cachedModels = []ModelInfo{{ModelId: "routable-model"}}
 	h.modelsCacheTime = time.Now().Unix()
