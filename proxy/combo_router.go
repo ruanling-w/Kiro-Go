@@ -20,6 +20,24 @@ func cloneCombo(c store.Combo) store.Combo {
 	return copy
 }
 
+func (h *Handler) lookupComboSnapshot(requestedModel string) (*store.Combo, bool) {
+	if h == nil {
+		return nil, false
+	}
+	name := strings.TrimSpace(requestedModel)
+	if name == "" || h.knownComboModels()[strings.ToLower(name)] || !h.ensureCombosLoaded() {
+		return nil, false
+	}
+	h.combosMu.RLock()
+	combo, ok := h.combosByName[strings.ToLower(name)]
+	h.combosMu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	copy := cloneCombo(combo)
+	return &copy, true
+}
+
 // resolveComboRoute resolves a configured Combo without changing direct-model
 // behavior. Callers retain requestedModel for public response identity and use
 // Candidates only for upstream execution.

@@ -1163,6 +1163,10 @@ func (h *Handler) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve Combo identity without reserving round-robin state. Token counting
+	// remains a local estimate and never selects an account, panel, or judge.
+	_, _ = h.lookupComboSnapshot(req.Model)
+
 	thinkingCfg := config.GetThinkingConfig()
 	actualModel, thinking := resolveClaudeThinkingMode(req.Model, req.Thinking, thinkingCfg.Suffix)
 	req.Model = actualModel
