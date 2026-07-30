@@ -341,6 +341,7 @@ func (h *Handler) loadCombosFromStore() bool {
 	h.combosByID = make(map[string]store.Combo, len(list))
 	h.combosByName = make(map[string]store.Combo, len(list))
 	for _, c := range list {
+		c = cloneCombo(c)
 		h.combosByID[c.ID] = c
 		h.combosByName[strings.ToLower(c.Name)] = c
 	}
@@ -379,6 +380,7 @@ func (h *Handler) replaceCombo(c store.Combo) {
 	if old, ok := h.combosByID[c.ID]; ok {
 		delete(h.combosByName, strings.ToLower(old.Name))
 	}
+	c = cloneCombo(c)
 	h.combosByID[c.ID] = c
 	h.combosByName[strings.ToLower(c.Name)] = c
 	h.combosMu.Unlock()
@@ -386,6 +388,7 @@ func (h *Handler) replaceCombo(c store.Combo) {
 
 func (h *Handler) publishCombo(c store.Combo) {
 	h.combosMu.Lock()
+	c = cloneCombo(c)
 	h.combosByID[c.ID] = c
 	h.combosByName[strings.ToLower(c.Name)] = c
 	h.combosMu.Unlock()
