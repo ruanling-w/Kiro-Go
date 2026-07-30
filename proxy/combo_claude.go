@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"kiro-go/config"
 	"net/http"
 	"time"
@@ -116,6 +117,9 @@ func (h *Handler) executeClaudeComboAttempt(account *config.Account, payload *Ki
 		result.inputTokens = realInput
 	} else if result.inputTokens <= 0 {
 		result.inputTokens = estimatedInput
+	}
+	if result.content == "" && result.thinking == "" && len(result.toolUses) == 0 {
+		return claudeComboResult{}, errors.New("provider returned an empty response")
 	}
 	result.outputTokens = estimateClaudeOutputTokens(result.content, result.thinking, result.toolUses)
 	return result, nil
