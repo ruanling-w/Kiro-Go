@@ -125,10 +125,6 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 			h.sendOpenAIError(w, http.StatusServiceUnavailable, "invalid_request_error", err.Error())
 			return
 		}
-		if comboRoute != nil && comboRoute.Combo.Strategy == "fusion" {
-			h.sendOpenAIError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo routing is not enabled yet")
-			return
-		}
 	}
 	comboRoute = h.applyComboRequirements(comboRoute, responsesComboRequirements(req.Input))
 	openaiReq.Model = actualModel
@@ -154,6 +150,10 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 
 	if comboRoute != nil {
 		comboRoute.RequestedModel = requestedModel
+		if comboRoute.Combo.Strategy == "fusion" {
+			h.handleResponsesFusion(r.Context(), w, openaiReq, comboRoute, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
+			return
+		}
 		h.handleResponsesComboNonStream(w, openaiReq, comboRoute, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 		return
 	}

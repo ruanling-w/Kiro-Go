@@ -1221,10 +1221,6 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 		h.sendClaudeError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo streaming is not enabled yet")
 		return
 	}
-	if comboRoute != nil && comboRoute.Combo.Strategy == "fusion" {
-		h.sendClaudeError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo routing is not enabled yet")
-		return
-	}
 	comboRoute = h.applyComboRequirements(comboRoute, claudeComboRequirements(&req))
 	req.Model = actualModel
 	effectiveReq := cloneClaudeRequestForThinking(&req, thinking)
@@ -1243,6 +1239,10 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 		if req.Stream {
 			h.handleClaudeComboStream(w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
 		} else {
+			if comboRoute.Combo.Strategy == "fusion" && !req.Stream {
+				h.handleClaudeFusion(r.Context(), w, &req, comboRoute, thinking, apiKeyID)
+				return
+			}
 			h.handleClaudeComboNonStream(w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
 		}
 	} else if req.Stream {
@@ -2243,6 +2243,10 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		if req.Stream {
 			h.handleOpenAIComboStream(w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
 		} else {
+			if resolved.Combo.Strategy == "fusion" {
+				h.handleOpenAIFusion(r.Context(), w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
+				return
+			}
 			h.handleOpenAIComboNonStream(w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
 		}
 		return
