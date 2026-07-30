@@ -89,6 +89,33 @@ func TestResolveComboRouteFailedRequestConsumesReservation(t *testing.T) {
 	}
 }
 
+func TestClaudeStreamingFusionRejectedWithoutReservation(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	combo, err := st.CreateCombo(store.Combo{ID: "c1", Name: "fusion", Strategy: "fusion", StickyLimit: 1, Models: []store.ComboModel{{Model: "a"}, {Model: "b"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := comboValidationHandler()
+	h.runtimeStore = st
+	h.publishCombo(combo)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"fusion","stream":true,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`))
+	response := httptest.NewRecorder()
+	h.handleClaudeMessages(response, request)
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "Fusion Combo streaming") {
+		t.Fatalf("body=%s", response.Body.String())
+	}
+}
+
 func TestOpenAIStreamingFusionRejectedWithoutReservation(t *testing.T) {
 	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
 		t.Fatal(err)

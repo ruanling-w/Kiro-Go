@@ -1212,23 +1212,18 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	requestedModel := req.Model
 	thinkingCfg := config.GetThinkingConfig()
 	actualModel, thinking := resolveClaudeThinkingMode(req.Model, req.Thinking, thinkingCfg.Suffix)
-	if req.Stream {
-		if combo, ok := h.lookupComboSnapshot(actualModel); ok {
-			h.sendClaudeError(w, http.StatusNotImplemented, "invalid_request_error", "Streaming Combo routing is not enabled yet for "+combo.Name)
-			return
-		}
+	comboRoute, err := h.resolveComboRoute(actualModel)
+	if err != nil {
+		h.sendClaudeError(w, http.StatusServiceUnavailable, "api_error", err.Error())
+		return
 	}
-	var comboRoute *comboRouteSnapshot
-	if !req.Stream {
-		comboRoute, err = h.resolveComboRoute(actualModel)
-		if err != nil {
-			h.sendClaudeError(w, http.StatusServiceUnavailable, "api_error", err.Error())
-			return
-		}
-		if comboRoute != nil && comboRoute.Combo.Strategy == "fusion" {
-			h.sendClaudeError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo routing is not enabled yet")
-			return
-		}
+	if comboRoute != nil && comboRoute.Combo.Strategy == "fusion" && req.Stream {
+		h.sendClaudeError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo streaming is not enabled yet")
+		return
+	}
+	if comboRoute != nil && comboRoute.Combo.Strategy == "fusion" {
+		h.sendClaudeError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo routing is not enabled yet")
+		return
 	}
 	req.Model = actualModel
 	effectiveReq := cloneClaudeRequestForThinking(&req, thinking)
@@ -1244,7 +1239,11 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	clientIP := clientIPFromContext(r.Context())
 	if comboRoute != nil {
 		comboRoute.RequestedModel = requestedModel
-		h.handleClaudeComboNonStream(w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
+		if req.Stream {
+			h.handleClaudeComboStream(w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
+		} else {
+			h.handleClaudeComboNonStream(w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
+		}
 	} else if req.Stream {
 		h.handleClaudeStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, clientIP)
 	} else {
@@ -1252,461 +1251,487 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	}
 }
 
-// handleClaudeStream Claude 流式响应
+type claudeStreamAttempt struct {
+	sse                                    *claudeSSEWriter
+	messageID, effectiveModel, publicModel string
+	thinking                               bool
+	thinkingOpts                           claudeThinkingResponseOptions
+	estimatedInputTokens                   int
+	cacheProfile                           *promptCacheProfile
+	cacheUsage                             promptCacheUsage
+}
+type claudeStreamAttemptResult struct {
+	started, finished         bool
+	inputTokens, outputTokens int
+	credits                   float64
+	upstreamErr, writeErr     error
+}
+
 func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID, clientIP string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		h.sendClaudeError(w, 500, "api_error", "Streaming not supported")
 		return
 	}
-
-	// 获取 thinking 输出格式配置
-	thinkingFormat := thinkingOpts.Format
-
-	reqStart := time.Now()
+	sse := newClaudeSSEWriter(w, flusher)
 	msgID := "msg_" + uuid.New().String()
-	startInputTokens := estimatedInputTokens
-	excluded := make(map[string]bool)
+	excluded := map[string]bool{}
 	var lastErr error
-	messageStarted := false
-	var messageStartUsage promptCacheUsage
-
-	ensureMessageStart := func() {
-		if messageStarted {
-			return
-		}
-		h.sendSSE(w, flusher, "message_start", map[string]interface{}{
-			"type": "message_start",
-			"message": map[string]interface{}{
-				"id":            msgID,
-				"type":          "message",
-				"role":          "assistant",
-				"content":       []interface{}{},
-				"model":         model,
-				"stop_reason":   nil,
-				"stop_sequence": nil,
-				"usage":         buildClaudeUsageMap(startInputTokens, 0, messageStartUsage, cacheProfile != nil),
-			},
-		})
-		messageStarted = true
-	}
-
-	nativeDone := false
-	nativeAttempts := 0
-	fallbackIdx := 0
-	fallbackAttempts := 0
+	started := time.Now()
+	nativeDone, nativeAttempts, fallbackIdx, fallbackAttempts := false, 0, 0, 0
 	for attempt := 0; attempt < maxAttemptsForModel(model); attempt++ {
 		account, _ := nextAccountForAttempt(h.pool, model, payload, excluded, &nativeDone, &nativeAttempts, &fallbackIdx, &fallbackAttempts)
 		if account == nil {
 			break
 		}
-		usedProvider := providerLabel(account)
+		provider := providerLabel(account)
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			continue
 		}
-		cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
-		messageStartUsage = cacheUsage
-
-		var inputTokens, outputTokens int
-		var credits float64
-		var realInputTokens int
-		var toolUses []KiroToolUse
-		var nextContentIndex int
-		var rawContentBuilder strings.Builder
-		var rawThinkingBuilder strings.Builder
-		activeBlockIndex := -1
-		activeBlockType := ""
-
-		closeActiveBlock := func() {
-			if activeBlockIndex < 0 {
-				return
+		cu := h.promptCache.Compute(account.ID, cacheProfile)
+		r := h.streamClaudeAttempt(account, payload, claudeStreamAttempt{sse: sse, messageID: msgID, effectiveModel: model, publicModel: model, thinking: thinking, thinkingOpts: thinkingOpts, estimatedInputTokens: estimatedInputTokens, cacheProfile: cacheProfile, cacheUsage: cu})
+		if r.writeErr != nil {
+			return
+		}
+		if r.upstreamErr != nil {
+			lastErr = r.upstreamErr
+			excluded[account.ID] = true
+			h.handleAccountFailure(account, r.upstreamErr)
+			if !r.started {
+				continue
 			}
-			h.sendSSE(w, flusher, "content_block_stop", map[string]interface{}{
-				"type":  "content_block_stop",
-				"index": activeBlockIndex,
+			h.recordFailureWithDetailsMeta("claude", model, account.ID, r.upstreamErr, clientIP, apiKeyID, provider)
+			_ = sse.Send("error", map[string]interface{}{"type": "error", "error": map[string]string{"type": "api_error", "message": r.upstreamErr.Error()}})
+			return
+		}
+		if !r.finished {
+			return
+		}
+		h.recordSuccessForApiKey(apiKeyID, r.inputTokens, r.outputTokens, r.credits)
+		h.pool.RecordSuccess(account.ID)
+		h.pool.UpdateStats(account.ID, r.inputTokens+r.outputTokens, r.credits)
+		h.promptCache.Update(account.ID, cacheProfile)
+		h.recordSuccessLogMeta("claude", model, account.ID, r.inputTokens+r.outputTokens, r.credits, time.Since(started).Milliseconds(), clientIP, apiKeyID, provider)
+		return
+	}
+	if lastErr == nil {
+		h.sendClaudeError(w, 503, "api_error", "No available accounts")
+		return
+	}
+	h.recordFailureWithDetailsMeta("claude", model, "", lastErr, clientIP, apiKeyID, "")
+	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
+}
+
+func (h *Handler) streamClaudeAttempt(account *config.Account, payload *KiroPayload, at claudeStreamAttempt) claudeStreamAttemptResult {
+	var result claudeStreamAttemptResult
+	sse := at.sse
+	msgID := at.messageID
+	model := at.publicModel
+	thinking := at.thinking
+	thinkingOpts := at.thinkingOpts
+	thinkingFormat := thinkingOpts.Format
+	estimatedInputTokens := at.estimatedInputTokens
+	cacheProfile := at.cacheProfile
+	messageStartUsage := at.cacheUsage
+	startInputTokens := estimatedInputTokens
+	messageStarted := false
+	ensureMessageStart := func() {
+		if messageStarted {
+			return
+		}
+		_ = sse.Send("message_start", map[string]interface{}{
+			"type": "message_start",
+			"message": map[string]interface{}{
+				"id": msgID, "type": "message", "role": "assistant",
+				"content": []interface{}{}, "model": model,
+				"stop_reason": nil, "stop_sequence": nil,
+				"usage": buildClaudeUsageMap(startInputTokens, 0, messageStartUsage, cacheProfile != nil),
+			},
+		})
+		messageStarted = sse.Err() == nil
+	}
+	var inputTokens, outputTokens int
+	var credits float64
+	var realInputTokens int
+	var toolUses []KiroToolUse
+	var nextContentIndex int
+	var rawContentBuilder strings.Builder
+	var rawThinkingBuilder strings.Builder
+	activeBlockIndex := -1
+	activeBlockType := ""
+
+	closeActiveBlock := func() {
+		if activeBlockIndex < 0 {
+			return
+		}
+		_ = sse.Send("content_block_stop", map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": activeBlockIndex,
+		})
+		activeBlockIndex = -1
+		activeBlockType = ""
+	}
+
+	startContentBlock := func(blockType string) {
+		if activeBlockType == blockType {
+			return
+		}
+		ensureMessageStart()
+		closeActiveBlock()
+
+		idx := nextContentIndex
+		nextContentIndex++
+
+		if blockType == "thinking" {
+			_ = sse.Send("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": idx,
+				"content_block": map[string]string{
+					"type":     "thinking",
+					"thinking": "",
+				},
 			})
-			activeBlockIndex = -1
-			activeBlockType = ""
+		} else {
+			_ = sse.Send("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": idx,
+				"content_block": map[string]string{
+					"type": "text",
+					"text": "",
+				},
+			})
 		}
 
-		startContentBlock := func(blockType string) {
-			if activeBlockType == blockType {
+		activeBlockIndex = idx
+		activeBlockType = blockType
+	}
+
+	var textBuffer string
+	var inThinkingBlock bool
+	var dropTagThinking bool
+	var thinkingSource thinkingStreamSource
+	var thinkingStarted bool
+	var eventThinkingOpen bool
+
+	sendText := func(text string, thinkingState int) {
+		if thinkingState == 0 {
+			if text == "" {
 				return
 			}
+			startContentBlock("text")
+			_ = sse.Send("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": activeBlockIndex,
+				"delta": map[string]string{"type": "text_delta", "text": text},
+			})
+			return
+		}
+
+		if !thinking {
+			return
+		}
+
+		switch thinkingFormat {
+		case "think":
+			var outputText string
+			switch thinkingState {
+			case 1:
+				outputText = "<think>" + text
+			case 2:
+				outputText = text
+			case 3:
+				outputText = text + "</think>"
+			}
+			if outputText == "" {
+				return
+			}
+			startContentBlock("text")
+			_ = sse.Send("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": activeBlockIndex,
+				"delta": map[string]string{"type": "text_delta", "text": outputText},
+			})
+		case "reasoning_content":
+			if text == "" {
+				return
+			}
+			startContentBlock("text")
+			_ = sse.Send("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": activeBlockIndex,
+				"delta": map[string]string{"type": "text_delta", "text": text},
+			})
+		default:
+			if thinkingOpts.OmitDisplay {
+				if thinkingState == 1 {
+					startContentBlock("thinking")
+					return
+				}
+				if thinkingState == 3 {
+					if activeBlockType != "thinking" {
+						startContentBlock("thinking")
+					}
+					closeActiveBlock()
+				}
+				return
+			}
+			if thinkingState == 3 && text == "" {
+				if activeBlockType == "thinking" {
+					closeActiveBlock()
+				}
+				return
+			}
+			if text != "" {
+				startContentBlock("thinking")
+				_ = sse.Send("content_block_delta", map[string]interface{}{
+					"type":  "content_block_delta",
+					"index": activeBlockIndex,
+					"delta": map[string]string{"type": "thinking_delta", "thinking": text},
+				})
+			}
+			if thinkingState == 3 && activeBlockType == "thinking" {
+				closeActiveBlock()
+			}
+		}
+	}
+
+	processClaudeText := func(text string, isThinking bool, forceFlush bool) {
+		if isThinking && !thinking {
+			return
+		}
+
+		if isThinking {
+			if !allowReasoningSource(&thinkingSource) {
+				return
+			}
+			if !thinkingStarted {
+				sendText(text, 1)
+				thinkingStarted = true
+				eventThinkingOpen = true
+			} else {
+				sendText(text, 2)
+			}
+			return
+		}
+
+		if eventThinkingOpen {
+			sendText("", 3)
+			eventThinkingOpen = false
+			thinkingStarted = false
+		}
+
+		textBuffer += text
+
+		for {
+			if !inThinkingBlock {
+				thinkingStart := strings.Index(textBuffer, "<thinking>")
+				if thinkingStart != -1 {
+					if thinkingStart > 0 {
+						sendText(textBuffer[:thinkingStart], 0)
+					}
+					textBuffer = textBuffer[thinkingStart+10:]
+					inThinkingBlock = true
+					dropTagThinking = !allowTagSource(&thinkingSource)
+					thinkingStarted = false
+				} else if forceFlush || len([]rune(textBuffer)) > 50 {
+					runes := []rune(textBuffer)
+					safeLen := len(runes)
+					if !forceFlush {
+						safeLen = max(0, len(runes)-15)
+					}
+					if safeLen > 0 {
+						sendText(string(runes[:safeLen]), 0)
+						textBuffer = string(runes[safeLen:])
+					}
+					break
+				} else {
+					break
+				}
+			} else {
+				thinkingEnd := strings.Index(textBuffer, "</thinking>")
+				if thinkingEnd != -1 {
+					content := textBuffer[:thinkingEnd]
+					if !dropTagThinking {
+						if !thinkingStarted {
+							sendText(content, 1)
+							sendText("", 3)
+						} else {
+							sendText(content, 3)
+						}
+					}
+					textBuffer = textBuffer[thinkingEnd+11:]
+					inThinkingBlock = false
+					dropTagThinking = false
+					thinkingStarted = false
+				} else if forceFlush {
+					if textBuffer != "" {
+						if !dropTagThinking {
+							if !thinkingStarted {
+								sendText(textBuffer, 1)
+								sendText("", 3)
+							} else {
+								sendText(textBuffer, 3)
+							}
+						}
+						textBuffer = ""
+					}
+					inThinkingBlock = false
+					dropTagThinking = false
+					thinkingStarted = false
+					break
+				} else {
+					runes := []rune(textBuffer)
+					if len(runes) > 20 {
+						safeLen := len(runes) - 15
+						if safeLen > 0 {
+							if !dropTagThinking {
+								if !thinkingStarted {
+									sendText(string(runes[:safeLen]), 1)
+									thinkingStarted = true
+								} else {
+									sendText(string(runes[:safeLen]), 2)
+								}
+							}
+							textBuffer = string(runes[safeLen:])
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	callback := &KiroStreamCallback{
+		OnText: func(text string, isThinking bool) {
+			if text == "" {
+				return
+			}
+			if isThinking {
+				rawThinkingBuilder.WriteString(text)
+			} else {
+				rawContentBuilder.WriteString(text)
+			}
+			processClaudeText(text, isThinking, false)
+		},
+		OnImage: func(b64 string, mime string, partial bool) {
+			if partial || b64 == "" {
+				return
+			}
+			md := imageMarkdownDataURI(b64, mime)
+			rawContentBuilder.WriteString(md)
+			processClaudeText(md, false, false)
+		},
+		OnToolUse: func(tu KiroToolUse) {
+			processClaudeText("", false, true)
+			rawContentBuilder.WriteString(tu.Name)
+			if b, err := json.Marshal(tu.Input); err == nil {
+				rawContentBuilder.Write(b)
+			}
+
+			toolUses = append(toolUses, tu)
 			ensureMessageStart()
 			closeActiveBlock()
 
 			idx := nextContentIndex
 			nextContentIndex++
 
-			if blockType == "thinking" {
-				h.sendSSE(w, flusher, "content_block_start", map[string]interface{}{
-					"type":  "content_block_start",
-					"index": idx,
-					"content_block": map[string]string{
-						"type":     "thinking",
-						"thinking": "",
-					},
-				})
-			} else {
-				h.sendSSE(w, flusher, "content_block_start", map[string]interface{}{
-					"type":  "content_block_start",
-					"index": idx,
-					"content_block": map[string]string{
-						"type": "text",
-						"text": "",
-					},
-				})
-			}
-
-			activeBlockIndex = idx
-			activeBlockType = blockType
-		}
-
-		var textBuffer string
-		var inThinkingBlock bool
-		var dropTagThinking bool
-		var thinkingSource thinkingStreamSource
-		var thinkingStarted bool
-		var eventThinkingOpen bool
-
-		sendText := func(text string, thinkingState int) {
-			if thinkingState == 0 {
-				if text == "" {
-					return
-				}
-				startContentBlock("text")
-				h.sendSSE(w, flusher, "content_block_delta", map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": activeBlockIndex,
-					"delta": map[string]string{"type": "text_delta", "text": text},
-				})
-				return
-			}
-
-			if !thinking {
-				return
-			}
-
-			switch thinkingFormat {
-			case "think":
-				var outputText string
-				switch thinkingState {
-				case 1:
-					outputText = "<think>" + text
-				case 2:
-					outputText = text
-				case 3:
-					outputText = text + "</think>"
-				}
-				if outputText == "" {
-					return
-				}
-				startContentBlock("text")
-				h.sendSSE(w, flusher, "content_block_delta", map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": activeBlockIndex,
-					"delta": map[string]string{"type": "text_delta", "text": outputText},
-				})
-			case "reasoning_content":
-				if text == "" {
-					return
-				}
-				startContentBlock("text")
-				h.sendSSE(w, flusher, "content_block_delta", map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": activeBlockIndex,
-					"delta": map[string]string{"type": "text_delta", "text": text},
-				})
-			default:
-				if thinkingOpts.OmitDisplay {
-					if thinkingState == 1 {
-						startContentBlock("thinking")
-						return
-					}
-					if thinkingState == 3 {
-						if activeBlockType != "thinking" {
-							startContentBlock("thinking")
-						}
-						closeActiveBlock()
-					}
-					return
-				}
-				if thinkingState == 3 && text == "" {
-					if activeBlockType == "thinking" {
-						closeActiveBlock()
-					}
-					return
-				}
-				if text != "" {
-					startContentBlock("thinking")
-					h.sendSSE(w, flusher, "content_block_delta", map[string]interface{}{
-						"type":  "content_block_delta",
-						"index": activeBlockIndex,
-						"delta": map[string]string{"type": "thinking_delta", "thinking": text},
-					})
-				}
-				if thinkingState == 3 && activeBlockType == "thinking" {
-					closeActiveBlock()
-				}
-			}
-		}
-
-		processClaudeText := func(text string, isThinking bool, forceFlush bool) {
-			if isThinking && !thinking {
-				return
-			}
-
-			if isThinking {
-				if !allowReasoningSource(&thinkingSource) {
-					return
-				}
-				if !thinkingStarted {
-					sendText(text, 1)
-					thinkingStarted = true
-					eventThinkingOpen = true
-				} else {
-					sendText(text, 2)
-				}
-				return
-			}
-
-			if eventThinkingOpen {
-				sendText("", 3)
-				eventThinkingOpen = false
-				thinkingStarted = false
-			}
-
-			textBuffer += text
-
-			for {
-				if !inThinkingBlock {
-					thinkingStart := strings.Index(textBuffer, "<thinking>")
-					if thinkingStart != -1 {
-						if thinkingStart > 0 {
-							sendText(textBuffer[:thinkingStart], 0)
-						}
-						textBuffer = textBuffer[thinkingStart+10:]
-						inThinkingBlock = true
-						dropTagThinking = !allowTagSource(&thinkingSource)
-						thinkingStarted = false
-					} else if forceFlush || len([]rune(textBuffer)) > 50 {
-						runes := []rune(textBuffer)
-						safeLen := len(runes)
-						if !forceFlush {
-							safeLen = max(0, len(runes)-15)
-						}
-						if safeLen > 0 {
-							sendText(string(runes[:safeLen]), 0)
-							textBuffer = string(runes[safeLen:])
-						}
-						break
-					} else {
-						break
-					}
-				} else {
-					thinkingEnd := strings.Index(textBuffer, "</thinking>")
-					if thinkingEnd != -1 {
-						content := textBuffer[:thinkingEnd]
-						if !dropTagThinking {
-							if !thinkingStarted {
-								sendText(content, 1)
-								sendText("", 3)
-							} else {
-								sendText(content, 3)
-							}
-						}
-						textBuffer = textBuffer[thinkingEnd+11:]
-						inThinkingBlock = false
-						dropTagThinking = false
-						thinkingStarted = false
-					} else if forceFlush {
-						if textBuffer != "" {
-							if !dropTagThinking {
-								if !thinkingStarted {
-									sendText(textBuffer, 1)
-									sendText("", 3)
-								} else {
-									sendText(textBuffer, 3)
-								}
-							}
-							textBuffer = ""
-						}
-						inThinkingBlock = false
-						dropTagThinking = false
-						thinkingStarted = false
-						break
-					} else {
-						runes := []rune(textBuffer)
-						if len(runes) > 20 {
-							safeLen := len(runes) - 15
-							if safeLen > 0 {
-								if !dropTagThinking {
-									if !thinkingStarted {
-										sendText(string(runes[:safeLen]), 1)
-										thinkingStarted = true
-									} else {
-										sendText(string(runes[:safeLen]), 2)
-									}
-								}
-								textBuffer = string(runes[safeLen:])
-							}
-						}
-						break
-					}
-				}
-			}
-		}
-
-		callback := &KiroStreamCallback{
-			OnText: func(text string, isThinking bool) {
-				if text == "" {
-					return
-				}
-				if isThinking {
-					rawThinkingBuilder.WriteString(text)
-				} else {
-					rawContentBuilder.WriteString(text)
-				}
-				processClaudeText(text, isThinking, false)
-			},
-			OnImage: func(b64 string, mime string, partial bool) {
-				if partial || b64 == "" {
-					return
-				}
-				md := imageMarkdownDataURI(b64, mime)
-				rawContentBuilder.WriteString(md)
-				processClaudeText(md, false, false)
-			},
-			OnToolUse: func(tu KiroToolUse) {
-				processClaudeText("", false, true)
-				rawContentBuilder.WriteString(tu.Name)
-				if b, err := json.Marshal(tu.Input); err == nil {
-					rawContentBuilder.Write(b)
-				}
-
-				toolUses = append(toolUses, tu)
-				ensureMessageStart()
-				closeActiveBlock()
-
-				idx := nextContentIndex
-				nextContentIndex++
-
-				h.sendSSE(w, flusher, "content_block_start", map[string]interface{}{
-					"type":  "content_block_start",
-					"index": idx,
-					"content_block": map[string]interface{}{
-						"type":  "tool_use",
-						"id":    tu.ToolUseID,
-						"name":  tu.Name,
-						"input": map[string]interface{}{},
-					},
-				})
-
-				inputJSON, _ := json.Marshal(tu.Input)
-				h.sendSSE(w, flusher, "content_block_delta", map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": idx,
-					"delta": map[string]interface{}{
-						"type":         "input_json_delta",
-						"partial_json": string(inputJSON),
-					},
-				})
-
-				h.sendSSE(w, flusher, "content_block_stop", map[string]interface{}{
-					"type":  "content_block_stop",
-					"index": idx,
-				})
-			},
-			OnComplete: func(inTok, outTok int) {
-				inputTokens = inTok
-				outputTokens = outTok
-			},
-			OnCredits: func(c float64) {
-				credits = c
-			},
-			OnContextUsage: func(pct float64) {
-				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
-			},
-		}
-
-		err := CallProvider(account, payload, callback)
-		if err != nil {
-			lastErr = err
-			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
-			if !messageStarted {
-				continue
-			}
-			h.recordFailureWithDetailsMeta("claude", model, account.ID, err, clientIP, apiKeyID, usedProvider)
-			h.sendSSE(w, flusher, "error", map[string]interface{}{
-				"type":  "error",
-				"error": map[string]string{"type": "api_error", "message": err.Error()},
+			_ = sse.Send("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": idx,
+				"content_block": map[string]interface{}{
+					"type":  "tool_use",
+					"id":    tu.ToolUseID,
+					"name":  tu.Name,
+					"input": map[string]interface{}{},
+				},
 			})
-			return
-		}
 
-		processClaudeText("", false, true)
-		if eventThinkingOpen {
-			sendText("", 3)
-		}
-		closeActiveBlock()
+			inputJSON, _ := json.Marshal(tu.Input)
+			_ = sse.Send("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": idx,
+				"delta": map[string]interface{}{
+					"type":         "input_json_delta",
+					"partial_json": string(inputJSON),
+				},
+			})
 
-		if realInputTokens > 0 {
-			inputTokens = realInputTokens
-		} else if inputTokens <= 0 {
-			inputTokens = estimatedInputTokens
-		}
-		outputContent, extractedReasoning := extractThinkingFromContent(rawContentBuilder.String())
-		thinkingOutput := rawThinkingBuilder.String()
-		if thinking && thinkingOutput == "" && extractedReasoning != "" {
-			thinkingOutput = extractedReasoning
-		}
-		if !thinking {
-			thinkingOutput = ""
-		}
-		outputTokens = estimateClaudeOutputTokens(outputContent, thinkingOutput, toolUses)
-
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
-		h.pool.RecordSuccess(account.ID)
-		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLogMeta("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
-
-		stopReason := "end_turn"
-		if len(toolUses) > 0 {
-			stopReason = "tool_use"
-		}
-
-		ensureMessageStart()
-		h.sendSSE(w, flusher, "message_delta", map[string]interface{}{
-			"type": "message_delta",
-			"delta": map[string]interface{}{
-				"stop_reason": stopReason,
-			},
-			"usage": buildClaudeUsageMap(inputTokens, outputTokens, cacheUsage, cacheProfile != nil),
-		})
-
-		h.sendSSE(w, flusher, "message_stop", map[string]interface{}{
-			"type": "message_stop",
-		})
-		return
+			_ = sse.Send("content_block_stop", map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": idx,
+			})
+		},
+		OnComplete: func(inTok, outTok int) {
+			inputTokens = inTok
+			outputTokens = outTok
+		},
+		OnCredits: func(c float64) {
+			credits = c
+		},
+		OnContextUsage: func(pct float64) {
+			realInputTokens = int(pct * float64(getContextWindowSize(at.effectiveModel)) / 100.0)
+		},
 	}
 
-	if lastErr == nil {
-		h.sendClaudeError(w, 503, "api_error", "No available accounts")
-		return
+	err := CallProvider(account, payload, callback)
+	result.started = messageStarted
+	if writeErr := sse.Err(); writeErr != nil {
+		result.writeErr = writeErr
+		return result
+	}
+	if err != nil {
+		result.upstreamErr = err
+		return result
 	}
 
-	h.recordFailureWithDetailsMeta("claude", model, "", lastErr, clientIP, apiKeyID, "")
-	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
+	processClaudeText("", false, true)
+	if eventThinkingOpen {
+		sendText("", 3)
+	}
+	closeActiveBlock()
+
+	result.started = messageStarted
+	if err := sse.Err(); err != nil {
+		result.writeErr = err
+		return result
+	}
+	if realInputTokens > 0 {
+		inputTokens = realInputTokens
+	} else if inputTokens <= 0 {
+		inputTokens = at.estimatedInputTokens
+	}
+	content, extracted := extractThinkingFromContent(rawContentBuilder.String())
+	thought := rawThinkingBuilder.String()
+	if at.thinking && thought == "" {
+		thought = extracted
+	}
+	if !at.thinking {
+		thought = ""
+	}
+	outputTokens = estimateClaudeOutputTokens(content, thought, toolUses)
+	stopReason := "end_turn"
+	if len(toolUses) > 0 {
+		stopReason = "tool_use"
+	}
+	ensureMessageStart()
+	_ = sse.Send("message_delta", map[string]interface{}{"type": "message_delta", "delta": map[string]interface{}{"stop_reason": stopReason}, "usage": buildClaudeUsageMap(inputTokens, outputTokens, at.cacheUsage, at.cacheProfile != nil)})
+	_ = sse.Send("message_stop", map[string]interface{}{"type": "message_stop"})
+	result.started = messageStarted
+	result.inputTokens = inputTokens
+	result.outputTokens = outputTokens
+	result.credits = credits
+	if err := sse.Err(); err != nil {
+		result.writeErr = err
+		return result
+	}
+	result.finished = true
+	return result
 }
 
 func (h *Handler) sendSSE(w http.ResponseWriter, flusher http.Flusher, event string, data interface{}) {

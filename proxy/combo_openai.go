@@ -123,6 +123,9 @@ type comboStreamSink struct {
 	gate *streamCommitGate
 }
 
+func (s *comboStreamSink) Header() http.Header    { return s.gate.Header() }
+func (s *comboStreamSink) WriteHeader(status int) { s.gate.WriteHeader(status) }
+
 func (s *comboStreamSink) Write(p []byte) (int, error) {
 	if s.gate.Committed() {
 		return s.gate.Write(p)

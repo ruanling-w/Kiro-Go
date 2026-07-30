@@ -6,6 +6,8 @@ import (
 	"kiro-go/config"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type claudeComboResult struct {
@@ -73,6 +75,97 @@ func (h *Handler) handleClaudeComboNonStream(w http.ResponseWriter, original *Cl
 			return
 		}
 	}
+	if lastErr == nil {
+		h.sendClaudeError(w, http.StatusServiceUnavailable, "api_error", "No available accounts")
+		return
+	}
+	h.recordFailureWithDetailsMeta("claude", route.RequestedModel, "", lastErr, clientIP, apiKeyID, "")
+	h.sendClaudeError(w, http.StatusBadGateway, "api_error", lastErr.Error())
+}
+
+func setClaudeStreamHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+}
+
+// handleClaudeComboStream resolves candidate order once, retries only before the
+// first Claude event, and pins the account/model as soon as message_start is public.
+func (h *Handler) handleClaudeComboStream(w http.ResponseWriter, original *ClaudeRequest, route *comboRouteSnapshot, thinking bool, thinkingOpts claudeThinkingResponseOptions, apiKeyID, clientIP string) {
+	if _, ok := w.(http.Flusher); !ok {
+		h.sendClaudeError(w, http.StatusInternalServerError, "api_error", "Streaming not supported")
+		return
+	}
+	start := time.Now()
+	msgID := "msg_" + uuid.New().String()
+	gate := newStreamCommitGate(w)
+	var lastErr error
+	for _, candidate := range route.Candidates {
+		req := *original
+		req.Model = candidate.Model
+		effective := cloneClaudeRequestForThinking(&req, thinking)
+		estimatedInput := estimateClaudeRequestInputTokens(effective)
+		cacheProfile := h.promptCache.BuildClaudeProfile(effective, estimatedInput)
+		payload := ClaudeToKiro(&req, thinking)
+		excluded := map[string]bool{}
+		for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+			account := h.pool.GetNextForModelExcluding(candidate.Model, excluded)
+			if account == nil {
+				break
+			}
+			if err := h.ensureValidToken(account); err != nil {
+				lastErr = err
+				excluded[account.ID] = true
+				h.handleAccountFailure(account, err)
+				continue
+			}
+			provider := providerLabel(account)
+			cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
+			gate.Discard()
+			setClaudeStreamHeaders(gate)
+			sink := &comboStreamSink{gate: gate}
+			sse := newClaudeSSEWriter(sink, sink)
+			result := h.streamClaudeAttempt(account, payload, claudeStreamAttempt{sse: sse, messageID: msgID, effectiveModel: candidate.Model, publicModel: route.RequestedModel, thinking: thinking, thinkingOpts: thinkingOpts, estimatedInputTokens: estimatedInput, cacheProfile: cacheProfile, cacheUsage: cacheUsage})
+			if result.writeErr != nil {
+				if gate.Committed() {
+					return
+				}
+				gate.Discard()
+				lastErr = result.writeErr
+				excluded[account.ID] = true
+				continue
+			}
+			if result.upstreamErr != nil {
+				lastErr = result.upstreamErr
+				if !gate.Committed() {
+					gate.Discard()
+					excluded[account.ID] = true
+					h.handleAccountFailure(account, result.upstreamErr)
+					continue
+				}
+				h.handleAccountFailure(account, result.upstreamErr)
+				h.recordFailureWithDetailsMeta("claude", route.RequestedModel, account.ID, result.upstreamErr, clientIP, apiKeyID, provider)
+				_ = sse.Send("error", map[string]interface{}{"type": "error", "error": map[string]string{"type": "api_error", "message": result.upstreamErr.Error()}})
+				return
+			}
+			if !result.finished {
+				if !gate.Committed() {
+					gate.Discard()
+					lastErr = errors.New("provider returned an empty stream")
+					excluded[account.ID] = true
+					continue
+				}
+				return
+			}
+			h.recordSuccessForApiKey(apiKeyID, result.inputTokens, result.outputTokens, result.credits)
+			h.pool.RecordSuccess(account.ID)
+			h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
+			h.promptCache.Update(account.ID, cacheProfile)
+			h.recordSuccessLogMeta("claude", route.RequestedModel, account.ID, result.inputTokens+result.outputTokens, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, provider)
+			return
+		}
+	}
+	gate.Discard()
 	if lastErr == nil {
 		h.sendClaudeError(w, http.StatusServiceUnavailable, "api_error", "No available accounts")
 		return
