@@ -8,6 +8,7 @@ import {
   Boxes,
   Users,
   KeyRound,
+  GitFork,
   Settings2,
   ScrollText,
   type LucideIcon,
@@ -24,6 +25,7 @@ export const NAV_ITEMS: NavItem[] = [
   { path: '/providers', labelKey: 'nav.providers', icon: Boxes },
   { path: '/accounts', labelKey: 'nav.allAccounts', icon: Users },
   { path: '/api-keys', labelKey: 'nav.apikeys', icon: KeyRound },
+  { path: '/combos', labelKey: 'combos.title', icon: GitFork },
   { path: '/settings', labelKey: 'nav.system', icon: Settings2 },
   { path: '/logs', labelKey: 'logs.title', icon: ScrollText },
 ]

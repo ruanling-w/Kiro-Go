@@ -10,6 +10,8 @@ export const qk = {
   accountOverage: (id: string) => ['accounts', id, 'overage'] as const,
   providerModels: (provider: string) => ['providers', provider, 'models'] as const,
   apiKeys: ['api-keys'] as const,
+  combos: ['combos'] as const,
+  combo: (id: string) => ['combos', id] as const,
   apiKeyIps: (id: string) => ['api-keys', id, 'ips'] as const,
   logs: ['logs'] as const,
   settings: ['settings'] as const,

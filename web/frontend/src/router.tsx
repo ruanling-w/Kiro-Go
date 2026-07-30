@@ -12,6 +12,7 @@ const DashboardPage = lazy(() => import('@/features/dashboard/DashboardPage'))
 const ProvidersPage = lazy(() => import('@/features/providers/ProvidersPage'))
 const AccountsPage = lazy(() => import('@/features/accounts/AccountsPage'))
 const ApiKeysPage = lazy(() => import('@/features/apikeys/ApiKeysPage'))
+const CombosPage = lazy(() => import('@/features/combos/CombosPage'))
 const SettingsPage = lazy(() => import('@/features/settings/SettingsPage'))
 const LogsPage = lazy(() => import('@/features/logs/LogsPage'))
 
@@ -34,6 +35,7 @@ export const router = createBrowserRouter(
         { path: 'providers/:provider', element: <Lazy><AccountsPage /></Lazy> },
         { path: 'accounts', element: <Lazy><AccountsPage /></Lazy> },
         { path: 'api-keys', element: <Lazy><ApiKeysPage /></Lazy> },
+        { path: 'combos', element: <Lazy><CombosPage /></Lazy> },
         { path: 'settings', element: <Lazy><SettingsPage /></Lazy> },
         { path: 'logs', element: <Lazy><LogsPage /></Lazy> },
         { path: '*', element: <Navigate to="/" replace /> },
