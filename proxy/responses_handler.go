@@ -130,6 +130,7 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	comboRoute = h.applyComboRequirements(comboRoute, responsesComboRequirements(req.Input))
 	openaiReq.Model = actualModel
 
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(openaiReq)

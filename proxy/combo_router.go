@@ -75,3 +75,13 @@ func (h *Handler) resolveComboRoute(requestedModel string) (*comboRouteSnapshot,
 	}
 	return &comboRouteSnapshot{Combo: combo, RequestedModel: requestedModel, Candidates: candidates}, nil
 }
+
+func (h *Handler) applyComboRequirements(route *comboRouteSnapshot, required comboCapabilities) *comboRouteSnapshot {
+	if route == nil {
+		return nil
+	}
+	copy := *route
+	copy.Combo = cloneCombo(route.Combo)
+	copy.Candidates = h.reorderComboCandidates(route.Candidates, required)
+	return &copy
+}

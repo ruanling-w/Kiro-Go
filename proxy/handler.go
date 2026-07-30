@@ -1225,6 +1225,7 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 		h.sendClaudeError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo routing is not enabled yet")
 		return
 	}
+	comboRoute = h.applyComboRequirements(comboRoute, claudeComboRequirements(&req))
 	req.Model = actualModel
 	effectiveReq := cloneClaudeRequestForThinking(&req, thinking)
 	thinkingResponseOpts := resolveClaudeThinkingResponseOptions(req.Thinking, thinkingCfg.ClaudeFormat)
@@ -2231,6 +2232,7 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		h.sendOpenAIError(w, 501, "invalid_request_error", "Fusion Combo routing is not enabled yet")
 		return
 	}
+	resolved = h.applyComboRequirements(resolved, openAIComboRequirements(&req))
 	req.Model = actualModel
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 
