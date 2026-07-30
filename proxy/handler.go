@@ -2176,7 +2176,12 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
 	if req.Stream {
 		// Streaming keeps the existing direct execution path until the protocol
-		// commit gate is implemented; importantly it does not reserve rotation.
+		// commit gate is implemented. Detect configured Combos with a read-only
+		// lookup so unsupported requests do not consume round-robin rotation.
+		if combo, ok := h.lookupComboSnapshot(actualModel); ok {
+			h.sendOpenAIError(w, http.StatusNotImplemented, "invalid_request_error", "Streaming Combo routing is not enabled yet for "+combo.Name)
+			return
+		}
 		req.Model = actualModel
 		estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 		kiroPayload := OpenAIToKiro(&req, thinking)
