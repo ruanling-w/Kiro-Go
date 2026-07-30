@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-func TestResponsesComboStreamRejectedWithoutReservation(t *testing.T) {
+func TestResponsesComboStreamResolvesAndReservesOnce(t *testing.T) {
 	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestResponsesComboStreamRejectedWithoutReservation(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"rr","stream":true,"input":"hello"}`))
 	rec := httptest.NewRecorder()
 	h.handleOpenAIResponses(rec, req)
-	if rec.Code != http.StatusNotImplemented {
+	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var body struct {
@@ -46,15 +46,15 @@ func TestResponsesComboStreamRejectedWithoutReservation(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Error.Type != "invalid_request_error" || !strings.Contains(body.Error.Message, "Streaming Combo") {
+	if body.Error.Type != "server_error" {
 		t.Fatalf("error=%+v", body.Error)
 	}
 	first, err := h.resolveComboRoute("rr")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Candidates[0].Model != "a" {
-		t.Fatalf("stream rejection consumed rotation: %+v", first.Candidates)
+	if first.Candidates[0].Model != "b" {
+		t.Fatalf("expected one stream reservation, got %+v", first.Candidates)
 	}
 }
 func TestResponsesParseStringInput(t *testing.T) {

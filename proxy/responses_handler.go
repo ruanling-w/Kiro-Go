@@ -108,9 +108,16 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
 	var comboRoute *comboRouteSnapshot
 	if req.Stream {
-		if combo, ok := h.lookupComboSnapshot(actualModel); ok {
-			h.sendOpenAIError(w, http.StatusNotImplemented, "invalid_request_error", "Streaming Combo routing is not enabled yet for "+combo.Name)
-			return
+		if _, ok := h.lookupComboSnapshot(actualModel); ok {
+			comboRoute, err = h.resolveComboRoute(actualModel)
+			if err != nil {
+				h.sendOpenAIError(w, http.StatusServiceUnavailable, "invalid_request_error", err.Error())
+				return
+			}
+			if comboRoute.Combo.Strategy == "fusion" {
+				h.sendOpenAIError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo routing is not enabled yet")
+				return
+			}
 		}
 	} else {
 		comboRoute, err = h.resolveComboRoute(actualModel)
@@ -133,6 +140,12 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	respID := generateResponseID()
 
 	if req.Stream {
+		if comboRoute != nil {
+			comboRoute.RequestedModel = requestedModel
+			h.handleResponsesComboStream(w, openaiReq, comboRoute, thinking, estimatedInputTokens,
+				apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
+			return
+		}
 		h.handleResponsesStream(w, kiroPayload, actualModel, thinking, estimatedInputTokens,
 			apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 		return
@@ -306,6 +319,14 @@ func (h *Handler) handleResponsesStream(
 	estimatedInputTokens int, apiKeyID, clientIP, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
 ) {
+	h.handleResponsesStreamModels(w, payload, model, model, false, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, req, storedInput, storeResponse)
+}
+
+func (h *Handler) handleResponsesStreamModels(
+	w http.ResponseWriter, payload *KiroPayload, effectiveModel, publicModel string, comboAttempt bool, thinking bool,
+	estimatedInputTokens int, apiKeyID, clientIP, respID string,
+	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
+) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -331,7 +352,7 @@ func (h *Handler) handleResponsesStream(
 		Object:             "response",
 		CreatedAt:          createdAt,
 		Status:             "in_progress",
-		Model:              model,
+		Model:              publicModel,
 		Output:             []ResponseOutputItem{},
 		Usage:              ResponsesUsage{},
 		PreviousResponseID: req.PreviousResponseID,
@@ -351,8 +372,19 @@ func (h *Handler) handleResponsesStream(
 	nativeAttempts := 0
 	fallbackIdx := 0
 	fallbackAttempts := 0
-	for attempt := 0; attempt < maxAttemptsForModel(model); attempt++ {
-		account, _ := nextAccountForAttempt(h.pool, model, payload, excluded, &nativeDone, &nativeAttempts, &fallbackIdx, &fallbackAttempts)
+	attemptLimit := maxAttemptsForModel(effectiveModel)
+	if comboAttempt {
+		attemptLimit = maxAccountRetryAttempts
+	}
+	for attempt := 0; attempt < attemptLimit; attempt++ {
+		var account *config.Account
+		if comboAttempt {
+			if h.pool != nil {
+				account = h.pool.GetNextForModelExcluding(effectiveModel, excluded)
+			}
+		} else {
+			account, _ = nextAccountForAttempt(h.pool, effectiveModel, payload, excluded, &nativeDone, &nativeAttempts, &fallbackIdx, &fallbackAttempts)
+		}
 		if account == nil {
 			break
 		}
@@ -501,7 +533,7 @@ func (h *Handler) handleResponsesStream(
 			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
 			OnCredits:  func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
-				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
+				realInputTokens = int(pct * float64(getContextWindowSize(effectiveModel)) / 100.0)
 			},
 		}
 
@@ -524,7 +556,7 @@ func (h *Handler) handleResponsesStream(
 					},
 				},
 			})
-			h.recordFailureWithDetailsMeta("responses", model, account.ID, err, clientIP, apiKeyID, usedProvider)
+			h.recordFailureWithDetailsMeta("responses", publicModel, account.ID, err, clientIP, apiKeyID, usedProvider)
 			return
 		}
 
@@ -571,9 +603,9 @@ func (h *Handler) handleResponsesStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLogMeta("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("responses", publicModel, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 
-		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
+		respObj := buildResponsesObject(respID, publicModel, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt
 		respObj.StoredInput = storedInput
 		respObj.Instructions = req.Instructions
@@ -607,7 +639,7 @@ func (h *Handler) handleResponsesStream(
 		})
 		return
 	}
-	h.recordFailureWithDetailsMeta("responses", model, "", lastErr, clientIP, apiKeyID, "")
+	h.recordFailureWithDetailsMeta("responses", publicModel, "", lastErr, clientIP, apiKeyID, "")
 	send("response.failed", map[string]interface{}{
 		"type": "response.failed",
 		"response": map[string]interface{}{
