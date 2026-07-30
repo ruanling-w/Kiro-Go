@@ -26,7 +26,7 @@ type comboAttemptFailure struct {
 }
 
 func (f comboAttemptFailure) Retryable() bool {
-	if !f.BeforeFirstByte {
+	if !f.BeforeFirstByte || f.UsageConsumed {
 		return false
 	}
 	if f.Class == comboRetryTransport {
