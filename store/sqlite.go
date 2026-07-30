@@ -11,7 +11,6 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,7 +68,7 @@ func Open(path string) (*Store, error) {
 		_ = f.Close()
 	}
 
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=foreign_keys(1)"}).String()
+	dsn := path + "?_pragma=foreign_keys(1)"
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open: %w", err)

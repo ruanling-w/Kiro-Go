@@ -1,9 +1,44 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+// TestOpenWindowsPath guards against the DSN regression where a native OS path
+// (drive letter + backslashes on Windows) was wrapped in url.URL and rendered
+// as file://D:%5C..., which SQLite could not open. t.TempDir() yields a
+// backslash path on Windows, so this exercises the real failure mode there.
+func TestOpenWindowsPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kiro-runtime.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open native path: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.ListCombos(); err != nil {
+		t.Fatalf("ListCombos after Open: %v", err)
+	}
+}
+
+// TestOpenExistingEmptyFile covers the state left behind by a prior failed
+// open: a 0-byte db file already on disk. Open must migrate it successfully
+// rather than treating it as corrupt.
+func TestOpenExistingEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kiro-runtime.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("seed empty file: %v", err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open empty file: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.ListCombos(); err != nil {
+		t.Fatalf("ListCombos after Open: %v", err)
+	}
+}
 
 func TestOpenMigrateRoundTrip(t *testing.T) {
 	dir := t.TempDir()

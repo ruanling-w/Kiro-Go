@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ListPlus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { ApiError } from '@/services/httpClient'
@@ -10,6 +11,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { OrderedModelPicker } from './OrderedModelPicker'
+import { ModelPickerDialog } from './ModelPickerDialog'
 import { RouteChain } from './RouteChain'
 
 const initial: ComboInput = { name: '', strategy: 'fallback', stickyLimit: 1, models: [''], fusionQuorum: 1, fusionTimeoutMs: 30000, judgeModel: '' }
@@ -31,6 +33,7 @@ export function ComboFormDialog({ open, onOpenChange, editing }: { open: boolean
   const { t } = useTranslation()
   const [value, setValue] = useState<ComboInput>(initial)
   const [errors, setErrors] = useState<ComboFieldErrors>({})
+  const [judgePickerOpen, setJudgePickerOpen] = useState(false)
   const create = useCreateCombo(); const update = useUpdateCombo()
   useEffect(() => {
     if (!open) return
@@ -54,7 +57,7 @@ export function ComboFormDialog({ open, onOpenChange, editing }: { open: boolean
       <div className="space-y-2"><Label>{t('combos.strategyLabel')}</Label><Select value={value.strategy} onValueChange={(v) => field('strategy', v as ComboStrategy)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{(['fallback','round-robin','fusion'] as const).map((s) => <SelectItem key={s} value={s}>{t(`combos.strategy.${s}`)}</SelectItem>)}</SelectContent></Select></div></div>
       {value.strategy === 'round-robin' && <div className="space-y-2"><Label htmlFor="sticky">{t('combos.stickyLimit')}</Label><Input id="sticky" type="number" min={1} max={10000} value={value.stickyLimit} onChange={(e) => field('stickyLimit', Number(e.target.value))} />{errors.stickyLimit && <p className="text-sm text-destructive">{t(errors.stickyLimit)}</p>}</div>}
       <OrderedModelPicker models={value.models} onChange={(m) => field('models', m)} error={errors.models ? t(errors.models) : undefined} />
-      {value.strategy === 'fusion' && <div className="grid gap-4 rounded-lg border p-4 sm:grid-cols-3"><div className="space-y-2"><Label htmlFor="quorum">{t('combos.quorum')}</Label><Input id="quorum" type="number" min={1} max={value.models.length} value={value.fusionQuorum} onChange={(e) => field('fusionQuorum', Number(e.target.value))} />{errors.fusionQuorum && <p className="text-xs text-destructive">{t(errors.fusionQuorum)}</p>}</div><div className="space-y-2"><Label htmlFor="timeout">{t('combos.timeout')}</Label><Input id="timeout" type="number" min={100} max={300000} value={value.fusionTimeoutMs} onChange={(e) => field('fusionTimeoutMs', Number(e.target.value))} /></div><div className="space-y-2"><Label htmlFor="judge">{t('combos.judgeModel')}</Label><Input id="judge" value={value.judgeModel} onChange={(e) => field('judgeModel', e.target.value)} />{errors.judgeModel && <p className="text-xs text-destructive">{t(errors.judgeModel)}</p>}</div><p className="sm:col-span-3 text-xs text-muted-foreground">{t('combos.fusionWarning')}</p></div>}
+      {value.strategy === 'fusion' && <div className="grid gap-4 rounded-lg border p-4 sm:grid-cols-3"><div className="space-y-2"><Label htmlFor="quorum">{t('combos.quorum')}</Label><Input id="quorum" type="number" min={1} max={value.models.length} value={value.fusionQuorum} onChange={(e) => field('fusionQuorum', Number(e.target.value))} />{errors.fusionQuorum && <p className="text-xs text-destructive">{t(errors.fusionQuorum)}</p>}</div><div className="space-y-2"><Label htmlFor="timeout">{t('combos.timeout')}</Label><Input id="timeout" type="number" min={100} max={300000} value={value.fusionTimeoutMs} onChange={(e) => field('fusionTimeoutMs', Number(e.target.value))} /></div><div className="space-y-2"><Label htmlFor="judge">{t('combos.judgeModel')}</Label><div className="flex gap-2"><Input id="judge" value={value.judgeModel} onChange={(e) => field('judgeModel', e.target.value)} placeholder={t('combos.modelPlaceholder')} /><Button type="button" variant="outline" size="icon" onClick={() => setJudgePickerOpen(true)} aria-label={t('combos.pickFromProviders')}><ListPlus className="size-4" /></Button></div>{errors.judgeModel && <p className="text-xs text-destructive">{t(errors.judgeModel)}</p>}<ModelPickerDialog open={judgePickerOpen} onOpenChange={setJudgePickerOpen} selected={value.judgeModel ? [value.judgeModel] : []} onToggle={(id) => field('judgeModel', id)} single /></div><p className="sm:col-span-3 text-xs text-muted-foreground">{t('combos.fusionWarning')}</p></div>}
       <RouteChain models={value.models} strategy={value.strategy} judge={value.judgeModel} />
       <DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button><Button type="submit" disabled={pending}>{t('common.save')}</Button></DialogFooter>
     </form></DialogContent></Dialog>

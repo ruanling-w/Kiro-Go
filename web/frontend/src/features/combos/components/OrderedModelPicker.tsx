@@ -1,12 +1,23 @@
-import { ArrowDown, ArrowUp, GripVertical, Plus, X } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowDown, ArrowUp, GripVertical, ListPlus, Plus, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { ModelPickerDialog } from './ModelPickerDialog'
 
 interface Props { models: string[]; onChange: (models: string[]) => void; error?: string }
 
 export function OrderedModelPicker({ models, onChange, error }: Props) {
   const { t } = useTranslation()
+  const [pickerOpen, setPickerOpen] = useState(false)
+  function toggleModel(id: string) {
+    const idx = models.findIndex((m) => m.trim().toLowerCase() === id.toLowerCase())
+    if (idx >= 0) { onChange(models.filter((_, i) => i !== idx)); return }
+    // Fill the first blank free-text slot before appending.
+    const blank = models.findIndex((m) => !m.trim())
+    if (blank >= 0) onChange(models.map((m, i) => (i === blank ? id : m)))
+    else if (models.length < 8) onChange([...models, id])
+  }
   function move(index: number, delta: number) {
     const nextIndex = index + delta
     if (nextIndex < 0 || nextIndex >= models.length) return
@@ -38,9 +49,15 @@ export function OrderedModelPicker({ models, onChange, error }: Props) {
           </div>
         ))}
       </div>
-      {models.length < 8 && <Button type="button" variant="outline" size="sm" onClick={() => onChange([...models, ''])}><Plus className="size-4" />{t('combos.addModel')}</Button>}
+      {models.length < 8 && (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => setPickerOpen(true)}><ListPlus className="size-4" />{t('combos.pickFromProviders')}</Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => onChange([...models, ''])}><Plus className="size-4" />{t('combos.addModel')}</Button>
+        </div>
+      )}
       {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
       <p className="text-xs text-muted-foreground">{t('combos.reorderHint')}</p>
+      <ModelPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} selected={models} onToggle={toggleModel} max={8} />
     </div>
   )
 }
