@@ -54,5 +54,5 @@ func (h *Handler) handleResponsesComboNonStream(w http.ResponseWriter, original 
 		return
 	}
 	h.recordFailureWithDetailsMeta("responses", route.RequestedModel, "", lastErr, clientIP, apiKeyID, "")
-	h.sendOpenAIError(w, http.StatusBadGateway, "server_error", lastErr.Error())
+	h.sendOpenAIError(w, http.StatusInternalServerError, "server_error", lastErr.Error())
 }
