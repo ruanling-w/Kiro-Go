@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	schemaVersion = 4
+	schemaVersion = 5
 	driverName    = "sqlite"
 )
 
@@ -252,6 +252,46 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		}
 		if _, err := tx.Exec(column.statement); err != nil {
 			return fmt.Errorf("store: add combo %s column: %w", column.name, err)
+		}
+	}
+	// v5 adds backward-compatible per-attempt Combo observability columns.
+	logColumns := []struct{ name, statement string }{
+		{"request_id", `ALTER TABLE request_logs ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`},
+		{"combo_id", `ALTER TABLE request_logs ADD COLUMN combo_id TEXT NOT NULL DEFAULT ''`},
+		{"combo_revision", `ALTER TABLE request_logs ADD COLUMN combo_revision INTEGER NOT NULL DEFAULT 0`},
+		{"combo_strategy", `ALTER TABLE request_logs ADD COLUMN combo_strategy TEXT NOT NULL DEFAULT ''`},
+		{"candidate_model", `ALTER TABLE request_logs ADD COLUMN candidate_model TEXT NOT NULL DEFAULT ''`},
+		{"effective_model", `ALTER TABLE request_logs ADD COLUMN effective_model TEXT NOT NULL DEFAULT ''`},
+		{"attempt_index", `ALTER TABLE request_logs ADD COLUMN attempt_index INTEGER NOT NULL DEFAULT 0`},
+		{"fusion_role", `ALTER TABLE request_logs ADD COLUMN fusion_role TEXT NOT NULL DEFAULT ''`},
+		{"failure_class", `ALTER TABLE request_logs ADD COLUMN failure_class TEXT NOT NULL DEFAULT ''`},
+		{"before_first_byte", `ALTER TABLE request_logs ADD COLUMN before_first_byte INTEGER NOT NULL DEFAULT 0`},
+		{"selected_model", `ALTER TABLE request_logs ADD COLUMN selected_model TEXT NOT NULL DEFAULT ''`},
+		{"billable", `ALTER TABLE request_logs ADD COLUMN billable INTEGER NOT NULL DEFAULT 0`},
+	}
+	logExisting := map[string]bool{}
+	logRows, err := tx.Query(`PRAGMA table_info(request_logs)`)
+	if err != nil {
+		return fmt.Errorf("store: inspect request log columns: %w", err)
+	}
+	for logRows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var def any
+		if err := logRows.Scan(&cid, &name, &typ, &notNull, &def, &primaryKey); err != nil {
+			logRows.Close()
+			return err
+		}
+		logExisting[name] = true
+	}
+	if err := logRows.Close(); err != nil {
+		return err
+	}
+	for _, column := range logColumns {
+		if !logExisting[column.name] {
+			if _, err := tx.Exec(column.statement); err != nil {
+				return fmt.Errorf("store: add request log %s column: %w", column.name, err)
+			}
 		}
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = ?`, schemaVersion); err != nil {

@@ -7,9 +7,57 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestComboPublicAndBillableAccountingAreSeparated(t *testing.T) {
+	cfgFile := t.TempDir() + "/config.json"
+	if err := config.Init(cfgFile); err != nil {
+		t.Fatal(err)
+	}
+	key, err := config.AddApiKey(config.ApiKeyEntry{ID: "combo-accounting", Name: "combo-accounting", Key: "secret", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{}
+	h.recordBillableAttempt(key.ID, 10, 5, 1.25)
+	h.recordBillableAttempt(key.ID, 20, 7, 2.5)
+	h.recordComboPublicSuccess(20, 7, 2.5)
+	if got := atomic.LoadInt64(&h.totalRequests); got != 1 {
+		t.Fatalf("public requests = %d, want 1", got)
+	}
+	if got := atomic.LoadInt64(&h.successRequests); got != 1 {
+		t.Fatalf("public successes = %d, want 1", got)
+	}
+	found := config.GetApiKeyEntry(key.ID)
+	if found == nil || found.TokensUsed != 42 || found.CreditsUsed != 3.75 {
+		t.Fatalf("billable API key usage = %+v, want tokens=42 credits=3.75", found)
+	}
+}
+
+func TestHandlerCloseIdempotentAndInterruptsRefreshStartup(t *testing.T) {
+	h := &Handler{stopRefresh: make(chan struct{}), stopStatsSaver: make(chan struct{}), stopRuntime: make(chan struct{})}
+	h.runtimeWG.Add(1)
+	go func() { defer h.runtimeWG.Done(); h.backgroundRefresh() }()
+	done := make(chan error, 2)
+	go func() { done <- h.Close() }()
+	go func() { done <- h.Close() }()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Close waited for refresh startup delay")
+		}
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("repeated Close: %v", err)
+	}
+}
 
 func TestThinkingSourceReasoningFirst(t *testing.T) {
 	var source thinkingStreamSource

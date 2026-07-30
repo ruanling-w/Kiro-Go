@@ -21,7 +21,19 @@ type RequestLogRow struct {
 	ApiKeyID  string
 	// Provider is the real upstream that served the request (kiro/grok/codex/...).
 	// Admin-only; never exposed on the public check-key page.
-	Provider string
+	Provider        string
+	RequestID       string
+	ComboID         string
+	ComboRevision   int64
+	ComboStrategy   string
+	CandidateModel  string
+	EffectiveModel  string
+	AttemptIndex    int
+	FusionRole      string
+	FailureClass    string
+	BeforeFirstByte bool
+	SelectedModel   string
+	Billable        bool
 }
 
 // InsertRequestLogs appends rows in a single transaction. No-op on nil store or empty input.
@@ -39,10 +51,12 @@ func (s *Store) InsertRequestLogs(rows []RequestLogRow) error {
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(`
-INSERT INTO request_logs(
-  ts, endpoint, model, account_id, status, error, error_type,
-  tokens, credits, duration_ms, client_ip, api_key_id, provider
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	INSERT INTO request_logs(
+	  ts, endpoint, model, account_id, status, error, error_type,
+	  tokens, credits, duration_ms, client_ip, api_key_id, provider,
+	  request_id, combo_id, combo_revision, combo_strategy, candidate_model, effective_model,
+	  attempt_index, fusion_role, failure_class, before_first_byte, selected_model, billable
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("store: prepare insert logs: %w", err)
 	}
@@ -52,6 +66,8 @@ INSERT INTO request_logs(
 		if _, err := stmt.Exec(
 			r.Time, r.Endpoint, r.Model, r.AccountID, r.Status, r.Error, r.ErrorType,
 			r.Tokens, r.Credits, r.Duration, r.ClientIP, r.ApiKeyID, r.Provider,
+			r.RequestID, r.ComboID, r.ComboRevision, r.ComboStrategy, r.CandidateModel, r.EffectiveModel,
+			r.AttemptIndex, r.FusionRole, r.FailureClass, r.BeforeFirstByte, r.SelectedModel, r.Billable,
 		); err != nil {
 			return fmt.Errorf("store: insert log: %w", err)
 		}
@@ -72,7 +88,9 @@ func (s *Store) LoadRecentRequestLogs(limit int) ([]RequestLogRow, error) {
 	// Fetch newest first, then reverse for ring order.
 	rows, err := s.db.Query(`
 SELECT ts, endpoint, model, account_id, status, error, error_type,
-       tokens, credits, duration_ms, client_ip, api_key_id, provider
+       tokens, credits, duration_ms, client_ip, api_key_id, provider,
+	       request_id, combo_id, combo_revision, combo_strategy, candidate_model, effective_model,
+	       attempt_index, fusion_role, failure_class, before_first_byte, selected_model, billable
 FROM request_logs
 ORDER BY id DESC
 LIMIT ?`, limit)
@@ -87,6 +105,8 @@ LIMIT ?`, limit)
 		if err := rows.Scan(
 			&r.Time, &r.Endpoint, &r.Model, &r.AccountID, &r.Status, &r.Error, &r.ErrorType,
 			&r.Tokens, &r.Credits, &r.Duration, &r.ClientIP, &r.ApiKeyID, &r.Provider,
+			&r.RequestID, &r.ComboID, &r.ComboRevision, &r.ComboStrategy, &r.CandidateModel, &r.EffectiveModel,
+			&r.AttemptIndex, &r.FusionRole, &r.FailureClass, &r.BeforeFirstByte, &r.SelectedModel, &r.Billable,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan log: %w", err)
 		}
@@ -114,7 +134,9 @@ func (s *Store) LoadRequestLogsByApiKeyID(apiKeyID string, limit int) ([]Request
 
 	rows, err := s.db.Query(`
 SELECT ts, endpoint, model, account_id, status, error, error_type,
-       tokens, credits, duration_ms, client_ip, api_key_id, provider
+       tokens, credits, duration_ms, client_ip, api_key_id, provider,
+	       request_id, combo_id, combo_revision, combo_strategy, candidate_model, effective_model,
+	       attempt_index, fusion_role, failure_class, before_first_byte, selected_model, billable
 FROM request_logs
 WHERE api_key_id = ?
 ORDER BY id DESC
@@ -130,6 +152,8 @@ LIMIT ?`, apiKeyID, limit)
 		if err := rows.Scan(
 			&r.Time, &r.Endpoint, &r.Model, &r.AccountID, &r.Status, &r.Error, &r.ErrorType,
 			&r.Tokens, &r.Credits, &r.Duration, &r.ClientIP, &r.ApiKeyID, &r.Provider,
+			&r.RequestID, &r.ComboID, &r.ComboRevision, &r.ComboStrategy, &r.CandidateModel, &r.EffectiveModel,
+			&r.AttemptIndex, &r.FusionRole, &r.FailureClass, &r.BeforeFirstByte, &r.SelectedModel, &r.Billable,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan log by api key: %w", err)
 		}

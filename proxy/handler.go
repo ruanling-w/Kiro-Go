@@ -39,6 +39,21 @@ type RequestLog struct {
 	// Provider is the real upstream that answered the request (kiro/grok/codex/...).
 	// Admin logs only — never included in the public check-key view.
 	Provider string `json:"provider,omitempty"`
+
+	// Combo attempt metadata. Empty values preserve the legacy flat-log shape for
+	// direct requests and remain backward-compatible with existing UI consumers.
+	RequestID       string `json:"requestId,omitempty"`
+	ComboID         string `json:"comboId,omitempty"`
+	ComboRevision   int64  `json:"comboRevision,omitempty"`
+	ComboStrategy   string `json:"comboStrategy,omitempty"`
+	CandidateModel  string `json:"candidateModel,omitempty"`
+	EffectiveModel  string `json:"effectiveModel,omitempty"`
+	AttemptIndex    int    `json:"attemptIndex,omitempty"`
+	FusionRole      string `json:"fusionRole,omitempty"`
+	FailureClass    string `json:"failureClass,omitempty"`
+	BeforeFirstByte bool   `json:"beforeFirstByte,omitempty"`
+	SelectedModel   string `json:"selectedModel,omitempty"`
+	Billable        bool   `json:"billable,omitempty"`
 }
 
 const requestLogsMaxSize = 500
@@ -312,8 +327,13 @@ func NewHandler() *Handler {
 	// Persist request logs + key IP stats
 	h.runtimeWG.Add(1)
 	go h.backgroundRuntimeFlusher()
-	// 清理过期的 stored responses（>30 天）
-	go purgeExpiredResponses(responsesDefaultTTL)
+	// 清理过期的 stored responses（>30 天）。Track this one-shot worker so
+	// Close has a complete ownership boundary for Handler-started goroutines.
+	h.runtimeWG.Add(1)
+	go func() {
+		defer h.runtimeWG.Done()
+		purgeExpiredResponses(responsesDefaultTTL)
+	}()
 	return h
 }
 
@@ -425,37 +445,61 @@ func (h *Handler) hydrateFromStore() {
 
 func requestLogFromRow(r store.RequestLogRow) RequestLog {
 	return RequestLog{
-		Time:      r.Time,
-		Endpoint:  r.Endpoint,
-		Model:     r.Model,
-		AccountID: r.AccountID,
-		Status:    r.Status,
-		Error:     r.Error,
-		ErrorType: r.ErrorType,
-		Tokens:    r.Tokens,
-		Credits:   r.Credits,
-		Duration:  r.Duration,
-		ClientIP:  r.ClientIP,
-		ApiKeyID:  r.ApiKeyID,
-		Provider:  r.Provider,
+		Time:            r.Time,
+		Endpoint:        r.Endpoint,
+		Model:           r.Model,
+		AccountID:       r.AccountID,
+		Status:          r.Status,
+		Error:           r.Error,
+		ErrorType:       r.ErrorType,
+		Tokens:          r.Tokens,
+		Credits:         r.Credits,
+		Duration:        r.Duration,
+		ClientIP:        r.ClientIP,
+		ApiKeyID:        r.ApiKeyID,
+		Provider:        r.Provider,
+		RequestID:       r.RequestID,
+		ComboID:         r.ComboID,
+		ComboRevision:   r.ComboRevision,
+		ComboStrategy:   r.ComboStrategy,
+		CandidateModel:  r.CandidateModel,
+		EffectiveModel:  r.EffectiveModel,
+		AttemptIndex:    r.AttemptIndex,
+		FusionRole:      r.FusionRole,
+		FailureClass:    r.FailureClass,
+		BeforeFirstByte: r.BeforeFirstByte,
+		SelectedModel:   r.SelectedModel,
+		Billable:        r.Billable,
 	}
 }
 
 func requestLogToRow(e RequestLog) store.RequestLogRow {
 	return store.RequestLogRow{
-		Time:      e.Time,
-		Endpoint:  e.Endpoint,
-		Model:     e.Model,
-		AccountID: e.AccountID,
-		Status:    e.Status,
-		Error:     e.Error,
-		ErrorType: e.ErrorType,
-		Tokens:    e.Tokens,
-		Credits:   e.Credits,
-		Duration:  e.Duration,
-		ClientIP:  e.ClientIP,
-		ApiKeyID:  e.ApiKeyID,
-		Provider:  e.Provider,
+		Time:            e.Time,
+		Endpoint:        e.Endpoint,
+		Model:           e.Model,
+		AccountID:       e.AccountID,
+		Status:          e.Status,
+		Error:           e.Error,
+		ErrorType:       e.ErrorType,
+		Tokens:          e.Tokens,
+		Credits:         e.Credits,
+		Duration:        e.Duration,
+		ClientIP:        e.ClientIP,
+		ApiKeyID:        e.ApiKeyID,
+		Provider:        e.Provider,
+		RequestID:       e.RequestID,
+		ComboID:         e.ComboID,
+		ComboRevision:   e.ComboRevision,
+		ComboStrategy:   e.ComboStrategy,
+		CandidateModel:  e.CandidateModel,
+		EffectiveModel:  e.EffectiveModel,
+		AttemptIndex:    e.AttemptIndex,
+		FusionRole:      e.FusionRole,
+		FailureClass:    e.FailureClass,
+		BeforeFirstByte: e.BeforeFirstByte,
+		SelectedModel:   e.SelectedModel,
+		Billable:        e.Billable,
 	}
 }
 
@@ -1935,6 +1979,25 @@ func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTok
 	}
 }
 
+// recordBillableAttempt attributes upstream usage without incrementing the
+// public request counters. Combo panel and judge calls are billable attempts,
+// but they are implementation details of one public request.
+func (h *Handler) recordBillableAttempt(apiKeyID string, inputTokens, outputTokens int, credits float64) {
+	if apiKeyID == "" {
+		return
+	}
+	if err := config.RecordApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits); err != nil {
+		logger.Warnf("[ApiKey] failed to record billable Combo attempt for key %s: %v", apiKeyID, err)
+	}
+}
+
+// recordComboPublicSuccess counts the one client-visible request. Billable
+// attempt usage was already attributed separately, so API-key usage is not
+// touched here.
+func (h *Handler) recordComboPublicSuccess(inputTokens, outputTokens int, credits float64) {
+	h.recordSuccess(inputTokens, outputTokens, credits)
+}
+
 // recordFailureWithDetails records a failure and stores it in the request logs.
 func (h *Handler) recordFailureWithDetails(endpoint, model, accountID string, err error) {
 	h.recordFailureWithDetailsMeta(endpoint, model, accountID, err, "", "", "")
@@ -1987,6 +2050,37 @@ func (h *Handler) recordSuccessLogMeta(endpoint, model, accountID string, tokens
 		Provider:  provider,
 	}
 
+	h.appendRequestLog(entry)
+}
+
+func (h *Handler) recordComboAttempt(meta comboAttemptLogContext, accountID, provider string, inputTokens, outputTokens int, credits float64, err error) {
+	entry := RequestLog{
+		Time:            time.Now().Unix(),
+		Endpoint:        "combo_attempt",
+		Model:           meta.CandidateModel,
+		AccountID:       accountID,
+		Status:          "success",
+		Tokens:          inputTokens + outputTokens,
+		Credits:         credits,
+		Provider:        provider,
+		RequestID:       meta.RequestID,
+		ComboID:         meta.ComboID,
+		ComboRevision:   meta.ComboRevision,
+		ComboStrategy:   meta.ComboStrategy,
+		CandidateModel:  meta.CandidateModel,
+		EffectiveModel:  meta.EffectiveModel,
+		AttemptIndex:    meta.AttemptIndex,
+		FusionRole:      meta.FusionRole,
+		BeforeFirstByte: meta.BeforeFirstByte,
+		SelectedModel:   meta.SelectedModel,
+		Billable:        err == nil && (inputTokens > 0 || outputTokens > 0 || credits > 0),
+	}
+	if err != nil {
+		entry.Status = "error"
+		entry.Error = err.Error()
+		entry.ErrorType = classifyError(entry.Error)
+		entry.FailureClass = entry.ErrorType
+	}
 	h.appendRequestLog(entry)
 }
 

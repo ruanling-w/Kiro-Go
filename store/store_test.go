@@ -145,6 +145,45 @@ func TestKeyIPUpsertLoadDelete(t *testing.T) {
 	}
 }
 
+func TestRequestLogComboAttemptRoundTrip(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "attempt.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := RequestLogRow{Time: 1, Endpoint: "openai", Model: "requested-combo", AccountID: "acct", Status: "success", Provider: "kiro", RequestID: "req-1", ComboID: "combo-1", ComboRevision: 7, ComboStrategy: "fusion", CandidateModel: "candidate", EffectiveModel: "effective", AttemptIndex: 3, FusionRole: "judge", FailureClass: "", BeforeFirstByte: true, SelectedModel: "effective", Billable: true, Tokens: 42, Credits: 1.25}
+	if err := s.InsertRequestLogs([]RequestLogRow{want}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadRecentRequestLogs(1)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("load attempt: len=%d err=%v", len(got), err)
+	}
+	if got[0] != want {
+		t.Fatalf("attempt mismatch:\n got %+v\nwant %+v", got[0], want)
+	}
+}
+
+func TestStoreCloseIdempotentConcurrent(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "close.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const callers = 32
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() { errs <- s.Close() }()
+	}
+	for i := 0; i < callers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("repeated Close: %v", err)
+	}
+}
+
 func TestNilStoreSafe(t *testing.T) {
 	var s *Store
 	if err := s.InsertRequestLogs([]RequestLogRow{{Time: 1}}); err != nil {
