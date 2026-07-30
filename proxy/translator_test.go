@@ -526,6 +526,16 @@ func TestClaudeToolResultMixedTextAndImage(t *testing.T) {
 	req := &ClaudeRequest{
 		Model: "claude-opus-4.8",
 		Messages: []ClaudeMessage{
+			{Role: "user", Content: "read the screenshot"},
+			{
+				Role: "assistant",
+				Content: []interface{}{
+					map[string]interface{}{
+						"type": "tool_use", "id": "tool_2", "name": "read",
+						"input": map[string]interface{}{"path": "screenshot.png"},
+					},
+				},
+			},
 			{
 				Role: "user",
 				Content: []interface{}{
@@ -626,8 +636,7 @@ func TestOpenAIToolResultImageCarriedWhenFollowedByUser(t *testing.T) {
 
 	var toolHistImages int
 	for _, h := range payload.ConversationState.History {
-		if h.UserInputMessage != nil && h.UserInputMessage.UserInputMessageContext != nil &&
-			len(h.UserInputMessage.UserInputMessageContext.ToolResults) > 0 {
+		if h.UserInputMessage != nil && len(h.UserInputMessage.Images) > 0 {
 			toolHistImages += len(h.UserInputMessage.Images)
 		}
 	}
