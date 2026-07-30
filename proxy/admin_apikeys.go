@@ -196,8 +196,9 @@ func (h *Handler) apiDeleteApiKey(w http.ResponseWriter, r *http.Request, id str
 		if h.ipTrack != nil {
 			h.ipTrack.removeKey(id)
 		}
-		if h.runtimeStore != nil {
-			_ = h.runtimeStore.DeleteKeyIPStats(id)
+		if st, unlock := h.runtimeStoreForOperation(); st != nil {
+			_ = st.DeleteKeyIPStats(id)
+			unlock()
 		}
 	}
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
@@ -236,4 +237,3 @@ func (h *Handler) apiRevealApiKey(w http.ResponseWriter, r *http.Request, id str
 		"key":     entry.Key,
 	})
 }
-

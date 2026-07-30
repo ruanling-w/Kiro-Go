@@ -174,8 +174,12 @@ func (h *Handler) logsForApiKey(apiKeyID string, limit int) []checkKeyLogView {
 	h.requestLogsMu.RUnlock()
 
 	// Backfill from persisted history (already newest-first from the query).
-	if len(out) < limit && h.runtimeStore != nil {
-		rows, err := h.runtimeStore.LoadRequestLogsByApiKeyID(apiKeyID, limit)
+	st, unlock := h.runtimeStoreForOperation()
+	if st != nil {
+		defer unlock()
+	}
+	if len(out) < limit && st != nil {
+		rows, err := st.LoadRequestLogsByApiKeyID(apiKeyID, limit)
 		if err == nil {
 			for _, row := range rows {
 				if len(out) >= limit {

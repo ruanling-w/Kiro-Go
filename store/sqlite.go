@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	schemaVersion = 3
+	schemaVersion = 4
 	driverName    = "sqlite"
 )
 
@@ -118,10 +118,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 	var ver int
 	err := s.db.QueryRow(`SELECT version FROM schema_version LIMIT 1`).Scan(&ver)
 	if err == sql.ErrNoRows {
-		if _, err := s.db.Exec(`INSERT INTO schema_version(version) VALUES (?)`, schemaVersion); err != nil {
+		// Seed at v1 so table creation and every version transition remain
+		// recoverable if startup is interrupted before migration commits.
+		if _, err := s.db.Exec(`INSERT INTO schema_version(version) VALUES (1)`); err != nil {
 			return fmt.Errorf("store: seed schema_version: %w", err)
 		}
-		ver = schemaVersion
+		ver = 1
 	} else if err != nil {
 		return fmt.Errorf("store: read schema_version: %w", err)
 	}
@@ -179,47 +181,84 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		}
 	}
 
-	// v3: normalized combo configuration and persistent round-robin state.
-	if ver <= 3 {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("store: begin combo migration: %w", err)
+	// Combo schema reconciliation is atomic and runs on every startup. The
+	// version row alone is not proof that an interrupted migration created every
+	// table and column.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin combo migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS combos (
+		  id TEXT PRIMARY KEY,
+		  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+		  strategy TEXT NOT NULL DEFAULT '',
+		  sticky_limit INTEGER NOT NULL DEFAULT 1,
+		  fusion_quorum INTEGER NOT NULL DEFAULT 0,
+		  fusion_timeout_ms INTEGER NOT NULL DEFAULT 0,
+		  judge_model TEXT NOT NULL DEFAULT '',
+		  revision INTEGER NOT NULL DEFAULT 1,
+		  created_at INTEGER NOT NULL,
+		  updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS combo_models (
+		  combo_id TEXT NOT NULL REFERENCES combos(id) ON DELETE CASCADE,
+		  position INTEGER NOT NULL,
+		  model TEXT NOT NULL,
+		  PRIMARY KEY (combo_id, position)
+		)`,
+		`CREATE TABLE IF NOT EXISTS combo_rotation (
+		  combo_id TEXT PRIMARY KEY REFERENCES combos(id) ON DELETE CASCADE,
+		  revision INTEGER NOT NULL,
+		  model_index INTEGER NOT NULL DEFAULT 0,
+		  use_count INTEGER NOT NULL DEFAULT 0
+		)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("store: combo migration: %w", err)
 		}
-		defer func() { _ = tx.Rollback() }()
-		statements := []string{
-			`CREATE TABLE IF NOT EXISTS combos (
-			  id TEXT PRIMARY KEY,
-			  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-			  strategy TEXT NOT NULL DEFAULT '',
-			  sticky_limit INTEGER NOT NULL DEFAULT 1,
-			  revision INTEGER NOT NULL DEFAULT 1,
-			  created_at INTEGER NOT NULL,
-			  updated_at INTEGER NOT NULL
-			)`,
-			`CREATE TABLE IF NOT EXISTS combo_models (
-			  combo_id TEXT NOT NULL REFERENCES combos(id) ON DELETE CASCADE,
-			  position INTEGER NOT NULL,
-			  model TEXT NOT NULL,
-			  PRIMARY KEY (combo_id, position)
-			)`,
-			`CREATE TABLE IF NOT EXISTS combo_rotation (
-			  combo_id TEXT PRIMARY KEY REFERENCES combos(id) ON DELETE CASCADE,
-			  revision INTEGER NOT NULL,
-			  model_index INTEGER NOT NULL DEFAULT 0,
-			  use_count INTEGER NOT NULL DEFAULT 0
-			)`,
+	}
+	columns := map[string]bool{}
+	rows, err := tx.Query(`PRAGMA table_info(combos)`)
+	if err != nil {
+		return fmt.Errorf("store: inspect combo columns: %w", err)
+	}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: scan combo columns: %w", err)
 		}
-		for _, statement := range statements {
-			if _, err := tx.Exec(statement); err != nil {
-				return fmt.Errorf("store: combo migration: %w", err)
-			}
+		columns[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("store: close combo columns: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: read combo columns: %w", err)
+	}
+	fusionColumns := []struct{ name, statement string }{
+		{"fusion_quorum", `ALTER TABLE combos ADD COLUMN fusion_quorum INTEGER NOT NULL DEFAULT 0`},
+		{"fusion_timeout_ms", `ALTER TABLE combos ADD COLUMN fusion_timeout_ms INTEGER NOT NULL DEFAULT 0`},
+		{"judge_model", `ALTER TABLE combos ADD COLUMN judge_model TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, column := range fusionColumns {
+		if columns[column.name] {
+			continue
 		}
-		if _, err := tx.Exec(`UPDATE schema_version SET version = ?`, schemaVersion); err != nil {
-			return fmt.Errorf("store: bump schema_version: %w", err)
+		if _, err := tx.Exec(column.statement); err != nil {
+			return fmt.Errorf("store: add combo %s column: %w", column.name, err)
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("store: commit combo migration: %w", err)
-		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = ?`, schemaVersion); err != nil {
+		return fmt.Errorf("store: bump schema_version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit combo migration: %w", err)
 	}
 	return nil
 }

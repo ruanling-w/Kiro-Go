@@ -4,33 +4,40 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"modernc.org/sqlite"
 )
 
 var (
 	ErrStorageUnavailable = errors.New("store: storage unavailable")
 	ErrComboNotFound      = errors.New("store: combo not found")
 	ErrComboConflict      = errors.New("store: combo revision conflict")
+	ErrComboNameConflict  = errors.New("store: combo name conflict")
 )
 
 // Combo is persisted configuration. Repository methods deliberately do not
 // impose application-level validation on its values.
 type Combo struct {
-	ID          string
-	Name        string
-	Strategy    string
-	StickyLimit int
-	Revision    int64
-	CreatedAt   int64
-	UpdatedAt   int64
-	Models      []ComboModel
+	ID            string       `json:"id"`
+	Name          string       `json:"name"`
+	Strategy      string       `json:"strategy"`
+	StickyLimit   int          `json:"stickyLimit"`
+	FusionQuorum  int          `json:"fusionQuorum,omitempty"`
+	FusionTimeout int          `json:"fusionTimeoutMs,omitempty"`
+	JudgeModel    string       `json:"judgeModel,omitempty"`
+	Revision      int64        `json:"revision"`
+	CreatedAt     int64        `json:"createdAt"`
+	UpdatedAt     int64        `json:"updatedAt"`
+	Models        []ComboModel `json:"models"`
 }
 
 // ComboModel is one model in a combo. Position is normalized on writes and
 // returned in ascending order.
 type ComboModel struct {
-	Model    string
-	Position int
+	Model    string `json:"model"`
+	Position int    `json:"position"`
 }
 
 func (s *Store) comboDBLocked() (*sql.DB, error) {
@@ -42,7 +49,7 @@ func (s *Store) comboDBLocked() (*sql.DB, error) {
 
 func scanCombo(row interface{ Scan(...any) error }) (Combo, error) {
 	var c Combo
-	err := row.Scan(&c.ID, &c.Name, &c.Strategy, &c.StickyLimit, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.Strategy, &c.StickyLimit, &c.FusionQuorum, &c.FusionTimeout, &c.JudgeModel, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
 	return c, err
 }
 
@@ -79,6 +86,17 @@ func insertComboModels(tx *sql.Tx, id string, models []ComboModel) error {
 	return nil
 }
 
+func isComboNameConflict(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	// SQLite extended code 2067 is SQLITE_CONSTRAINT_UNIQUE. The error text
+	// identifies the name index; primary-key and unrelated unique constraints
+	// must not be reported as a name conflict.
+	return sqliteErr.Code() == 2067 && strings.Contains(sqliteErr.Error(), "combos.name")
+}
+
 // CreateCombo inserts a combo and its ordered models atomically.
 func (s *Store) CreateCombo(c Combo) (Combo, error) {
 	if s == nil {
@@ -98,7 +116,10 @@ func (s *Store) CreateCombo(c Combo) (Combo, error) {
 	now := time.Now().UnixMilli()
 	c.Revision = 1
 	c.CreatedAt, c.UpdatedAt = now, now
-	if _, err := tx.Exec(`INSERT INTO combos(id,name,strategy,sticky_limit,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, c.ID, c.Name, c.Strategy, c.StickyLimit, c.Revision, now, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO combos(id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, c.ID, c.Name, c.Strategy, c.StickyLimit, c.FusionQuorum, c.FusionTimeout, c.JudgeModel, c.Revision, now, now); err != nil {
+		if isComboNameConflict(err) {
+			return Combo{}, ErrComboNameConflict
+		}
 		return Combo{}, fmt.Errorf("store: create combo: %w", err)
 	}
 	if err := insertComboModels(tx, c.ID, c.Models); err != nil {
@@ -124,7 +145,7 @@ func (s *Store) GetCombo(id string) (Combo, error) {
 	if err != nil {
 		return Combo{}, err
 	}
-	c, err := scanCombo(db.QueryRow(`SELECT id,name,strategy,sticky_limit,revision,created_at,updated_at FROM combos WHERE id=?`, id))
+	c, err := scanCombo(db.QueryRow(`SELECT id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,revision,created_at,updated_at FROM combos WHERE id=?`, id))
 	if err == sql.ErrNoRows {
 		return Combo{}, ErrComboNotFound
 	}
@@ -148,7 +169,7 @@ func (s *Store) GetComboByName(name string) (Combo, error) {
 	if err != nil {
 		return Combo{}, err
 	}
-	c, err := scanCombo(db.QueryRow(`SELECT id,name,strategy,sticky_limit,revision,created_at,updated_at FROM combos WHERE name=? COLLATE NOCASE`, name))
+	c, err := scanCombo(db.QueryRow(`SELECT id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,revision,created_at,updated_at FROM combos WHERE name=? COLLATE NOCASE`, name))
 	if err == sql.ErrNoRows {
 		return Combo{}, ErrComboNotFound
 	}
@@ -172,7 +193,7 @@ func (s *Store) ListCombos() ([]Combo, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(`SELECT id,name,strategy,sticky_limit,revision,created_at,updated_at FROM combos ORDER BY created_at,id`)
+	rows, err := db.Query(`SELECT id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,revision,created_at,updated_at FROM combos ORDER BY created_at,id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list combos: %w", err)
 	}
@@ -226,8 +247,11 @@ func (s *Store) UpdateCombo(c Combo) (Combo, error) {
 		return Combo{}, ErrComboConflict
 	}
 	now := time.Now().UnixMilli()
-	res, err := tx.Exec(`UPDATE combos SET name=?,strategy=?,sticky_limit=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?`, c.Name, c.Strategy, c.StickyLimit, now, c.ID, c.Revision)
+	res, err := tx.Exec(`UPDATE combos SET name=?,strategy=?,sticky_limit=?,fusion_quorum=?,fusion_timeout_ms=?,judge_model=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?`, c.Name, c.Strategy, c.StickyLimit, c.FusionQuorum, c.FusionTimeout, c.JudgeModel, now, c.ID, c.Revision)
 	if err != nil {
+		if isComboNameConflict(err) {
+			return Combo{}, ErrComboNameConflict
+		}
 		return Combo{}, fmt.Errorf("store: update combo: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
@@ -282,6 +306,37 @@ func (s *Store) DeleteCombo(id string, revision int64) error {
 		return ErrComboConflict
 	}
 	return nil
+}
+
+// ResetComboRotation clears persistent rotation state for the requested revision.
+func (s *Store) ResetComboRotation(id string, revision int64) error {
+	if s == nil {
+		return ErrStorageUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.comboDBLocked()
+	if err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var current int64
+	if err := tx.QueryRow(`SELECT revision FROM combos WHERE id=?`, id).Scan(&current); err == sql.ErrNoRows {
+		return ErrComboNotFound
+	} else if err != nil {
+		return err
+	}
+	if current != revision {
+		return ErrComboConflict
+	}
+	if _, err := tx.Exec(`DELETE FROM combo_rotation WHERE combo_id=? AND revision=?`, id, revision); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ReserveComboRotation atomically reserves and returns the models in routing

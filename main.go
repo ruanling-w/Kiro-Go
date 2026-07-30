@@ -56,6 +56,11 @@ func main() {
 
 	// 创建 HTTP 处理器（包含后台刷新任务）
 	handler := proxy.NewHandler()
+	defer func() {
+		if err := handler.Close(); err != nil {
+			logger.Errorf("close runtime store: %v", err)
+		}
+	}()
 
 	// 启动服务器
 	addr := fmt.Sprintf("%s:%d", config.GetHost(), config.GetPort())
@@ -75,7 +80,7 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	if err := srv.ListenAndServe(); err != nil {
-		logger.Fatalf("Server failed: %v", err)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Errorf("Server failed: %v", err)
 	}
 }

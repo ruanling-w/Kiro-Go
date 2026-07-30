@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 )
 
 func testCombo() Combo {
-	return Combo{ID: "c1", Name: "Primary", Strategy: "round-robin", StickyLimit: 2, Models: []ComboModel{{Model: "p/a"}, {Model: "p/b"}, {Model: "p/c"}}}
+	return Combo{ID: "c1", Name: "Primary", Strategy: "round-robin", StickyLimit: 2, FusionQuorum: 2, FusionTimeout: 1234, JudgeModel: "p/judge", Models: []ComboModel{{Model: "p/a"}, {Model: "p/b"}, {Model: "p/c"}}}
 }
 
 func TestComboNewDBCRUDOrderingAndCaseInsensitiveName(t *testing.T) {
@@ -143,6 +144,101 @@ func TestComboRotationStickyResetRestartAndCascade(t *testing.T) {
 	}
 }
 
+func TestComboResetRotationIsRevisionBound(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "reset.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c, err := s.CreateCombo(testCombo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReserveComboRotation(c.ID, c.Revision); err != nil {
+		t.Fatal(err)
+	}
+	c.Name = "Updated"
+	c, err = s.UpdateCombo(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReserveComboRotation(c.ID, c.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetComboRotation(c.ID, c.Revision-1); !errors.Is(err, ErrComboConflict) {
+		t.Fatalf("stale reset: %v", err)
+	}
+	var revision int64
+	if err := s.db.QueryRow(`SELECT revision FROM combo_rotation WHERE combo_id=?`, c.ID).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	if revision != c.Revision {
+		t.Fatalf("rotation revision=%d want %d", revision, c.Revision)
+	}
+	if err := s.ResetComboRotation(c.ID, c.Revision); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM combo_rotation WHERE combo_id=?`, c.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rotation count=%d err=%v", count, err)
+	}
+	if err := s.ResetComboRotation("missing", 1); !errors.Is(err, ErrComboNotFound) {
+		t.Fatalf("missing reset: %v", err)
+	}
+}
+
+func TestComboNameConflictIsTyped(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "conflict.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	first, err := s.CreateCombo(testCombo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateID := testCombo()
+	duplicateID.Name = "Different"
+	if _, err := s.CreateCombo(duplicateID); err == nil || errors.Is(err, ErrComboNameConflict) {
+		t.Fatalf("duplicate ID misclassified: %v", err)
+	}
+
+	second := testCombo()
+	second.ID = "c2"
+	second.Name = strings.ToUpper(first.Name)
+	if _, err := s.CreateCombo(second); !errors.Is(err, ErrComboNameConflict) {
+		t.Fatalf("create conflict: %v", err)
+	}
+	second.Name = "Secondary"
+	second, err = s.CreateCombo(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Name = first.Name
+	if _, err := s.UpdateCombo(second); !errors.Is(err, ErrComboNameConflict) {
+		t.Fatalf("update conflict: %v", err)
+	}
+}
+
+func TestComboClosedStoreUnavailable(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "closed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListCombos(); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("closed list: %v", err)
+	}
+	if _, err := s.CreateCombo(testCombo()); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("closed create: %v", err)
+	}
+	if err := s.ResetComboRotation("c1", 1); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("closed reset: %v", err)
+	}
+}
+
 func TestComboRotationConcurrentAtomic(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "concurrent.db"))
 	if err != nil {
@@ -186,6 +282,29 @@ func TestComboRotationConcurrentAtomic(t *testing.T) {
 	}
 }
 
+func TestComboMigrationRecoversSeededSchemaWithoutTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "seeded.db")
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_version(version INTEGER NOT NULL); INSERT INTO schema_version VALUES(4)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.CreateCombo(testCombo()); err != nil {
+		t.Fatalf("recovery create: %v", err)
+	}
+}
+
 func TestComboMigrationFromV2PreservesData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v2.db")
 	db, err := sql.Open(driverName, path)
@@ -203,7 +322,7 @@ func TestComboMigrationFromV2PreservesData(t *testing.T) {
 	}
 	defer s.Close()
 	var ver, n int
-	if err = s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&ver); err != nil || ver != 3 {
+	if err = s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&ver); err != nil || ver != schemaVersion {
 		t.Fatalf("version %d %v", ver, err)
 	}
 	if err = s.db.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE model='kept'`).Scan(&n); err != nil || n != 1 {

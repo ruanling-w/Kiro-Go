@@ -11,6 +11,7 @@ import (
 	"kiro-go/store"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,9 @@ type Handler struct {
 	stopRefresh     chan struct{}
 	stopStatsSaver  chan struct{}
 	stopRuntime     chan struct{}
+	closeOnce       sync.Once
+	closeErr        error
+	runtimeWG       sync.WaitGroup
 	// 模型缓存
 	cachedModels    []ModelInfo
 	modelsCacheMu   sync.RWMutex
@@ -75,11 +79,18 @@ type Handler struct {
 	// Pending logs waiting for SQLite flush (capped).
 	logPending []RequestLog
 	// Runtime SQLite store (nil = fail-open, RAM-only).
-	runtimeStore *store.Store
+	runtimeStoreMu sync.RWMutex
+	runtimeStore   *store.Store
 	// Per-API-key client IP stats (lifetime flushed to store; RPM is RAM-only).
 	ipTrack *ipTracker
 	// Fan-out of live log entries to admin SSE subscribers.
 	logHub *logHub
+	// Combo configuration is copied on publication and read without SQLite access.
+	combosMu     sync.RWMutex
+	comboLoadMu  sync.Mutex
+	combosByID   map[string]store.Combo
+	combosByName map[string]store.Combo
+	combosLoaded bool
 }
 
 type thinkingStreamSource int
@@ -271,6 +282,8 @@ func NewHandler() *Handler {
 		ipTrack:           newIPTracker(),
 		tokenRefreshLocks: make(map[string]*sync.Mutex),
 		logHub:            newLogHub(),
+		combosByID:        make(map[string]store.Combo),
+		combosByName:      make(map[string]store.Combo),
 	}
 
 	// Runtime SQLite (logs + key IP lifetime). Fail-open on error.
@@ -280,21 +293,112 @@ func NewHandler() *Handler {
 	} else {
 		h.runtimeStore = st
 		h.hydrateFromStore()
+		h.loadCombosFromStore()
 		logger.Infof("runtime store ready: %s", dbPath)
 	}
 
 	// 启动后台刷新
-	go h.backgroundRefresh()
+	h.runtimeWG.Add(1)
+	go func() {
+		defer h.runtimeWG.Done()
+		h.backgroundRefresh()
+	}()
 	// 启动后台统计保存 (每30秒保存一次)
-	go h.backgroundStatsSaver()
+	h.runtimeWG.Add(1)
+	go func() {
+		defer h.runtimeWG.Done()
+		h.backgroundStatsSaver()
+	}()
 	// Persist request logs + key IP stats
+	h.runtimeWG.Add(1)
 	go h.backgroundRuntimeFlusher()
 	// 清理过期的 stored responses（>30 天）
 	go purgeExpiredResponses(responsesDefaultTTL)
 	return h
 }
 
-// hydrateFromStore loads recent logs and key IP lifetime into RAM.
+func (h *Handler) loadCombosFromStore() bool {
+	h.comboLoadMu.Lock()
+	defer h.comboLoadMu.Unlock()
+	h.combosMu.RLock()
+	loaded := h.combosLoaded
+	h.combosMu.RUnlock()
+	if loaded {
+		return true
+	}
+	st, unlock := h.runtimeStoreForOperation()
+	if st == nil {
+		return false
+	}
+	defer unlock()
+	list, err := st.ListCombos()
+	if err != nil {
+		logger.Warnf("load combos: %v", err)
+		return false
+	}
+	h.combosMu.Lock()
+	defer h.combosMu.Unlock()
+	h.combosByID = make(map[string]store.Combo, len(list))
+	h.combosByName = make(map[string]store.Combo, len(list))
+	for _, c := range list {
+		h.combosByID[c.ID] = c
+		h.combosByName[strings.ToLower(c.Name)] = c
+	}
+	h.combosLoaded = true
+	return true
+}
+
+func (h *Handler) ensureCombosLoaded() bool {
+	h.combosMu.RLock()
+	loaded := h.combosLoaded
+	h.combosMu.RUnlock()
+	return loaded || h.loadCombosFromStore()
+}
+
+func (h *Handler) comboSnapshot() ([]store.Combo, bool) {
+	if !h.ensureCombosLoaded() {
+		return nil, false
+	}
+	h.combosMu.RLock()
+	defer h.combosMu.RUnlock()
+	out := make([]store.Combo, 0, len(h.combosByID))
+	for _, c := range h.combosByID {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left, right := strings.ToLower(out[i].Name), strings.ToLower(out[j].Name)
+		if left == right {
+			return out[i].ID < out[j].ID
+		}
+		return left < right
+	})
+	return out, true
+}
+func (h *Handler) replaceCombo(c store.Combo) {
+	h.combosMu.Lock()
+	if old, ok := h.combosByID[c.ID]; ok {
+		delete(h.combosByName, strings.ToLower(old.Name))
+	}
+	h.combosByID[c.ID] = c
+	h.combosByName[strings.ToLower(c.Name)] = c
+	h.combosMu.Unlock()
+}
+
+func (h *Handler) publishCombo(c store.Combo) {
+	h.combosMu.Lock()
+	h.combosByID[c.ID] = c
+	h.combosByName[strings.ToLower(c.Name)] = c
+	h.combosMu.Unlock()
+}
+func (h *Handler) removeCombo(id string) {
+	h.combosMu.Lock()
+	if c, ok := h.combosByID[id]; ok {
+		delete(h.combosByName, strings.ToLower(c.Name))
+		delete(h.combosByID, id)
+	}
+	h.combosMu.Unlock()
+}
+
 func (h *Handler) hydrateFromStore() {
 	if h == nil || h.runtimeStore == nil {
 		return
@@ -357,10 +461,18 @@ func (h *Handler) backgroundRefresh() {
 	ticker := time.NewTicker(30 * time.Minute) // 每 30 分钟刷新一次
 	defer ticker.Stop()
 
-	// 启动时延迟 10 秒后执行一次
-	time.Sleep(10 * time.Second)
-	h.refreshModelsCache()
-	h.refreshAllAccounts()
+	// Startup refresh is cancellable so Close does not wait ten seconds.
+	timer := time.NewTimer(10 * time.Second)
+	select {
+	case <-timer.C:
+		h.refreshModelsCache()
+		h.refreshAllAccounts()
+	case <-h.stopRefresh:
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return
+	}
 
 	for {
 		select {
@@ -663,7 +775,6 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		buildModelInfo("gpt-4o", "kiro-proxy", true),
 		buildModelInfo("gpt-4", "kiro-proxy", true),
 	)
-
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"object": "list",
@@ -1594,6 +1705,7 @@ func (h *Handler) backgroundStatsSaver() {
 
 // backgroundRuntimeFlusher batches request logs and key IP lifetime into SQLite.
 func (h *Handler) backgroundRuntimeFlusher() {
+	defer h.runtimeWG.Done()
 	logTicker := time.NewTicker(2 * time.Second)
 	ipTicker := time.NewTicker(15 * time.Second)
 	defer logTicker.Stop()
@@ -1608,19 +1720,57 @@ func (h *Handler) backgroundRuntimeFlusher() {
 		case <-h.stopRuntime:
 			h.flushRequestLogs()
 			h.flushKeyIPStats()
-			if h.runtimeStore != nil {
-				_ = h.runtimeStore.Close()
-				h.runtimeStore = nil
-			}
 			return
 		}
 	}
 }
 
+func (h *Handler) runtimeStoreForOperation() (*store.Store, func()) {
+	if h == nil {
+		return nil, func() {}
+	}
+	h.runtimeStoreMu.RLock()
+	if h.runtimeStore == nil {
+		h.runtimeStoreMu.RUnlock()
+		return nil, func() {}
+	}
+	return h.runtimeStore, h.runtimeStoreMu.RUnlock
+}
+
+// Close stops the runtime flusher and closes SQLite after in-flight operations finish.
+func (h *Handler) Close() error {
+	if h == nil {
+		return nil
+	}
+	var closeErr error
+	h.closeOnce.Do(func() {
+		if h.stopRefresh != nil {
+			close(h.stopRefresh)
+		}
+		if h.stopStatsSaver != nil {
+			close(h.stopStatsSaver)
+		}
+		if h.stopRuntime != nil {
+			close(h.stopRuntime)
+		}
+		h.runtimeWG.Wait()
+		h.runtimeStoreMu.Lock()
+		if h.runtimeStore != nil {
+			closeErr = h.runtimeStore.Close()
+			h.runtimeStore = nil
+		}
+		h.runtimeStoreMu.Unlock()
+		h.closeErr = closeErr
+	})
+	return h.closeErr
+}
+
 func (h *Handler) flushRequestLogs() {
-	if h == nil || h.runtimeStore == nil {
+	st, unlock := h.runtimeStoreForOperation()
+	if st == nil {
 		return
 	}
+	defer unlock()
 	h.requestLogsMu.Lock()
 	if len(h.logPending) == 0 {
 		h.requestLogsMu.Unlock()
@@ -1634,7 +1784,7 @@ func (h *Handler) flushRequestLogs() {
 	for i, e := range batch {
 		rows[i] = requestLogToRow(e)
 	}
-	if err := h.runtimeStore.InsertRequestLogs(rows); err != nil {
+	if err := st.InsertRequestLogs(rows); err != nil {
 		logger.Warnf("flush request logs: %v", err)
 		// Put back on failure (best-effort; may reorder slightly).
 		h.requestLogsMu.Lock()
@@ -1645,15 +1795,20 @@ func (h *Handler) flushRequestLogs() {
 		h.requestLogsMu.Unlock()
 		return
 	}
-	if err := h.runtimeStore.PruneRequestLogs(requestLogsDBMax); err != nil {
+	if err := st.PruneRequestLogs(requestLogsDBMax); err != nil {
 		logger.Warnf("prune request logs: %v", err)
 	}
 }
 
 func (h *Handler) flushKeyIPStats() {
-	if h == nil || h.runtimeStore == nil || h.ipTrack == nil {
+	if h == nil || h.ipTrack == nil {
 		return
 	}
+	st, unlock := h.runtimeStoreForOperation()
+	if st == nil {
+		return
+	}
+	defer unlock()
 	if !h.ipTrack.isDirty() {
 		return
 	}
@@ -1664,7 +1819,7 @@ func (h *Handler) flushKeyIPStats() {
 		byKey[r.KeyID] = append(byKey[r.KeyID], r)
 	}
 	for keyID, list := range byKey {
-		if err := h.runtimeStore.ReplaceKeyIPStats(keyID, list); err != nil {
+		if err := st.ReplaceKeyIPStats(keyID, list); err != nil {
 			logger.Warnf("replace key IP stats %s: %v", keyID, err)
 			return
 		}
@@ -2761,6 +2916,17 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 
 // ==================== 管理 API ====================
 
+func comboRoute(path, method, wantMethod string, reset bool) bool {
+	if method != wantMethod || !strings.HasPrefix(path, "/combos/") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/combos/"), "/")
+	if reset {
+		return len(parts) == 2 && parts[0] != "" && parts[1] == "reset-rotation"
+	}
+	return len(parts) == 1 && parts[0] != ""
+}
+
 func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/admin/api")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -2786,6 +2952,18 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case path == "/combos" && r.Method == "GET":
+		h.apiListCombos(w, r)
+	case path == "/combos" && r.Method == "POST":
+		h.apiCreateCombo(w, r)
+	case comboRoute(path, r.Method, "POST", true):
+		h.apiResetCombo(w, r, strings.Split(strings.TrimPrefix(path, "/combos/"), "/")[0])
+	case comboRoute(path, r.Method, "GET", false):
+		h.apiGetCombo(w, r, strings.TrimPrefix(path, "/combos/"))
+	case comboRoute(path, r.Method, "PUT", false):
+		h.apiUpdateCombo(w, r, strings.TrimPrefix(path, "/combos/"))
+	case comboRoute(path, r.Method, "DELETE", false):
+		h.apiDeleteCombo(w, r, strings.TrimPrefix(path, "/combos/"))
 	case path == "/accounts" && r.Method == "GET":
 		h.apiGetAccounts(w, r)
 	case path == "/accounts" && r.Method == "POST":
@@ -4772,8 +4950,9 @@ func (h *Handler) apiClearLogs(w http.ResponseWriter, r *http.Request) {
 	h.requestLogs = h.requestLogs[:0]
 	h.logPending = h.logPending[:0]
 	h.requestLogsMu.Unlock()
-	if h.runtimeStore != nil {
-		if err := h.runtimeStore.ClearRequestLogs(); err != nil {
+	if st, unlock := h.runtimeStoreForOperation(); st != nil {
+		defer unlock()
+		if err := st.ClearRequestLogs(); err != nil {
 			logger.Warnf("clear request logs db: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
