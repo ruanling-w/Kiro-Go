@@ -24,7 +24,11 @@ type streamCommitGate struct {
 }
 
 func newStreamCommitGate(dst http.ResponseWriter) *streamCommitGate {
-	return &streamCommitGate{dst: dst, header: make(http.Header), limit: streamGateBufferLimit}
+	header := make(http.Header)
+	for key, values := range dst.Header() {
+		header[key] = append([]string(nil), values...)
+	}
+	return &streamCommitGate{dst: dst, header: header, limit: streamGateBufferLimit}
 }
 
 func (g *streamCommitGate) Header() http.Header { return g.header }
@@ -95,10 +99,8 @@ func (g *streamCommitGate) Discard() {
 func (g *streamCommitGate) Committed() bool { return g.committed }
 
 func (g *streamCommitGate) copyHeaders() {
-	for key := range g.dst.Header() {
-		g.dst.Header().Del(key)
-	}
 	for key, values := range g.header {
+		g.dst.Header().Del(key)
 		for _, value := range values {
 			g.dst.Header().Add(key, value)
 		}

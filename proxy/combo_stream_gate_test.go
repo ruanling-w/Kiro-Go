@@ -40,6 +40,20 @@ func TestStreamCommitGateDiscardHidesAttempt(t *testing.T) {
 	}
 }
 
+func TestStreamCommitGatePreservesExistingHeaders(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.Header().Set("X-Request-ID", "req-1")
+	gate := newStreamCommitGate(rec)
+	gate.Header().Set("Content-Type", "text/event-stream")
+	_, _ = gate.Write([]byte("data: ok\n\n"))
+	if err := gate.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Header().Get("X-Request-ID") != "req-1" {
+		t.Fatalf("header lost: %v", rec.Header())
+	}
+}
+
 func TestStreamCommitGateEnforcesBufferLimit(t *testing.T) {
 	rec := httptest.NewRecorder()
 	gate := newStreamCommitGate(rec)
