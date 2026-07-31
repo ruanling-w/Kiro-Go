@@ -52,6 +52,7 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
   const [enabled, setEnabled] = useState(true)
   const [tokenLimit, setTokenLimit] = useState('0')
   const [creditLimit, setCreditLimit] = useState('0')
+  const [multiplier, setMultiplier] = useState('0')
   const [expiry, setExpiry] = useState('')
   const [createdKey, setCreatedKey] = useState<string | null>(null)
 
@@ -63,12 +64,14 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
       setEnabled(editing.enabled)
       setTokenLimit(String(editing.tokenLimit ?? 0))
       setCreditLimit(String(editing.creditLimit ?? 0))
+      setMultiplier(String(editing.multiplier ?? 0))
       setExpiry(toDatetimeLocal(editing.expiresAt))
     } else {
       setName('')
       setEnabled(true)
       setTokenLimit('0')
       setCreditLimit('0')
+      setMultiplier('0')
       setExpiry('')
     }
   }, [open, editing])
@@ -79,6 +82,7 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
       enabled,
       tokenLimit: Number(tokenLimit) || 0,
       creditLimit: Number(creditLimit) || 0,
+      multiplier: Number(multiplier) || 0,
       expiresAt: fromDatetimeLocal(expiry),
     }
     if (editing) {
@@ -167,8 +171,19 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
                   onChange={(e) => setCreditLimit(e.target.value)}
                 />
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="ak-multiplier">Multiplier</Label>
+                <Input
+                  id="ak-multiplier"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={multiplier}
+                  onChange={(e) => setMultiplier(e.target.value)}
+                />
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground">{t('apiKeys.limitHint')}</p>
             <div className="space-y-2">
               <Label htmlFor="ak-exp">{t('apiKeys.formExpiry')}</Label>
               <Input

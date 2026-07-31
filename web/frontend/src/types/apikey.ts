@@ -11,6 +11,7 @@ export interface ApiKeyView {
   lastUsedAt: number
   tokenLimit: number
   creditLimit: number
+  multiplier: number
   tokensUsed: number
   creditsUsed: number
   requestsCount: number
@@ -27,6 +28,7 @@ export interface ApiKeyCreate {
   enabled?: boolean
   tokenLimit?: number
   creditLimit?: number
+  multiplier?: number
   expiresAt?: number
 }
 
@@ -37,6 +39,7 @@ export interface ApiKeyUpdate {
   enabled?: boolean
   tokenLimit?: number
   creditLimit?: number
+  multiplier?: number
   expiresAt?: number
 }
 

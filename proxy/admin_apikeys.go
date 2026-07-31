@@ -18,6 +18,7 @@ type apiKeyView struct {
 	LastUsedAt    int64   `json:"lastUsedAt,omitempty"`
 	TokenLimit    int64   `json:"tokenLimit,omitempty"`
 	CreditLimit   float64 `json:"creditLimit,omitempty"`
+	Multiplier    float64 `json:"multiplier,omitempty"`
 	TokensUsed    int64   `json:"tokensUsed"`
 	CreditsUsed   float64 `json:"creditsUsed"`
 	RequestsCount int64   `json:"requestsCount"`
@@ -38,6 +39,7 @@ func toApiKeyView(e config.ApiKeyEntry) apiKeyView {
 		LastUsedAt:    e.LastUsedAt,
 		TokenLimit:    e.TokenLimit,
 		CreditLimit:   e.CreditLimit,
+		Multiplier:    e.Multiplier,
 		TokensUsed:    e.TokensUsed,
 		CreditsUsed:   e.CreditsUsed,
 		RequestsCount: e.RequestsCount,
@@ -80,6 +82,7 @@ type apiKeyCreateRequest struct {
 	Enabled     *bool   `json:"enabled,omitempty"`
 	TokenLimit  int64   `json:"tokenLimit,omitempty"`
 	CreditLimit float64 `json:"creditLimit,omitempty"`
+	Multiplier  float64 `json:"multiplier,omitempty"`
 	ExpiresAt   int64   `json:"expiresAt,omitempty"` // Unix seconds; 0 = never expires
 }
 
@@ -107,6 +110,7 @@ func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
 		Enabled:     enabled,
 		TokenLimit:  req.TokenLimit,
 		CreditLimit: req.CreditLimit,
+		Multiplier:  req.Multiplier,
 		ExpiresAt:   req.ExpiresAt,
 	})
 	if err != nil {
@@ -130,6 +134,7 @@ type apiKeyUpdateRequest struct {
 	Enabled     *bool    `json:"enabled,omitempty"`
 	TokenLimit  *int64   `json:"tokenLimit,omitempty"`
 	CreditLimit *float64 `json:"creditLimit,omitempty"`
+	Multiplier  *float64 `json:"multiplier,omitempty"`
 	ExpiresAt   *int64   `json:"expiresAt,omitempty"`
 }
 
@@ -163,6 +168,9 @@ func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id str
 	}
 	if req.CreditLimit != nil {
 		patch.CreditLimit = *req.CreditLimit
+	}
+	if req.Multiplier != nil {
+		patch.Multiplier = *req.Multiplier
 	}
 	if req.ExpiresAt != nil {
 		patch.ExpiresAt = *req.ExpiresAt
