@@ -9,6 +9,7 @@ import (
 	"kiro-go/logger"
 	"kiro-go/pool"
 	"kiro-go/store"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -1975,9 +1976,19 @@ func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTok
 	if apiKeyID == "" {
 		return
 	}
-	if err := config.RecordApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits); err != nil {
+	tokens, attributedCredits := h.attributeApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits)
+	if err := config.RecordApiKeyUsage(apiKeyID, tokens, attributedCredits); err != nil {
 		logger.Warnf("[ApiKey] failed to record usage for key %s: %v", apiKeyID, err)
 	}
+}
+
+func (h *Handler) attributeApiKeyUsage(apiKeyID string, tokens int64, credits float64) (int64, float64) {
+	entry := config.GetApiKeyEntry(apiKeyID)
+	if entry == nil {
+		return tokens, credits
+	}
+	multiplier := config.EffectiveApiKeyMultiplier(entry.Multiplier)
+	return int64(math.Ceil(float64(tokens) * multiplier)), credits * multiplier
 }
 
 // recordBillableAttempt attributes upstream usage without incrementing the
@@ -1987,7 +1998,8 @@ func (h *Handler) recordBillableAttempt(apiKeyID string, inputTokens, outputToke
 	if apiKeyID == "" {
 		return
 	}
-	if err := config.RecordApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits); err != nil {
+	tokens, attributedCredits := h.attributeApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits)
+	if err := config.RecordApiKeyUsage(apiKeyID, tokens, attributedCredits); err != nil {
 		logger.Warnf("[ApiKey] failed to record billable Combo attempt for key %s: %v", apiKeyID, err)
 	}
 }

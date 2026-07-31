@@ -4,9 +4,31 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"math"
 	"strings"
 	"time"
 )
+
+const MaxApiKeyMultiplier = 100
+
+// EffectiveApiKeyMultiplier returns the billing factor for a key. Zero preserves
+// legacy behavior and means one times usage.
+func EffectiveApiKeyMultiplier(multiplier float64) float64 {
+	if multiplier == 0 {
+		return 1
+	}
+	return multiplier
+}
+
+func validateApiKeyMultiplier(multiplier float64) error {
+	if math.IsNaN(multiplier) || math.IsInf(multiplier, 0) || multiplier < 0 {
+		return errors.New("api key multiplier must be a finite non-negative number")
+	}
+	if multiplier > MaxApiKeyMultiplier {
+		return errors.New("api key multiplier must not exceed 100")
+	}
+	return nil
+}
 
 // ListApiKeys returns a snapshot of all configured API key entries.
 func ListApiKeys() []ApiKeyEntry {
@@ -43,6 +65,9 @@ func AddApiKey(entry ApiKeyEntry) (ApiKeyEntry, error) {
 	defer cfgLock.Unlock()
 	if cfg == nil {
 		return ApiKeyEntry{}, errors.New("config not initialized")
+	}
+	if err := validateApiKeyMultiplier(entry.Multiplier); err != nil {
+		return ApiKeyEntry{}, err
 	}
 	entry.Key = strings.TrimSpace(entry.Key)
 	if entry.Key == "" {
@@ -90,6 +115,9 @@ func UpdateApiKey(id string, patch ApiKeyEntry) error {
 	if idx < 0 {
 		return errors.New("api key not found")
 	}
+	if err := validateApiKeyMultiplier(patch.Multiplier); err != nil {
+		return err
+	}
 	if patch.Name != "" {
 		cfg.ApiKeys[idx].Name = patch.Name
 	}
@@ -106,6 +134,7 @@ func UpdateApiKey(id string, patch ApiKeyEntry) error {
 	cfg.ApiKeys[idx].Enabled = patch.Enabled
 	cfg.ApiKeys[idx].TokenLimit = patch.TokenLimit
 	cfg.ApiKeys[idx].CreditLimit = patch.CreditLimit
+	cfg.ApiKeys[idx].Multiplier = patch.Multiplier
 	cfg.ApiKeys[idx].ExpiresAt = patch.ExpiresAt
 	if patch.Migrated {
 		cfg.ApiKeys[idx].Migrated = true
