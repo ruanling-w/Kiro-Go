@@ -471,6 +471,7 @@
   "app.title": "Kiro Proxy",
   "common.close": "关闭",
   "common.remove": "删除",
+  "common.delete": "删除",
   "common.retry": "重试",
   "common.unknownError": "未知错误",
   "login.showPassword": "显示密码",
@@ -744,7 +745,7 @@
   "combos.models": "Ordered models",
   "combos.modelCount": "{count} / 8",
   "combos.modelPlaceholder": "Model ID",
-  "combos.modelAt": "Model at position {{position}}",
+  "combos.modelAt": "Model at position {position}",
   "combos.moveUp": "Move model up",
   "combos.moveDown": "Move model down",
   "combos.removeModel": "Remove model",
@@ -778,10 +779,10 @@
   "combos.emptyTitle": "No Combos yet",
   "combos.emptyDescription": "Create a route to define how models take over, rotate, or work together.",
   "combos.copied": "Full ID copied",
-  "combos.revision": "Revision {{revision}}",
+  "combos.revision": "Revision {revision}",
   "combos.reset": "Reset rotation",
   "combos.deleteTitle": "Delete Combo?",
-  "combos.deleteDescription": "Delete {{name}}? Requests using it will no longer resolve.",
+  "combos.deleteDescription": "Delete {name}? Requests using it will no longer resolve.",
   "combos.resetTitle": "Reset rotation?",
-  "combos.resetDescription": "The next request to {{name}} will start from its first model."
+  "combos.resetDescription": "The next request to {name} will start from its first model."
 }

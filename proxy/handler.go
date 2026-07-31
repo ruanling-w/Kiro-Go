@@ -5517,6 +5517,30 @@ func (h *Handler) apiGetAccountModels(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
+	// Grok / xAI accounts serve a static model catalog.
+	if isGrokAccount(account) {
+		models := grokModelInfos()
+		h.pool.SetModelList(id, grokModelIDs())
+		h.modelsCacheMu.Lock()
+		h.cachedModels = mergeUniqueModels(h.cachedModels, models)
+		h.modelsCacheTime = time.Now().Unix()
+		h.modelsCacheMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "models": models})
+		return
+	}
+
+	// Codex (ChatGPT) accounts serve a static model catalog.
+	if isCodexAccount(account) {
+		models := codexModelInfos()
+		h.pool.SetModelList(id, codexModelIDs())
+		h.modelsCacheMu.Lock()
+		h.cachedModels = mergeUniqueModels(h.cachedModels, models)
+		h.modelsCacheTime = time.Now().Unix()
+		h.modelsCacheMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "models": models})
+		return
+	}
+
 	// Remote Kiro-Go peers: live OpenAI-compatible model list.
 	if isRemoteKiroAccount(account) {
 		modelIDs, err := FetchRemoteKiroModels(account)

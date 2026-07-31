@@ -22,6 +22,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { HamsterWheel } from '@/components/shared/HamsterLoader'
+import { tp } from '@/lib/t'
 import { useAccountModels } from '@/hooks/queries/useProviderModels'
 import { testAccount, type TestAccountResult } from '@/services/accounts.service'
 
@@ -52,7 +53,7 @@ export function TestAccountDialog({ account, onClose }: Props) {
   async function runTest() {
     if (!account) return
     setRunning(true)
-    setLog([{ tone: 'info', text: t('accounts.testLog.start') }])
+    setLog([{ tone: 'info', text: tp(t, 'accounts.testLog.start', account.email, model || t('accounts.selectModel'), account.provider) }])
     try {
       const res: TestAccountResult = await testAccount(account.id, model || undefined)
       if (res.success) {
@@ -72,7 +73,10 @@ export function TestAccountDialog({ account, onClose }: Props) {
 
   return (
     <Dialog open={!!account} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent
+        className="w-[min(720px,calc(100vw-2rem))] max-w-none gap-5 p-6 sm:max-w-none"
+        style={{ minHeight: '320px' }}
+      >
         <DialogHeader>
           <DialogTitle>{t('accounts.testModalTitle')}</DialogTitle>
         </DialogHeader>
@@ -99,21 +103,21 @@ export function TestAccountDialog({ account, onClose }: Props) {
           </div>
 
           {log.length > 0 && (
-            <div className="max-h-52 space-y-1 overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs">
+            <div className="min-h-24 max-h-60 w-full min-w-0 space-y-1 overflow-x-hidden overflow-y-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs">
               {log.map((line, i) => (
                 <div
                   key={i}
                   className={
                     line.tone === 'success'
-                      ? 'flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400'
+                      ? 'flex min-w-0 items-start gap-1.5 break-all text-emerald-600 dark:text-emerald-400'
                       : line.tone === 'error'
-                        ? 'flex items-center gap-1.5 text-destructive'
-                        : 'flex items-center gap-1.5 text-muted-foreground'
+                        ? 'flex min-w-0 items-start gap-1.5 break-all text-destructive'
+                        : 'flex min-w-0 items-start gap-1.5 break-all text-muted-foreground'
                   }
                 >
                   {line.tone === 'success' && <CheckCircle2 className="size-3.5" />}
                   {line.tone === 'error' && <XCircle className="size-3.5" />}
-                  <span>{line.text}</span>
+                  <span className="min-w-0 whitespace-pre-wrap break-all">{line.text}</span>
                 </div>
               ))}
             </div>
