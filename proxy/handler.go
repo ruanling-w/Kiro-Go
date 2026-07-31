@@ -5054,11 +5054,12 @@ func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"apiKey":         config.GetApiKey(),
-		"requireApiKey":  config.IsApiKeyRequired(),
-		"port":           config.GetPort(),
-		"host":           config.GetHost(),
-		"allowOverUsage": config.GetAllowOverUsage(),
+		"apiKey":                  config.GetApiKey(),
+		"requireApiKey":           config.IsApiKeyRequired(),
+		"port":                    config.GetPort(),
+		"host":                    config.GetHost(),
+		"allowOverUsage":          config.GetAllowOverUsage(),
+		"defaultApiKeyMultiplier": config.GetDefaultApiKeyMultiplier(),
 	})
 }
 
@@ -5150,10 +5151,11 @@ func (h *Handler) apiTestTelegram(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ApiKey         *string `json:"apiKey,omitempty"`
-		RequireApiKey  *bool   `json:"requireApiKey,omitempty"`
-		Password       string  `json:"password,omitempty"`
-		AllowOverUsage *bool   `json:"allowOverUsage,omitempty"`
+		ApiKey                  *string  `json:"apiKey,omitempty"`
+		RequireApiKey           *bool    `json:"requireApiKey,omitempty"`
+		Password                string   `json:"password,omitempty"`
+		AllowOverUsage          *bool    `json:"allowOverUsage,omitempty"`
+		DefaultApiKeyMultiplier *float64 `json:"defaultApiKeyMultiplier,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -5173,7 +5175,14 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		adminAuth.invalidateAll()
 	}
 
-	// 更新超额使用设置
+	if req.DefaultApiKeyMultiplier != nil {
+		if err := config.UpdateDefaultApiKeyMultiplier(*req.DefaultApiKeyMultiplier); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
 	if req.AllowOverUsage != nil {
 		if err := config.UpdateAllowOverUsage(*req.AllowOverUsage); err != nil {
 			w.WriteHeader(500)

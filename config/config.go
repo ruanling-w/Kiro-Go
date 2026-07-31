@@ -263,6 +263,10 @@ type Config struct {
 	// solely because usageCurrent >= usageLimit.
 	AllowOverUsage bool `json:"allowOverUsage,omitempty"`
 
+	// DefaultApiKeyMultiplier is used when creating a key without an explicit multiplier.
+	// Zero means the default billing factor of 1x.
+	DefaultApiKeyMultiplier float64 `json:"defaultApiKeyMultiplier,omitempty"`
+
 	// Proxy configuration: optional outbound proxy for Kiro API requests
 	// Format: "socks5://host:port", "socks5://user:pass@host:port",
 	//         "http://host:port",  "http://user:pass@host:port"
@@ -1205,7 +1209,27 @@ func UpdateAllowOverUsage(allow bool) error {
 	return Save()
 }
 
-// GetLogLevel returns the configured log level (debug/info/warn/error). Defaults to "info".
+// GetDefaultApiKeyMultiplier returns the multiplier used for newly created API keys.
+func GetDefaultApiKeyMultiplier() float64 {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return 0
+	}
+	return cfg.DefaultApiKeyMultiplier
+}
+
+// UpdateDefaultApiKeyMultiplier validates and persists the multiplier for new keys.
+func UpdateDefaultApiKeyMultiplier(multiplier float64) error {
+	if err := validateApiKeyMultiplier(multiplier); err != nil {
+		return err
+	}
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.DefaultApiKeyMultiplier = multiplier
+	return Save()
+}
+
 func GetLogLevel() string {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()

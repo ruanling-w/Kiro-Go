@@ -110,8 +110,13 @@ func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
 		Enabled:     enabled,
 		TokenLimit:  req.TokenLimit,
 		CreditLimit: req.CreditLimit,
-		Multiplier:  req.Multiplier,
-		ExpiresAt:   req.ExpiresAt,
+		Multiplier: func() float64 {
+			if req.Multiplier != 0 {
+				return req.Multiplier
+			}
+			return config.GetDefaultApiKeyMultiplier()
+		}(),
+		ExpiresAt: req.ExpiresAt,
 	})
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
