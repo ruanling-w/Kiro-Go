@@ -1,5 +1,5 @@
 # fe 阶段：构建 React + Vite 前端，输出到 web/dist（Vite build.outDir）
-FROM node:20-alpine AS fe
+FROM node:22-alpine AS fe
 WORKDIR /app/web/frontend
 RUN corepack enable
 COPY web/frontend/package.json web/frontend/pnpm-lock.yaml ./

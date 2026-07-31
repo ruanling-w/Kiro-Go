@@ -12,7 +12,7 @@
 # Runtime data
 /data/
 *.log
-
+.env
 # Frontend deps + build output
 /web/frontend/node_modules/
 /web/frontend/dist/
