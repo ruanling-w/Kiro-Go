@@ -17,6 +17,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -72,9 +73,12 @@ func CallCodexAPI(account *config.Account, payload *KiroPayload, callback *KiroS
 		logger.Debugf("[Codex] Request to %s (model=%v)", codexResponsesURL, reqBody["model"])
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	client := GetClientForProxy(ResolveAccountProxyURL(account))
 
-	req, err := http.NewRequest(http.MethodPost, codexResponsesURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexResponsesURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return fmt.Errorf("codex: new request: %w", err)
 	}
@@ -99,14 +103,18 @@ func CallCodexAPI(account *config.Account, payload *KiroPayload, callback *KiroS
 	if err != nil {
 		return fmt.Errorf("codex: request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return fmt.Errorf("codex: upstream error %d: %s", resp.StatusCode, string(errBody))
 	}
 
-	return parseCodexResponsesSSE(resp.Body, callback, model)
+	idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+	err = parseCodexResponsesSSE(idleReader, callback, model)
+	idleReader.Stop()
+	resp.Body.Close()
+	return err
 }
 
 // CallCodexImageAPI drives the hosted image_generation tool on the Codex
@@ -128,8 +136,11 @@ func CallCodexImageAPI(account *config.Account, req *CodexImageRequest) (b64 str
 		return "", "", fmt.Errorf("codex: marshal image request: %w", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	client := GetClientForProxy(ResolveAccountProxyURL(account))
-	httpReq, err := http.NewRequest(http.MethodPost, codexResponsesURL, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, codexResponsesURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", "", err
 	}
@@ -154,10 +165,10 @@ func CallCodexImageAPI(account *config.Account, req *CodexImageRequest) (b64 str
 	if err != nil {
 		return "", "", fmt.Errorf("codex: image request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return "", "", fmt.Errorf("codex: image upstream error %d: %s", resp.StatusCode, string(errBody))
 	}
 
@@ -170,8 +181,12 @@ func CallCodexImageAPI(account *config.Account, req *CodexImageRequest) (b64 str
 			}
 		},
 	}
-	if err := parseCodexResponsesSSE(resp.Body, cb, req.Model); err != nil {
-		return "", "", err
+	idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+	parseErr := parseCodexResponsesSSE(idleReader, cb, req.Model)
+	idleReader.Stop()
+	resp.Body.Close()
+	if parseErr != nil {
+		return "", "", parseErr
 	}
 	if finalImage == "" {
 		return "", "", fmt.Errorf("codex: no image returned (account may not be entitled — ChatGPT Plus or higher required)")

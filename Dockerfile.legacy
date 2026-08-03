@@ -1,0 +1,45 @@
+# Bản cũ: dùng web/index.html trực tiếp, không cần build Vite/pnpm
+# Go server đọc từ web/dist/ nên copy file cũ vào đó
+
+# builder: biên dịch Go binary
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o kiro-go .
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+COPY --from=builder /app/kiro-go .
+
+# Copy file tĩnh bản cũ vào web/dist/ (vì Go server hardcode serve từ web/dist/)
+RUN mkdir -p /app/web/dist
+COPY --from=builder /app/web/index.html  ./web/dist/index.html
+COPY --from=builder /app/web/check.html  ./web/dist/check.html
+COPY --from=builder /app/web/app.js      ./web/dist/app.js
+COPY --from=builder /app/web/styles.css  ./web/dist/styles.css
+COPY --from=builder /app/web/toast.css   ./web/dist/toast.css
+COPY --from=builder /app/web/toast.js    ./web/dist/toast.js
+COPY --from=builder /app/web/favicon.ico ./web/dist/favicon.ico
+COPY --from=builder /app/web/icon.png    ./web/dist/icon.png
+COPY --from=builder /app/web/js          ./web/dist/js
+COPY --from=builder /app/web/locales     ./web/dist/locales
+COPY --from=builder /app/web/vendor      ./web/dist/vendor
+
+RUN mkdir -p /app/data
+
+EXPOSE 8080
+VOLUME /app/data
+
+CMD ["./kiro-go"]
