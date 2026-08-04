@@ -17,6 +17,8 @@
 /web/frontend/node_modules/
 /web/frontend/dist/
 /web/dist/
+# Vite dep pre-bundle cache (lands at repo root when vite runs from here)
+/.vite/
 
 # Editor / OS
 .idea/
