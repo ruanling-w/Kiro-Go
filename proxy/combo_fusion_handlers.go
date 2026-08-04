@@ -53,7 +53,7 @@ func (h *Handler) executeFusionModel(ctx context.Context, req *OpenAIRequest, mo
 			h.handleAccountFailure(account, err)
 			continue
 		}
-		result, err := h.executeOpenAIComboAttempt(account, payload, model, thinking, estimated)
+		result, err := h.executeOpenAIComboAttempt(ctx, account, payload, model, thinking, estimated)
 		if err != nil {
 			last = err
 			h.recordComboAttempt(meta, account.ID, providerLabel(account), 0, 0, 0, err)

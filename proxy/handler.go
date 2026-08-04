@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -568,7 +569,7 @@ func (h *Handler) refreshAllAccounts() {
 		if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
 			if err := refreshToken(); err != nil {
 				logger.Warnf("[BackgroundRefresh] Token refresh failed for %s: %v", account.Email, err)
-				h.handleAccountFailureEx(account, err, true)
+				h.handleBackgroundFailure(account, err, "BackgroundRefresh")
 				continue
 			}
 		}
@@ -923,7 +924,7 @@ func (h *Handler) refreshModelsCache() {
 		account := &accounts[i]
 		if err := h.ensureValidToken(account); err != nil {
 			logger.Warnf("[ModelsCache] Skip %s token refresh failed: %v", account.Email, err)
-			h.handleAccountFailureEx(account, err, true)
+			h.handleBackgroundFailure(account, err, "ModelsCache")
 			continue
 		}
 
@@ -957,7 +958,7 @@ func (h *Handler) refreshModelsCache() {
 			modelIDs, err := FetchRemoteKiroModels(account)
 			if err != nil {
 				logger.Warnf("[ModelsCache] Failed to refresh remote models for %s: %v", account.Email, err)
-				h.handleAccountFailure(account, err)
+				h.handleBackgroundFailure(account, err, "ModelsCache")
 				continue
 			}
 			h.pool.SetModelList(account.ID, modelIDs)
@@ -968,7 +969,7 @@ func (h *Handler) refreshModelsCache() {
 		models, err := ListAvailableModels(account)
 		if err != nil {
 			logger.Warnf("[ModelsCache] Failed to refresh for %s: %v", account.Email, err)
-			h.handleAccountFailure(account, err)
+			h.handleBackgroundFailure(account, err, "ModelsCache")
 			continue
 		}
 		// 缓存每账号可用模型，用于路由时过滤
@@ -1283,18 +1284,18 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	if comboRoute != nil {
 		comboRoute.RequestedModel = requestedModel
 		if req.Stream {
-			h.handleClaudeComboStream(w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
+			h.handleClaudeComboStream(r.Context(), w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
 		} else {
 			if comboRoute.Combo.Strategy == "fusion" && !req.Stream {
 				h.handleClaudeFusion(r.Context(), w, &req, comboRoute, thinking, apiKeyID)
 				return
 			}
-			h.handleClaudeComboNonStream(w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
+			h.handleClaudeComboNonStream(r.Context(), w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
 		}
 	} else if req.Stream {
-		h.handleClaudeStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, clientIP)
+		h.handleClaudeStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, clientIP)
 	} else {
-		h.handleClaudeNonStream(w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, clientIP)
+		h.handleClaudeNonStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, clientIP)
 	}
 }
 
@@ -1314,7 +1315,7 @@ type claudeStreamAttemptResult struct {
 	upstreamErr, writeErr     error
 }
 
-func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID, clientIP string) {
+func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID, clientIP string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1342,7 +1343,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 			continue
 		}
 		cu := h.promptCache.Compute(account.ID, cacheProfile)
-		r := h.streamClaudeAttempt(account, payload, claudeStreamAttempt{sse: sse, messageID: msgID, effectiveModel: model, publicModel: model, thinking: thinking, thinkingOpts: thinkingOpts, estimatedInputTokens: estimatedInputTokens, cacheProfile: cacheProfile, cacheUsage: cu})
+		r := h.streamClaudeAttempt(ctx, account, payload, claudeStreamAttempt{sse: sse, messageID: msgID, effectiveModel: model, publicModel: model, thinking: thinking, thinkingOpts: thinkingOpts, estimatedInputTokens: estimatedInputTokens, cacheProfile: cacheProfile, cacheUsage: cu})
 		if r.writeErr != nil {
 			return
 		}
@@ -1368,6 +1369,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		return
 	}
 	if lastErr == nil {
+		h.logPoolEmpty("claude-stream", model, excluded)
 		h.sendClaudeError(w, 503, "api_error", "No available accounts")
 		return
 	}
@@ -1375,7 +1377,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
 }
 
-func (h *Handler) streamClaudeAttempt(account *config.Account, payload *KiroPayload, at claudeStreamAttempt) claudeStreamAttemptResult {
+func (h *Handler) streamClaudeAttempt(ctx context.Context, account *config.Account, payload *KiroPayload, at claudeStreamAttempt) claudeStreamAttemptResult {
 	var result claudeStreamAttemptResult
 	sse := at.sse
 	msgID := at.messageID
@@ -1726,7 +1728,7 @@ func (h *Handler) streamClaudeAttempt(account *config.Account, payload *KiroPayl
 		},
 	}
 
-	err := CallProvider(account, payload, callback)
+	err := CallProvider(ctx, account, payload, callback)
 	result.started = messageStarted
 	if writeErr := sse.Err(); writeErr != nil {
 		result.writeErr = writeErr
@@ -2157,7 +2159,7 @@ func (h *Handler) getRequestLogs() []RequestLog {
 }
 
 // handleClaudeNonStream Claude 非流式响应
-func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID, clientIP string) {
+func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID, clientIP string) {
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
@@ -2216,7 +2218,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 			},
 		}
 
-		err := CallProvider(account, payload, callback)
+		err := CallProvider(ctx, account, payload, callback)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2281,6 +2283,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 	}
 
 	if lastErr == nil {
+		h.logPoolEmpty("claude", model, excluded)
 		h.sendClaudeError(w, 503, "api_error", "No available accounts")
 		return
 	}
@@ -2348,21 +2351,21 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	if resolved != nil {
 		resolved.RequestedModel = requestedModel
 		if req.Stream {
-			h.handleOpenAIComboStream(w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
+			h.handleOpenAIComboStream(r.Context(), w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
 		} else {
 			if resolved.Combo.Strategy == "fusion" {
 				h.handleOpenAIFusion(r.Context(), w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
 				return
 			}
-			h.handleOpenAIComboNonStream(w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
+			h.handleOpenAIComboNonStream(r.Context(), w, &req, resolved, thinking, estimatedInputTokens, apiKeyID, clientIP)
 		}
 		return
 	}
 	kiroPayload := OpenAIToKiro(&req, thinking)
 	if req.Stream {
-		h.handleOpenAIStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, clientIP)
+		h.handleOpenAIStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, clientIP)
 	} else {
-		h.handleOpenAINonStream(w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, clientIP)
+		h.handleOpenAINonStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, clientIP)
 	}
 }
 
@@ -2399,7 +2402,7 @@ func (h *Handler) handleImageGenerations(w http.ResponseWriter, r *http.Request)
 	// one provider (Codex / Grok / Antigravity); the pool routes accounts by model.
 	var (
 		wantAccount func(*config.Account) bool
-		callImage   func(*config.Account, *CodexImageRequest) (string, string, error)
+		callImage   func(context.Context, *config.Account, *CodexImageRequest) (string, string, error)
 		providerErr string
 	)
 	switch {
@@ -2438,7 +2441,7 @@ func (h *Handler) handleImageGenerations(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
-		b64, mimeType, err := callImage(account, &req)
+		b64, mimeType, err := callImage(r.Context(), account, &req)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2536,7 +2539,7 @@ type openAIStreamAttemptResult struct {
 }
 
 // handleOpenAIStream OpenAI 流式响应
-func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
+func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
 	setOpenAIStreamHeaders(w)
 
 	flusher, ok := w.(http.Flusher)
@@ -2571,7 +2574,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			continue
 		}
 
-		result := h.streamOpenAIAttempt(account, payload, openAIStreamAttempt{
+		result := h.streamOpenAIAttempt(ctx, account, payload, openAIStreamAttempt{
 			sse:                  sse,
 			chatID:               chatID,
 			effectiveModel:       model,
@@ -2608,6 +2611,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 	}
 
 	if lastErr == nil {
+		h.logPoolEmpty("openai-stream", model, excluded)
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
@@ -2621,7 +2625,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 // chunk and [DONE]) through at.sse. It performs no account/model selection, no
 // retry and no success/failure bookkeeping: callers own that policy, which is how
 // the direct account-fallback loop and Combo candidate routing share one body.
-func (h *Handler) streamOpenAIAttempt(account *config.Account, payload *KiroPayload, at openAIStreamAttempt) openAIStreamAttemptResult {
+func (h *Handler) streamOpenAIAttempt(ctx context.Context, account *config.Account, payload *KiroPayload, at openAIStreamAttempt) openAIStreamAttemptResult {
 	var result openAIStreamAttemptResult
 
 	sse := at.sse
@@ -2931,7 +2935,7 @@ func (h *Handler) streamOpenAIAttempt(account *config.Account, payload *KiroPayl
 		},
 	}
 
-	err := CallProvider(account, payload, callback)
+	err := CallProvider(ctx, account, payload, callback)
 	result.started = responseStarted
 	if writeErr := sse.Err(); writeErr != nil {
 		// A downstream write may have been partial (or the pre-commit buffer
@@ -3000,7 +3004,7 @@ func (h *Handler) streamOpenAIAttempt(account *config.Account, payload *KiroPayl
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
-func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
@@ -3051,7 +3055,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 			},
 		}
 
-		err := CallProvider(account, payload, callback)
+		err := CallProvider(ctx, account, payload, callback)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -3086,6 +3090,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 	}
 
 	if lastErr == nil {
+		h.logPoolEmpty("openai", model, excluded)
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
@@ -5301,7 +5306,7 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 		OnContextUsage: func(pct float64) {},
 	}
 
-	err := CallProvider(account, kiroPayload, callback)
+	err := CallProvider(r.Context(), account, kiroPayload, callback)
 	if err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

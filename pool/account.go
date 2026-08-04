@@ -3,6 +3,7 @@
 package pool
 
 import (
+	"fmt"
 	"kiro-go/config"
 	"strings"
 	"sync"
@@ -118,7 +119,7 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 		return acc
 	}
 
-		// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
+	// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
 	var best *config.Account
 	var earliest time.Time
 	for i := range p.accounts {
@@ -253,6 +254,85 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 		}
 	}
 	return best
+}
+
+// UnavailableReason explains why no account could be routed for model, for
+// logging alongside a 503. A bare "No available accounts" is indistinguishable
+// between "operator disabled everything", "all cooling down after upstream
+// errors", "all over quota", and "no account advertises this model" — which is
+// exactly the ambiguity that made the pool-draining bug hard to see from the
+// outside. Pass an empty model to skip the model filter.
+//
+// The counts are a snapshot, so an account can be counted under only its first
+// matching reason; the total is what matters, not the exact attribution.
+func (p *AccountPool) UnavailableReason(model string, excluded map[string]bool) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.totalAccounts == 0 {
+		return "no accounts configured"
+	}
+	if len(p.accounts) == 0 {
+		return fmt.Sprintf("all %d configured accounts are disabled or over quota (pool is empty after Reload)", p.totalAccounts)
+	}
+
+	allowOverUsage := config.GetAllowOverUsage()
+	now := time.Now()
+	seen := make(map[string]bool)
+
+	var total, skipExcluded, skipModel, skipCooldown, skipExpired, skipQuota int
+	var soonest time.Time
+	for i := range p.accounts {
+		acc := &p.accounts[i]
+		if seen[acc.ID] {
+			continue
+		}
+		seen[acc.ID] = true
+		total++
+
+		switch {
+		case excluded != nil && excluded[acc.ID]:
+			skipExcluded++
+		case model != "" && !p.accountHasModel(acc.ID, model):
+			skipModel++
+		case isQuotaBlocked(*acc, allowOverUsage):
+			skipQuota++
+		case acc.ExpiresAt > 0 && now.Unix() > acc.ExpiresAt-tokenRefreshSkewSeconds:
+			skipExpired++
+		default:
+			if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
+				skipCooldown++
+				if soonest.IsZero() || cooldown.Before(soonest) {
+					soonest = cooldown
+				}
+			}
+		}
+	}
+
+	parts := make([]string, 0, 5)
+	if skipExcluded > 0 {
+		parts = append(parts, fmt.Sprintf("%d already tried this request", skipExcluded))
+	}
+	if skipModel > 0 {
+		parts = append(parts, fmt.Sprintf("%d do not list model %q", skipModel, model))
+	}
+	if skipCooldown > 0 {
+		msg := fmt.Sprintf("%d in error cooldown", skipCooldown)
+		if !soonest.IsZero() {
+			msg += fmt.Sprintf(" (soonest expires in %s)", time.Until(soonest).Truncate(time.Second))
+		}
+		parts = append(parts, msg)
+	}
+	if skipExpired > 0 {
+		parts = append(parts, fmt.Sprintf("%d have an expiring/expired token", skipExpired))
+	}
+	if skipQuota > 0 {
+		parts = append(parts, fmt.Sprintf("%d over quota", skipQuota))
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("%d enabled accounts, none matched (selection raced with a pool reload)", total)
+	}
+	return fmt.Sprintf("%d enabled accounts: %s", total, strings.Join(parts, ", "))
 }
 
 // GetByID 根据 ID 获取账号

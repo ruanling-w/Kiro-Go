@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"kiro-go/config"
@@ -20,7 +21,7 @@ type openAIComboResult struct {
 	provider           string
 }
 
-func (h *Handler) handleOpenAIComboNonStream(w http.ResponseWriter, original *OpenAIRequest, route *comboRouteSnapshot, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
+func (h *Handler) handleOpenAIComboNonStream(ctx context.Context, w http.ResponseWriter, original *OpenAIRequest, route *comboRouteSnapshot, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
 	start := time.Now()
 	var lastErr error
 	for _, candidate := range route.Candidates {
@@ -39,7 +40,7 @@ func (h *Handler) handleOpenAIComboNonStream(w http.ResponseWriter, original *Op
 				h.handleAccountFailure(account, err)
 				continue
 			}
-			result, err := h.executeOpenAIComboAttempt(account, payload, candidate.Model, thinking, estimatedInputTokens)
+			result, err := h.executeOpenAIComboAttempt(ctx, account, payload, candidate.Model, thinking, estimatedInputTokens)
 			if err != nil {
 				lastErr = err
 				excluded[account.ID] = true
@@ -59,6 +60,7 @@ func (h *Handler) handleOpenAIComboNonStream(w http.ResponseWriter, original *Op
 		}
 	}
 	if lastErr == nil {
+		h.logComboPoolEmpty("openai-combo", route)
 		h.sendOpenAIError(w, http.StatusServiceUnavailable, "server_error", "No available accounts")
 		return
 	}
@@ -66,7 +68,7 @@ func (h *Handler) handleOpenAIComboNonStream(w http.ResponseWriter, original *Op
 	h.sendOpenAIError(w, http.StatusBadGateway, "server_error", lastErr.Error())
 }
 
-func (h *Handler) executeOpenAIComboAttempt(account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int) (openAIComboResult, error) {
+func (h *Handler) executeOpenAIComboAttempt(ctx context.Context, account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int) (openAIComboResult, error) {
 	var result openAIComboResult
 	var realInputTokens int
 	callback := &KiroStreamCallback{
@@ -87,7 +89,7 @@ func (h *Handler) executeOpenAIComboAttempt(account *config.Account, payload *Ki
 		OnCredits:      func(c float64) { result.credits = c },
 		OnContextUsage: func(pct float64) { realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100) },
 	}
-	if err := CallProvider(account, payload, callback); err != nil {
+	if err := CallProvider(ctx, account, payload, callback); err != nil {
 		return openAIComboResult{}, err
 	}
 	var extracted string
@@ -152,7 +154,7 @@ func (s *comboStreamSink) Flush() { s.gate.Flush() }
 // terminated with the same error chunk + [DONE] the direct path emits and no
 // account or model switch is allowed. Every wire "model" field is the Combo name
 // the client sent (route.RequestedModel).
-func (h *Handler) handleOpenAIComboStream(w http.ResponseWriter, original *OpenAIRequest, route *comboRouteSnapshot, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
+func (h *Handler) handleOpenAIComboStream(ctx context.Context, w http.ResponseWriter, original *OpenAIRequest, route *comboRouteSnapshot, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
 	if _, ok := w.(http.Flusher); !ok {
 		h.sendOpenAIError(w, http.StatusInternalServerError, "server_error", "Streaming not supported")
 		return
@@ -188,7 +190,7 @@ func (h *Handler) handleOpenAIComboStream(w http.ResponseWriter, original *OpenA
 			sink := &comboStreamSink{gate: gate}
 			sse := newOpenAISSEWriter(sink, sink)
 
-			result := h.streamOpenAIAttempt(account, payload, openAIStreamAttempt{
+			result := h.streamOpenAIAttempt(ctx, account, payload, openAIStreamAttempt{
 				sse:            sse,
 				chatID:         chatID,
 				effectiveModel: candidate.Model,
@@ -249,6 +251,7 @@ func (h *Handler) handleOpenAIComboStream(w http.ResponseWriter, original *OpenA
 	// JSON error is still the correct protocol response.
 	gate.Discard()
 	if lastErr == nil {
+		h.logComboPoolEmpty("openai-combo-stream", route)
 		h.sendOpenAIError(w, http.StatusServiceUnavailable, "server_error", "No available accounts")
 		return
 	}

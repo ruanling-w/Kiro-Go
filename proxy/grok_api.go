@@ -22,6 +22,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,7 +43,12 @@ const (
 )
 
 // CallGrokAPI routes the request to xAI (or Grok Web in the future).
-func CallGrokAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+// ctx is the caller's request context; the upstream request is derived from it so
+// a client disconnect cancels the generation.
+func CallGrokAPI(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if callback == nil {
 		callback = &KiroStreamCallback{}
 	}
@@ -77,7 +83,7 @@ func CallGrokAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		if strings.TrimSpace(prompt) == "" {
 			return fmt.Errorf("grok image: no prompt found in request")
 		}
-		b64, mime, imgErr := CallGrokImageAPI(account, &CodexImageRequest{Model: model, Prompt: prompt, N: 1})
+		b64, mime, imgErr := CallGrokImageAPI(ctx, account, &CodexImageRequest{Model: model, Prompt: prompt, N: 1})
 		if imgErr != nil {
 			return imgErr
 		}
@@ -123,7 +129,12 @@ func CallGrokAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 
 	client := GetClientForProxy(ResolveAccountProxyURL(account))
 
-	req, err := http.NewRequest(http.MethodPost, grokChatURL, bytes.NewReader(bodyBytes))
+	// Derived from the caller's request context: a client disconnect cancels the
+	// upstream call, and the idle watchdog below can cancel it independently.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, grokChatURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return fmt.Errorf("grok: new request: %w", err)
 	}
@@ -144,13 +155,21 @@ func CallGrokAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("grok: upstream error %d: %s", resp.StatusCode, string(errBody))
+		return newUpstreamError("grok", resp.StatusCode, string(errBody), "")
 	}
 
+	// The streaming client has Timeout: 0 and ResponseHeaderTimeout only bounds
+	// the wait for the first header, so an upstream that sends headers then goes
+	// quiet would block this goroutine — and its client connection — forever.
+	// The idle reader cancels the request context after streamIdleTimeout with no
+	// bytes, which unblocks the read with a context error.
+	idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+	defer idleReader.Stop()
+
 	if stream {
-		return parseGrokOpenAISSE(resp.Body, callback, model)
+		return parseGrokOpenAISSE(idleReader, callback, model)
 	}
-	return parseGrokOpenAIResponse(resp.Body, callback, model)
+	return parseGrokOpenAIResponse(idleReader, callback, model)
 }
 
 // resolvePayloadModelForGrok tries to extract the intended model.

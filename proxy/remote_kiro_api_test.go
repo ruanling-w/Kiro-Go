@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"kiro-go/config"
@@ -106,7 +107,7 @@ func TestCallRemoteKiroAPINonStreamOpenAI(t *testing.T) {
 
 	var text strings.Builder
 	var completed bool
-	err := CallRemoteKiroAPI(acc, payload, &KiroStreamCallback{
+	err := CallRemoteKiroAPI(context.Background(), acc, payload, &KiroStreamCallback{
 		OnText: func(s string, _ bool) { text.WriteString(s) },
 		OnComplete: func(in, out int) {
 			completed = true
@@ -163,7 +164,7 @@ func TestCallRemoteKiroAPIStream(t *testing.T) {
 	payload.ConversationState.CurrentMessage.UserInputMessage.ModelID = "m"
 
 	var text strings.Builder
-	err := CallRemoteKiroAPI(acc, payload, &KiroStreamCallback{
+	err := CallRemoteKiroAPI(context.Background(), acc, payload, &KiroStreamCallback{
 		OnText:     func(s string, _ bool) { text.WriteString(s) },
 		OnComplete: func(in, out int) {},
 	})
@@ -209,7 +210,7 @@ func TestCallRemoteKiroAPIClaudeSource(t *testing.T) {
 	}
 	payload.ConversationState.CurrentMessage.UserInputMessage.ModelID = "claude-sonnet-4.5"
 
-	err := CallRemoteKiroAPI(acc, payload, &KiroStreamCallback{
+	err := CallRemoteKiroAPI(context.Background(), acc, payload, &KiroStreamCallback{
 		OnText:     func(string, bool) {},
 		OnComplete: func(int, int) {},
 	})

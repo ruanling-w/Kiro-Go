@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"kiro-go/config"
 	"strings"
 )
@@ -16,20 +17,28 @@ import (
 // The dispatch keys on account fields (Provider / AuthMethod / Grok* fields)
 // rather than the requested model, because a single account is bound to exactly
 // one upstream and model->account routing has already happened in the pool.
-func CallProvider(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+//
+// ctx is the caller's request context. Every provider derives its cancelable
+// upstream context from it, so a client that disconnects mid-stream tears down
+// the upstream request instead of leaving it running to completion — without
+// this, abandoned generations keep consuming account quota and connections.
+func CallProvider(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if account != nil && isAntigravityAccount(account) {
-		return CallAntigravityAPI(account, payload, callback)
+		return CallAntigravityAPI(ctx, account, payload, callback)
 	}
 	if account != nil && isCodexAccount(account) {
-		return CallCodexAPI(account, payload, callback)
+		return CallCodexAPI(ctx, account, payload, callback)
 	}
 	if account != nil && isGrokAccount(account) {
-		return CallGrokAPI(account, payload, callback)
+		return CallGrokAPI(ctx, account, payload, callback)
 	}
 	if account != nil && isRemoteKiroAccount(account) {
-		return CallRemoteKiroAPI(account, payload, callback)
+		return CallRemoteKiroAPI(ctx, account, payload, callback)
 	}
-	return CallKiroAPI(account, payload, callback)
+	return CallKiroAPI(ctx, account, payload, callback)
 }
 
 // isRemoteKiroAccount reports whether an account proxies to another Kiro-Go

@@ -3,11 +3,78 @@ package proxy
 import (
 	"kiro-go/config"
 	"kiro-go/logger"
+	"net/http"
 	"strings"
 	"time"
 )
 
 const maxAccountRetryAttempts = 3
+
+// accountFailureKind is the classification of an upstream failure. It decides
+// both the pool penalty (soft cooldown / quota cooldown / permanent ban) and the
+// Telegram event, so misclassification is expensive: a wrong "auth" verdict
+// disables the account outright.
+type accountFailureKind int
+
+const (
+	failureSoft accountFailureKind = iota
+	failureOverage
+	failureQuota
+	failureSuspended
+	failureProfileUnavailable
+	failureAuth
+)
+
+// classifyFailureKind decides what an upstream failure means for the account.
+//
+// When the provider produced an *UpstreamError the HTTP status is authoritative
+// and no digit/word matching is done on the body. Substring matching only runs
+// for untyped errors — token refresh failures, transport errors, and any call
+// site that never saw a status code. This is the fix for the pool-draining bug:
+// providers embed the raw upstream body in their error text, so a body that
+// merely contained "429" or the word "forbidden" (a request id, a nested error,
+// an HTML error page) used to trigger a 1-hour cooldown or a permanent ban.
+//
+// Order matters. Suspension and profile-unavailable are body markers that arrive
+// *with* a 401/403 status, so they must be tested before the status-based auth
+// check or a suspended account would be misreported as bad credentials.
+func classifyFailureKind(err error) accountFailureKind {
+	if err == nil {
+		return failureSoft
+	}
+	msg := err.Error()
+
+	if isSuspensionErrorMessage(msg) {
+		return failureSuspended
+	}
+	if isProfileUnavailableErrorMessage(msg) {
+		return failureProfileUnavailable
+	}
+
+	if ue, ok := asUpstreamError(err); ok {
+		switch {
+		case ue.Status == http.StatusPaymentRequired && strings.Contains(strings.ToLower(ue.Body), "overage"):
+			return failureOverage
+		case ue.Status == http.StatusTooManyRequests:
+			return failureQuota
+		case ue.Status == http.StatusUnauthorized || ue.Status == http.StatusForbidden:
+			return failureAuth
+		}
+		// Any other status (5xx, 400, 404 …) is a soft failure: rotate the
+		// account, never ban it.
+		return failureSoft
+	}
+
+	switch {
+	case isOverageErrorMessage(msg):
+		return failureOverage
+	case isQuotaErrorMessage(msg):
+		return failureQuota
+	case isAuthErrorMessage(msg):
+		return failureAuth
+	}
+	return failureSoft
+}
 
 func isQuotaErrorMessage(msg string) bool {
 	msg = strings.ToLower(msg)
@@ -43,6 +110,29 @@ func isAuthErrorMessage(msg string) bool {
 		strings.Contains(msg, "invalid_grant") ||
 		strings.Contains(msg, "access token expired") ||
 		strings.Contains(msg, "refresh token expired")
+}
+
+// logPoolEmpty records why no account was routable before a 503 is returned.
+// The client-facing message is intentionally opaque ("No available accounts");
+// this is the operator-facing half, and it is the difference between "the pool
+// drained itself" and "nobody advertises that model".
+func (h *Handler) logPoolEmpty(api, model string, excluded map[string]bool) {
+	if h == nil || h.pool == nil {
+		return
+	}
+	logger.Warnf("[%s] 503 no available accounts for model %q — %s", api, model, h.pool.UnavailableReason(model, excluded))
+}
+
+// logComboPoolEmpty is the Combo equivalent: a Combo route tries each candidate
+// model with its own exclusion set, so the reason is reported per candidate.
+func (h *Handler) logComboPoolEmpty(api string, route *comboRouteSnapshot) {
+	if h == nil || h.pool == nil || route == nil {
+		return
+	}
+	for _, candidate := range route.Candidates {
+		logger.Warnf("[%s] 503 no available accounts for combo %q candidate %q — %s",
+			api, route.RequestedModel, candidate.Model, h.pool.UnavailableReason(candidate.Model, nil))
+	}
 }
 
 func (h *Handler) disableAccount(account *config.Account, banStatus, banReason string) {
@@ -97,17 +187,16 @@ func classifyAccountFailure(account *config.Account, err error, fromTokenRefresh
 	if isKiroAPIKeyAccount(account) || isRemoteKiroAccount(account) {
 		return EventSoft
 	}
-	errMsg := err.Error()
-	switch {
-	case isOverageErrorMessage(errMsg):
+	switch classifyFailureKind(err) {
+	case failureOverage:
 		return EventOverage
-	case isQuotaErrorMessage(errMsg):
+	case failureQuota:
 		return EventQuota
-	case isSuspensionErrorMessage(errMsg):
+	case failureSuspended:
 		return EventBan
-	case isProfileUnavailableErrorMessage(errMsg):
+	case failureProfileUnavailable:
 		return EventSoft
-	case isAuthErrorMessage(errMsg):
+	case failureAuth:
 		if fromTokenRefresh {
 			return EventTokenRefresh
 		}
@@ -122,6 +211,32 @@ func classifyAccountFailure(account *config.Account, err error, fromTokenRefresh
 
 func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 	h.handleAccountFailureEx(account, err, false)
+}
+
+// handleBackgroundFailure records a failure observed by a background maintenance
+// loop (model-catalog refresh, periodic account-info refresh) rather than by a
+// real client request.
+//
+// These loops touch every enabled account on a timer, so letting them ban is how
+// the pool empties with no traffic at all: one upstream blip during a sweep
+// disables every account it reached, and the next client request gets 503 "No
+// available accounts". A background failure therefore only ever applies a soft
+// cooldown — the account rotates out briefly and the next real request re-tests
+// it. Quota is still honoured because a genuine 429 is not a blip and the
+// cooldown is what keeps us from hammering it.
+//
+// Bans stay on the request path (handleAccountFailure), where a failure is
+// corroborated by an actual client call.
+func (h *Handler) handleBackgroundFailure(account *config.Account, err error, source string) {
+	if account == nil || err == nil {
+		return
+	}
+	kind := classifyFailureKind(err)
+	h.pool.RecordError(account.ID, kind == failureQuota)
+	if kind == failureAuth || kind == failureSuspended {
+		logger.Warnf("[%s] %s looks unauthenticated/suspended (%v) — soft cooldown only; a client request will confirm before any ban", source, account.Email, err)
+	}
+	NotifyAccountEvent(account, EventSoft, err.Error())
 }
 
 func (h *Handler) handleAccountFailureEx(account *config.Account, err error, fromTokenRefresh bool) {
@@ -141,20 +256,20 @@ func (h *Handler) handleAccountFailureEx(account *config.Account, err error, fro
 
 	errMsg := err.Error()
 	eventType := classifyAccountFailure(account, err, fromTokenRefresh)
-	switch {
-	case isOverageErrorMessage(errMsg):
+	switch classifyFailureKind(err) {
+	case failureOverage:
 		h.disableAccountOverage(account)
 		h.pool.RecordError(account.ID, false)
-	case isQuotaErrorMessage(errMsg):
+	case failureQuota:
 		h.pool.RecordError(account.ID, true)
-	case isSuspensionErrorMessage(errMsg):
+	case failureSuspended:
 		h.disableAccount(account, "BANNED", "AWS temporarily suspended - unusual user activity detected")
-	case isProfileUnavailableErrorMessage(errMsg):
+	case failureProfileUnavailable:
 		// Profile ARN may be transiently unresolvable (upstream blip, stale token).
 		// Treat as a soft failure: short cooldown so the next request rotates account,
 		// but never auto-disable — operators can still investigate via warn logs.
 		h.pool.RecordError(account.ID, false)
-	case isAuthErrorMessage(errMsg):
+	case failureAuth:
 		h.disableAccount(account, "BANNED", "Authentication failed - token invalid or expired")
 	default:
 		h.pool.RecordError(account.ID, false)

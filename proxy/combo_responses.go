@@ -1,12 +1,13 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 )
 
-func (h *Handler) handleResponsesComboNonStream(w http.ResponseWriter, original *OpenAIRequest, route *comboRouteSnapshot, thinking bool, estimatedInput int, apiKeyID, clientIP, respID string, req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool) {
+func (h *Handler) handleResponsesComboNonStream(ctx context.Context, w http.ResponseWriter, original *OpenAIRequest, route *comboRouteSnapshot, thinking bool, estimatedInput int, apiKeyID, clientIP, respID string, req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool) {
 	start := time.Now()
 	var lastErr error
 	for _, candidate := range route.Candidates {
@@ -25,7 +26,7 @@ func (h *Handler) handleResponsesComboNonStream(w http.ResponseWriter, original 
 				h.handleAccountFailure(account, err)
 				continue
 			}
-			result, err := h.executeOpenAIComboAttempt(account, payload, candidate.Model, thinking, estimatedInput)
+			result, err := h.executeOpenAIComboAttempt(ctx, account, payload, candidate.Model, thinking, estimatedInput)
 			if err != nil {
 				lastErr = err
 				excluded[account.ID] = true
@@ -50,6 +51,7 @@ func (h *Handler) handleResponsesComboNonStream(w http.ResponseWriter, original 
 		}
 	}
 	if lastErr == nil {
+		h.logComboPoolEmpty("responses-combo", route)
 		h.sendOpenAIError(w, http.StatusServiceUnavailable, "server_error", "No available accounts")
 		return
 	}

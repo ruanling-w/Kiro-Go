@@ -12,6 +12,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -43,7 +44,12 @@ var agProjectNouns = []string{"fuze", "wave", "spark", "flow", "core"}
 
 // CallAntigravityAPI translates the stashed source request into a Gemini envelope
 // and streams the Antigravity response back through the callback.
-func CallAntigravityAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+// ctx is the caller's request context; each host attempt derives its cancelable
+// upstream context from it so a client disconnect tears down the generation.
+func CallAntigravityAPI(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if callback == nil {
 		callback = &KiroStreamCallback{}
 	}
@@ -124,40 +130,66 @@ func CallAntigravityAPI(account *config.Account, payload *KiroPayload, callback 
 	var lastErr error
 	for _, base := range agBaseURLs {
 		url := base + "/v1internal:streamGenerateContent?alt=sse"
-		req, reqErr := http.NewRequest(http.MethodPost, url, strings.NewReader(string(reqBody)))
-		if reqErr != nil {
-			lastErr = reqErr
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+account.AccessToken)
-		req.Header.Set("User-Agent", userAgent)
-		req.Header.Set("x-request-source", "local")
-		req.Header.Set("X-Machine-Session-Id", sessionID)
-		req.Header.Set("Accept", "text/event-stream")
 
-		resp, doErr := client.Do(req)
-		if doErr != nil {
-			lastErr = doErr
-			logger.Warnf("[Antigravity] host %s failed: %v", base, doErr)
-			continue
-		}
+		// done reports whether this host produced a final outcome (success or a
+		// terminal error). Each host gets its own cancelable context so a stalled
+		// stream on one host cannot outlive the attempt; cancel must not be
+		// deferred to function exit inside a loop.
+		streamErr, done := func() (error, bool) {
+			ctx, cancel := context.WithCancel(ctx)
+			cancelled := false
+			defer func() {
+				if !cancelled {
+					cancel()
+				}
+			}()
 
-		if resp.StatusCode != 200 {
-			errBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, base, string(errBody))
-			// Auth / payment errors are terminal — do not try the fallback host.
-			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
-				return lastErr
+			req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(reqBody)))
+			if reqErr != nil {
+				lastErr = reqErr
+				return nil, false
 			}
-			logger.Warnf("[Antigravity] host %s error: %v", base, lastErr)
-			continue
-		}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+account.AccessToken)
+			req.Header.Set("User-Agent", userAgent)
+			req.Header.Set("x-request-source", "local")
+			req.Header.Set("X-Machine-Session-Id", sessionID)
+			req.Header.Set("Accept", "text/event-stream")
 
-		parseErr := parseGeminiSSE(resp.Body, callback)
-		resp.Body.Close()
-		return parseErr
+			resp, doErr := client.Do(req)
+			if doErr != nil {
+				lastErr = doErr
+				logger.Warnf("[Antigravity] host %s failed: %v", base, doErr)
+				return nil, false
+			}
+
+			if resp.StatusCode != 200 {
+				errBody, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				lastErr = newUpstreamError("antigravity", resp.StatusCode, string(errBody), fmt.Sprintf("HTTP %d from %s", resp.StatusCode, base))
+				// Auth / payment errors are terminal — do not try the fallback host.
+				if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
+					return lastErr, true
+				}
+				logger.Warnf("[Antigravity] host %s error: %v", base, lastErr)
+				return nil, false
+			}
+
+			// A stalled stream must not block this goroutine forever: the client
+			// used here has Timeout: 0, and ResponseHeaderTimeout only bounds the
+			// wait for the first header. The idle reader cancels the request when
+			// no bytes arrive for streamIdleTimeout.
+			idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+			parseErr := parseGeminiSSE(idleReader, callback)
+			idleReader.Stop()
+			resp.Body.Close()
+			cancel()
+			cancelled = true
+			return parseErr, true
+		}()
+		if done {
+			return streamErr
+		}
 	}
 
 	if lastErr != nil {
@@ -234,7 +266,10 @@ func parseImageInputToInline(input string) *GeminiInlineData {
 // Code endpoint and returns the first result as base64. Unlike the chat path this
 // uses the NON-streaming generateContent endpoint with requestType "image_gen"
 // (mirrors 9router executors/antigravity.js image branch). Returns (b64, mime, err).
-func CallAntigravityImageAPI(account *config.Account, req *CodexImageRequest) (b64 string, mimeType string, err error) {
+func CallAntigravityImageAPI(ctx context.Context, account *config.Account, req *CodexImageRequest) (b64 string, mimeType string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if account == nil {
 		return "", "", fmt.Errorf("antigravity image: account is nil")
 	}
@@ -299,32 +334,45 @@ func CallAntigravityImageAPI(account *config.Account, req *CodexImageRequest) (b
 
 	var lastErr error
 	for _, base := range agBaseURLs {
-		// Image generation uses the non-streaming generateContent action.
-		url := base + "/v1internal:generateContent"
-		httpReq, reqErr := http.NewRequest(http.MethodPost, url, strings.NewReader(string(reqBody)))
-		if reqErr != nil {
-			lastErr = reqErr
+		// Image generation uses the non-streaming generateContent action. The body
+		// is still read off a Timeout: 0 client, so it gets the same idle watchdog
+		// as the streaming path — io.ReadAll on a stalled connection would
+		// otherwise block forever.
+		imageURL := base + "/v1internal:generateContent"
+		respBody, status, readErr := func() ([]byte, int, error) {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, imageURL, strings.NewReader(string(reqBody)))
+			if reqErr != nil {
+				return nil, 0, reqErr
+			}
+			httpReq.Header.Set("Content-Type", "application/json")
+			httpReq.Header.Set("Authorization", "Bearer "+account.AccessToken)
+			httpReq.Header.Set("User-Agent", userAgent)
+			httpReq.Header.Set("x-request-source", "local")
+			httpReq.Header.Set("X-Machine-Session-Id", sessionID)
+			httpReq.Header.Set("Accept", "application/json")
+
+			resp, doErr := client.Do(httpReq)
+			if doErr != nil {
+				return nil, 0, doErr
+			}
+			idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+			body, _ := io.ReadAll(idleReader)
+			idleReader.Stop()
+			resp.Body.Close()
+			return body, resp.StatusCode, nil
+		}()
+		if readErr != nil {
+			lastErr = readErr
+			logger.Warnf("[AntigravityImage] host %s failed: %v", base, readErr)
 			continue
 		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+account.AccessToken)
-		httpReq.Header.Set("User-Agent", userAgent)
-		httpReq.Header.Set("x-request-source", "local")
-		httpReq.Header.Set("X-Machine-Session-Id", sessionID)
-		httpReq.Header.Set("Accept", "application/json")
 
-		resp, doErr := client.Do(httpReq)
-		if doErr != nil {
-			lastErr = doErr
-			logger.Warnf("[AntigravityImage] host %s failed: %v", base, doErr)
-			continue
-		}
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode != 200 {
-			lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, base, string(respBody))
-			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
+		if status != 200 {
+			lastErr = newUpstreamError("antigravity image", status, string(respBody), fmt.Sprintf("HTTP %d from %s", status, base))
+			if status == 401 || status == 403 || status == 402 {
 				return "", "", lastErr
 			}
 			logger.Warnf("[AntigravityImage] host %s error: %v", base, lastErr)

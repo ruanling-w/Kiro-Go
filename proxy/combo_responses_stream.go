@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"strings"
 )
@@ -30,7 +31,7 @@ func (s *responsesComboSink) Write(p []byte) (int, error) {
 // Responses Combo attempts are isolated behind a first-public-event gate. The
 // existing Responses executor supplies protocol event conversion and terminal
 // response.failed handling; after the first output event the gate pins it.
-func (h *Handler) handleResponsesComboStream(w http.ResponseWriter, original *OpenAIRequest, route *comboRouteSnapshot, thinking bool, estimatedInputTokens int, apiKeyID, clientIP, respID string, req *ResponsesRequest, storedInput []byte, storeResponse bool) {
+func (h *Handler) handleResponsesComboStream(ctx context.Context, w http.ResponseWriter, original *OpenAIRequest, route *comboRouteSnapshot, thinking bool, estimatedInputTokens int, apiKeyID, clientIP, respID string, req *ResponsesRequest, storedInput []byte, storeResponse bool) {
 	if _, ok := w.(http.Flusher); !ok {
 		h.sendOpenAIError(w, 500, "server_error", "Streaming not supported")
 		return
@@ -40,7 +41,7 @@ func (h *Handler) handleResponsesComboStream(w http.ResponseWriter, original *Op
 		attempt.Model = candidate.Model
 		gate := newStreamCommitGate(w)
 		sink := &responsesComboSink{gate: gate}
-		h.handleResponsesStreamModels(sink, OpenAIToKiro(&attempt, thinking), candidate.Model, route.RequestedModel, true, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, req, storedInput, storeResponse)
+		h.handleResponsesStreamModels(ctx, sink, OpenAIToKiro(&attempt, thinking), candidate.Model, route.RequestedModel, true, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, req, storedInput, storeResponse)
 		if gate.Committed() {
 			return
 		}

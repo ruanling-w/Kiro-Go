@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"kiro-go/config"
@@ -19,7 +20,7 @@ type claudeComboResult struct {
 	credits      float64
 }
 
-func (h *Handler) handleClaudeComboNonStream(w http.ResponseWriter, original *ClaudeRequest, route *comboRouteSnapshot, thinking bool, thinkingOpts claudeThinkingResponseOptions, apiKeyID, clientIP string) {
+func (h *Handler) handleClaudeComboNonStream(ctx context.Context, w http.ResponseWriter, original *ClaudeRequest, route *comboRouteSnapshot, thinking bool, thinkingOpts claudeThinkingResponseOptions, apiKeyID, clientIP string) {
 	start := time.Now()
 	var lastErr error
 	for _, candidate := range route.Candidates {
@@ -41,7 +42,7 @@ func (h *Handler) handleClaudeComboNonStream(w http.ResponseWriter, original *Cl
 				h.handleAccountFailure(account, err)
 				continue
 			}
-			result, err := h.executeClaudeComboAttempt(account, payload, candidate.Model, thinking, estimatedInput)
+			result, err := h.executeClaudeComboAttempt(ctx, account, payload, candidate.Model, thinking, estimatedInput)
 			if err != nil {
 				lastErr = err
 				excluded[account.ID] = true
@@ -76,6 +77,7 @@ func (h *Handler) handleClaudeComboNonStream(w http.ResponseWriter, original *Cl
 		}
 	}
 	if lastErr == nil {
+		h.logComboPoolEmpty("claude-combo", route)
 		h.sendClaudeError(w, http.StatusServiceUnavailable, "api_error", "No available accounts")
 		return
 	}
@@ -91,7 +93,7 @@ func setClaudeStreamHeaders(w http.ResponseWriter) {
 
 // handleClaudeComboStream resolves candidate order once, retries only before the
 // first Claude event, and pins the account/model as soon as message_start is public.
-func (h *Handler) handleClaudeComboStream(w http.ResponseWriter, original *ClaudeRequest, route *comboRouteSnapshot, thinking bool, thinkingOpts claudeThinkingResponseOptions, apiKeyID, clientIP string) {
+func (h *Handler) handleClaudeComboStream(ctx context.Context, w http.ResponseWriter, original *ClaudeRequest, route *comboRouteSnapshot, thinking bool, thinkingOpts claudeThinkingResponseOptions, apiKeyID, clientIP string) {
 	if _, ok := w.(http.Flusher); !ok {
 		h.sendClaudeError(w, http.StatusInternalServerError, "api_error", "Streaming not supported")
 		return
@@ -125,7 +127,7 @@ func (h *Handler) handleClaudeComboStream(w http.ResponseWriter, original *Claud
 			setClaudeStreamHeaders(gate)
 			sink := &comboStreamSink{gate: gate}
 			sse := newClaudeSSEWriter(sink, sink)
-			result := h.streamClaudeAttempt(account, payload, claudeStreamAttempt{sse: sse, messageID: msgID, effectiveModel: candidate.Model, publicModel: route.RequestedModel, thinking: thinking, thinkingOpts: thinkingOpts, estimatedInputTokens: estimatedInput, cacheProfile: cacheProfile, cacheUsage: cacheUsage})
+			result := h.streamClaudeAttempt(ctx, account, payload, claudeStreamAttempt{sse: sse, messageID: msgID, effectiveModel: candidate.Model, publicModel: route.RequestedModel, thinking: thinking, thinkingOpts: thinkingOpts, estimatedInputTokens: estimatedInput, cacheProfile: cacheProfile, cacheUsage: cacheUsage})
 			if result.writeErr != nil {
 				if gate.Committed() {
 					return
@@ -167,6 +169,7 @@ func (h *Handler) handleClaudeComboStream(w http.ResponseWriter, original *Claud
 	}
 	gate.Discard()
 	if lastErr == nil {
+		h.logComboPoolEmpty("claude-combo-stream", route)
 		h.sendClaudeError(w, http.StatusServiceUnavailable, "api_error", "No available accounts")
 		return
 	}
@@ -174,7 +177,7 @@ func (h *Handler) handleClaudeComboStream(w http.ResponseWriter, original *Claud
 	h.sendClaudeError(w, http.StatusBadGateway, "api_error", lastErr.Error())
 }
 
-func (h *Handler) executeClaudeComboAttempt(account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInput int) (claudeComboResult, error) {
+func (h *Handler) executeClaudeComboAttempt(ctx context.Context, account *config.Account, payload *KiroPayload, model string, thinking bool, estimatedInput int) (claudeComboResult, error) {
 	var result claudeComboResult
 	var realInput int
 	callback := &KiroStreamCallback{
@@ -195,7 +198,7 @@ func (h *Handler) executeClaudeComboAttempt(account *config.Account, payload *Ki
 		OnCredits:      func(c float64) { result.credits = c },
 		OnContextUsage: func(pct float64) { realInput = int(pct * float64(getContextWindowSize(model)) / 100) },
 	}
-	if err := CallProvider(account, payload, callback); err != nil {
+	if err := CallProvider(ctx, account, payload, callback); err != nil {
 		return claudeComboResult{}, err
 	}
 	var extracted string

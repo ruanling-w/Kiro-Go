@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,7 +29,13 @@ func remoteModelsURL(base string) string {
 // peer via POST {base}/v1/chat/completions. It rebuilds the request from
 // SourceClaude / SourceOpenAI (same as Grok) and drives KiroStreamCallback via
 // the shared OpenAI SSE/JSON parsers.
-func CallRemoteKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+//
+// ctx is the caller's request context; the upstream request is derived from it so
+// a client disconnect cancels the generation on the peer too.
+func CallRemoteKiroAPI(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if callback == nil {
 		callback = &KiroStreamCallback{}
 	}
@@ -81,7 +88,11 @@ func CallRemoteKiroAPI(account *config.Account, payload *KiroPayload, callback *
 	}
 
 	client := GetClientForProxy(ResolveAccountProxyURL(account))
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return fmt.Errorf("remotekiro: new request: %w", err)
 	}
@@ -101,13 +112,20 @@ func CallRemoteKiroAPI(account *config.Account, payload *KiroPayload, callback *
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("remotekiro: upstream error %d: %s", resp.StatusCode, string(errBody))
+		return newUpstreamError("remotekiro", resp.StatusCode, string(errBody), "")
 	}
 
+	// A peer that accepts the request then stalls mid-stream would otherwise block
+	// forever: this client has Timeout: 0 and ResponseHeaderTimeout only covers the
+	// wait for the first header. Peers are the likeliest upstream to hang, since a
+	// peer that is itself stuck holds the connection open without sending bytes.
+	idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+	defer idleReader.Stop()
+
 	if stream {
-		return parseGrokOpenAISSE(resp.Body, callback, model)
+		return parseGrokOpenAISSE(idleReader, callback, model)
 	}
-	return parseGrokOpenAIResponse(resp.Body, callback, model)
+	return parseGrokOpenAIResponse(idleReader, callback, model)
 }
 
 // FetchRemoteKiroModels lists model IDs from a remote peer's GET /v1/models.
@@ -140,7 +158,7 @@ func FetchRemoteKiroModels(account *config.Account) ([]string, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("remotekiro: models HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, newUpstreamError("remotekiro", resp.StatusCode, string(body), fmt.Sprintf("models HTTP %d", resp.StatusCode))
 	}
 
 	ids, err := parseOpenAIModelIDs(body)
@@ -250,7 +268,7 @@ func FetchRemoteKiroKeyCredit(account *config.Account) (*remoteCheckKeyResponse,
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("remotekiro: check-key HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, newUpstreamError("remotekiro", resp.StatusCode, string(body), fmt.Sprintf("check-key HTTP %d", resp.StatusCode))
 	}
 
 	var parsed remoteCheckKeyResponse

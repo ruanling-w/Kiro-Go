@@ -4,6 +4,7 @@ import (
 	"errors"
 	"kiro-go/config"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -324,4 +325,72 @@ func TestReloadDropsOverQuotaAccountWhenAllowOverUsageDisabled(t *testing.T) {
 	if got := p.GetNext(); got != nil {
 		t.Fatalf("expected over-quota account to be dropped, got %q", got.ID)
 	}
+}
+
+// UnavailableReason is the operator-facing half of a 503. Each distinct cause
+// must be named, because "No available accounts" alone cannot distinguish a
+// drained pool from a model nobody advertises.
+func TestUnavailableReasonNamesTheCause(t *testing.T) {
+	t.Run("no accounts configured", func(t *testing.T) {
+		p := &AccountPool{cooldowns: map[string]time.Time{}, modelLists: map[string]map[string]bool{}}
+		if got := p.UnavailableReason("m", nil); !strings.Contains(got, "no accounts configured") {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("all disabled leaves an empty weighted list", func(t *testing.T) {
+		p := &AccountPool{cooldowns: map[string]time.Time{}, modelLists: map[string]map[string]bool{}}
+		p.totalAccounts = 3
+		if got := p.UnavailableReason("m", nil); !strings.Contains(got, "all 3 configured accounts are disabled") {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("cooldown reports the soonest expiry", func(t *testing.T) {
+		p := &AccountPool{cooldowns: map[string]time.Time{}, modelLists: map[string]map[string]bool{}}
+		p.accounts = []config.Account{{ID: "a"}, {ID: "b"}}
+		p.totalAccounts = 2
+		p.cooldowns["a"] = time.Now().Add(30 * time.Second)
+		p.cooldowns["b"] = time.Now().Add(10 * time.Minute)
+
+		got := p.UnavailableReason("m", nil)
+		if !strings.Contains(got, "2 enabled accounts") || !strings.Contains(got, "2 in error cooldown") {
+			t.Fatalf("got %q", got)
+		}
+		if !strings.Contains(got, "soonest expires in") {
+			t.Fatalf("expected a soonest-expiry hint, got %q", got)
+		}
+	})
+
+	t.Run("model filter is distinguished from cooldown", func(t *testing.T) {
+		p := &AccountPool{cooldowns: map[string]time.Time{}, modelLists: map[string]map[string]bool{}}
+		p.accounts = []config.Account{{ID: "a"}, {ID: "b"}}
+		p.totalAccounts = 2
+		// Both have a non-empty catalog that omits the requested model, so
+		// accountHasModel is strict rather than optimistic.
+		p.modelLists["a"] = map[string]bool{"other-model": true}
+		p.modelLists["b"] = map[string]bool{"other-model": true}
+
+		got := p.UnavailableReason("wanted-model", nil)
+		if !strings.Contains(got, `2 do not list model "wanted-model"`) {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("quota and exclusion are reported separately", func(t *testing.T) {
+		p := &AccountPool{cooldowns: map[string]time.Time{}, modelLists: map[string]map[string]bool{}}
+		p.accounts = []config.Account{
+			{ID: "tried"},
+			{ID: "over", UsageCurrent: 10, UsageLimit: 10},
+		}
+		p.totalAccounts = 2
+
+		got := p.UnavailableReason("", map[string]bool{"tried": true})
+		if !strings.Contains(got, "1 already tried this request") {
+			t.Fatalf("got %q", got)
+		}
+		if !strings.Contains(got, "1 over quota") {
+			t.Fatalf("got %q", got)
+		}
+	})
 }

@@ -13,6 +13,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -40,7 +41,13 @@ type grokImageResponse struct {
 // first result as base64. Returns (b64, mimeType, error). URLs (if the account is
 // configured to return them) are fetched and re-encoded to base64 so the caller
 // always gets inline data.
-func CallGrokImageAPI(account *config.Account, req *CodexImageRequest) (b64 string, mimeType string, err error) {
+//
+// ctx is the caller's request context; the upstream call is derived from it so a
+// client disconnect cancels the generation.
+func CallGrokImageAPI(ctx context.Context, account *config.Account, req *CodexImageRequest) (b64 string, mimeType string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if account == nil {
 		return "", "", fmt.Errorf("grok image: account is nil")
 	}
@@ -73,7 +80,14 @@ func CallGrokImageAPI(account *config.Account, req *CodexImageRequest) (b64 stri
 	}
 
 	client := GetClientForProxy(ResolveAccountProxyURL(account))
-	httpReq, err := http.NewRequest(http.MethodPost, grokImageURL, bytes.NewReader(bodyBytes))
+
+	// This client has Timeout: 0 (shared with the streaming paths), so the body
+	// read needs its own idle watchdog — otherwise a stalled connection blocks
+	// io.ReadAll indefinitely.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, grokImageURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", "", err
 	}
@@ -87,9 +101,11 @@ func CallGrokImageAPI(account *config.Account, req *CodexImageRequest) (b64 stri
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+	respBody, _ := io.ReadAll(idleReader)
+	idleReader.Stop()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("grok image: upstream error %d: %s", resp.StatusCode, string(respBody))
+		return "", "", newUpstreamError("grok image", resp.StatusCode, string(respBody), "")
 	}
 
 	var parsed grokImageResponse
@@ -108,7 +124,7 @@ func CallGrokImageAPI(account *config.Account, req *CodexImageRequest) (b64 stri
 		return first.B64JSON, "image/png", nil
 	}
 	if first.URL != "" {
-		fetched, fErr := fetchImageAsBase64(client, first.URL)
+		fetched, fErr := fetchImageAsBase64(ctx, client, first.URL)
 		if fErr != nil {
 			return "", "", fmt.Errorf("grok image: fetch result url: %w", fErr)
 		}
@@ -121,16 +137,30 @@ func CallGrokImageAPI(account *config.Account, req *CodexImageRequest) (b64 stri
 }
 
 // fetchImageAsBase64 downloads an image URL and returns its base64 encoding.
-func fetchImageAsBase64(client *http.Client, url string) (string, error) {
-	resp, err := client.Get(url)
+// client may be a Timeout: 0 streaming client, so the download is bounded by the
+// same idle watchdog used on the SSE paths.
+func fetchImageAsBase64(ctx context.Context, client *http.Client, url string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		return "", newUpstreamError("", resp.StatusCode, "", fmt.Sprintf("HTTP %d", resp.StatusCode))
 	}
-	data, err := io.ReadAll(resp.Body)
+	idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+	defer idleReader.Stop()
+	data, err := io.ReadAll(idleReader)
 	if err != nil {
 		return "", err
 	}

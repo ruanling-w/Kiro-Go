@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -139,11 +140,11 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	if req.Stream {
 		if comboRoute != nil {
 			comboRoute.RequestedModel = requestedModel
-			h.handleResponsesComboStream(w, openaiReq, comboRoute, thinking, estimatedInputTokens,
+			h.handleResponsesComboStream(r.Context(), w, openaiReq, comboRoute, thinking, estimatedInputTokens,
 				apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 			return
 		}
-		h.handleResponsesStream(w, kiroPayload, actualModel, thinking, estimatedInputTokens,
+		h.handleResponsesStream(r.Context(), w, kiroPayload, actualModel, thinking, estimatedInputTokens,
 			apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 		return
 	}
@@ -154,15 +155,16 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 			h.handleResponsesFusion(r.Context(), w, openaiReq, comboRoute, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 			return
 		}
-		h.handleResponsesComboNonStream(w, openaiReq, comboRoute, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
+		h.handleResponsesComboNonStream(r.Context(), w, openaiReq, comboRoute, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 		return
 	}
 
-	h.handleResponsesNonStream(w, kiroPayload, actualModel, thinking, estimatedInputTokens,
+	h.handleResponsesNonStream(r.Context(), w, kiroPayload, actualModel, thinking, estimatedInputTokens,
 		apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 }
 
 func (h *Handler) handleResponsesNonStream(
+	ctx context.Context,
 	w http.ResponseWriter, payload *KiroPayload, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, clientIP, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
@@ -210,7 +212,7 @@ func (h *Handler) handleResponsesNonStream(
 			},
 		}
 
-		err := CallProvider(account, payload, callback)
+		err := CallProvider(ctx, account, payload, callback)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -251,6 +253,7 @@ func (h *Handler) handleResponsesNonStream(
 	}
 
 	if lastErr == nil {
+		h.logPoolEmpty("responses", model, excluded)
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
@@ -316,14 +319,16 @@ func buildResponsesObject(
 }
 
 func (h *Handler) handleResponsesStream(
+	ctx context.Context,
 	w http.ResponseWriter, payload *KiroPayload, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, clientIP, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
 ) {
-	h.handleResponsesStreamModels(w, payload, model, model, false, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, req, storedInput, storeResponse)
+	h.handleResponsesStreamModels(ctx, w, payload, model, model, false, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, req, storedInput, storeResponse)
 }
 
 func (h *Handler) handleResponsesStreamModels(
+	ctx context.Context,
 	w http.ResponseWriter, payload *KiroPayload, effectiveModel, publicModel string, comboAttempt bool, thinking bool,
 	estimatedInputTokens int, apiKeyID, clientIP, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
@@ -538,7 +543,7 @@ func (h *Handler) handleResponsesStreamModels(
 			},
 		}
 
-		err := CallProvider(account, payload, callback)
+		err := CallProvider(ctx, account, payload, callback)
 		if err != nil {
 			if !responseStarted {
 				lastErr = err
@@ -627,6 +632,7 @@ func (h *Handler) handleResponsesStreamModels(
 	}
 
 	if lastErr == nil {
+		h.logPoolEmpty("responses-stream", effectiveModel, excluded)
 		send("response.failed", map[string]interface{}{
 			"type": "response.failed",
 			"response": map[string]interface{}{

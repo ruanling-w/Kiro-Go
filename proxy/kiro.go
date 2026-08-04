@@ -321,7 +321,12 @@ func getSortedEndpoints(preferred string) []kiroEndpoint {
 }
 
 // CallKiroAPI calls the Kiro streaming API, trying each configured endpoint with automatic fallback.
-func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+// ctx is the caller's request context; each endpoint attempt derives its cancelable
+// upstream context from it so a client disconnect tears down the generation.
+func CallKiroAPI(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	originalProfileArn := ""
 	if payload != nil {
 		originalProfileArn = payload.ProfileArn
@@ -370,7 +375,7 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		if logger.GetLevel() == logger.LevelDebug {
 			logger.Debugf("[KiroAPI] Request payload: %s", string(reqBody))
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(ctx)
 		req, err := http.NewRequestWithContext(ctx, "POST", epURL, bytes.NewReader(reqBody))
 		if err != nil {
 			cancel()
@@ -407,7 +412,7 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 			resp.Body.Close()
 			cancel()
 			logger.Warnf("[KiroAPI] Endpoint %s quota exhausted (429), trying next...", ep.Name)
-			lastErr = fmt.Errorf("quota exhausted on %s", ep.Name)
+			lastErr = newUpstreamError("", 429, "", fmt.Sprintf("quota exhausted on %s", ep.Name))
 			continue
 		}
 
@@ -415,7 +420,7 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 			errBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			cancel()
-			lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, ep.Name, string(errBody))
+			lastErr = newUpstreamError("", resp.StatusCode, string(errBody), fmt.Sprintf("HTTP %d from %s", resp.StatusCode, ep.Name))
 			// Authentication errors and payment errors are not retried across endpoints.
 			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
 				return lastErr

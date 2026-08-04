@@ -40,7 +40,12 @@ const (
 )
 
 // CallCodexAPI routes a generation request to the Codex (ChatGPT) upstream.
-func CallCodexAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+// ctx is the caller's request context; the upstream request is derived from it so
+// a client disconnect cancels the generation.
+func CallCodexAPI(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if callback == nil {
 		callback = &KiroStreamCallback{}
 	}
@@ -73,7 +78,7 @@ func CallCodexAPI(account *config.Account, payload *KiroPayload, callback *KiroS
 		logger.Debugf("[Codex] Request to %s (model=%v)", codexResponsesURL, reqBody["model"])
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	client := GetClientForProxy(ResolveAccountProxyURL(account))
@@ -107,7 +112,7 @@ func CallCodexAPI(account *config.Account, payload *KiroPayload, callback *KiroS
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return fmt.Errorf("codex: upstream error %d: %s", resp.StatusCode, string(errBody))
+		return newUpstreamError("codex", resp.StatusCode, string(errBody), "")
 	}
 
 	idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
@@ -121,7 +126,10 @@ func CallCodexAPI(account *config.Account, payload *KiroPayload, callback *KiroS
 // Responses endpoint and returns the final base64-encoded image. Image requests
 // require a ChatGPT Plus (or higher) account; a free account yields no image and
 // this returns an entitlement error.
-func CallCodexImageAPI(account *config.Account, req *CodexImageRequest) (b64 string, mimeType string, err error) {
+func CallCodexImageAPI(ctx context.Context, account *config.Account, req *CodexImageRequest) (b64 string, mimeType string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if account == nil {
 		return "", "", fmt.Errorf("codex: account is nil")
 	}
@@ -136,7 +144,7 @@ func CallCodexImageAPI(account *config.Account, req *CodexImageRequest) (b64 str
 		return "", "", fmt.Errorf("codex: marshal image request: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	client := GetClientForProxy(ResolveAccountProxyURL(account))
@@ -169,7 +177,7 @@ func CallCodexImageAPI(account *config.Account, req *CodexImageRequest) (b64 str
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return "", "", fmt.Errorf("codex: image upstream error %d: %s", resp.StatusCode, string(errBody))
+		return "", "", newUpstreamError("codex image", resp.StatusCode, string(errBody), "")
 	}
 
 	var finalImage string
