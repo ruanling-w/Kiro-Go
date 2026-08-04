@@ -60,6 +60,10 @@ export default defineConfig({
       // text/event-stream through without waiting for the response to close.
       '/admin/api': { target: 'http://localhost:8080', changeOrigin: true },
       '/check/api': { target: 'http://localhost:8080', changeOrigin: true },
+      // Public OpenAI/Anthropic-compatible surface used by the API docs page
+      // (model catalog, curl samples). Same-origin in dev so no CORS dance.
+      '/v1': { target: 'http://localhost:8080', changeOrigin: true },
+      '/health': { target: 'http://localhost:8080', changeOrigin: true },
     },
   },
 })
