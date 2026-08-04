@@ -11,6 +11,7 @@
 package config
 
 import (
+	"errors"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -200,6 +201,9 @@ type ApiKeyEntry struct {
 	// Limits (0 = unlimited)
 	TokenLimit  int64   `json:"tokenLimit,omitempty"`
 	CreditLimit float64 `json:"creditLimit,omitempty"`
+	// RpmLimit caps requests in a rolling 60-second window (live RAM meter).
+	// 0 = unlimited. Enforced at authenticate time for multi-key auth.
+	RpmLimit int64 `json:"rpmLimit,omitempty"`
 	// Multiplier applies to per-key usage; 0 means the default factor of 1.
 	Multiplier float64 `json:"multiplier,omitempty"`
 
@@ -263,9 +267,16 @@ type Config struct {
 	// solely because usageCurrent >= usageLimit.
 	AllowOverUsage bool `json:"allowOverUsage,omitempty"`
 
-	// DefaultApiKeyMultiplier is used when creating a key without an explicit multiplier.
-	// Zero means the default billing factor of 1x.
+	// DefaultApiKeyMultiplier is the SERVER-WIDE billing factor applied to every
+	// API key (multiplied with the per-key multiplier). JSON name kept for compat.
+	// Zero means 1x at the server layer.
 	DefaultApiKeyMultiplier float64 `json:"defaultApiKeyMultiplier,omitempty"`
+
+	// DefaultApiKeyRpmLimit is the SERVER-WIDE rolling-60s request cap across all
+	// multi-key traffic (sum of per-key live RPMs). Zero means unlimited at the
+	// server layer. Per-key rpmLimit still applies independently.
+	// JSON name kept for compat with earlier "default for new keys" rollout.
+	DefaultApiKeyRpmLimit int64 `json:"defaultApiKeyRpmLimit,omitempty"`
 
 	// Proxy configuration: optional outbound proxy for Kiro API requests
 	// Format: "socks5://host:port", "socks5://user:pass@host:port",
@@ -1209,7 +1220,8 @@ func UpdateAllowOverUsage(allow bool) error {
 	return Save()
 }
 
-// GetDefaultApiKeyMultiplier returns the multiplier used for newly created API keys.
+// GetDefaultApiKeyMultiplier returns the server-wide API-key billing multiplier.
+// Zero means 1x at the server layer. JSON field name is historical.
 func GetDefaultApiKeyMultiplier() float64 {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()
@@ -1219,7 +1231,7 @@ func GetDefaultApiKeyMultiplier() float64 {
 	return cfg.DefaultApiKeyMultiplier
 }
 
-// UpdateDefaultApiKeyMultiplier validates and persists the multiplier for new keys.
+// UpdateDefaultApiKeyMultiplier validates and persists the server-wide billing multiplier.
 func UpdateDefaultApiKeyMultiplier(multiplier float64) error {
 	if err := validateApiKeyMultiplier(multiplier); err != nil {
 		return err
@@ -1227,6 +1239,29 @@ func UpdateDefaultApiKeyMultiplier(multiplier float64) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.DefaultApiKeyMultiplier = multiplier
+	return Save()
+}
+
+// GetDefaultApiKeyRpmLimit returns the server-wide rolling-60s RPM cap (sum of all keys).
+// Zero means unlimited at the server layer.
+func GetDefaultApiKeyRpmLimit() int64 {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return 0
+	}
+	return cfg.DefaultApiKeyRpmLimit
+}
+
+// UpdateDefaultApiKeyRpmLimit validates and persists the server-wide RPM cap.
+// Negative values are rejected; zero means unlimited at the server layer.
+func UpdateDefaultApiKeyRpmLimit(limit int64) error {
+	if limit < 0 {
+		return errors.New("default API key RPM limit must be >= 0")
+	}
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.DefaultApiKeyRpmLimit = limit
 	return Save()
 }
 

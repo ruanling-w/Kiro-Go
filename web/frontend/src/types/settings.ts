@@ -29,6 +29,7 @@ export interface CoreSettings {
   host: string
   allowOverUsage: boolean
   defaultApiKeyMultiplier: number
+  defaultApiKeyRpmLimit: number
 }
 
 // POST /settings — omit a field to leave it unchanged. password change revokes sessions.
@@ -38,6 +39,7 @@ export interface CoreSettingsUpdate {
   password?: string
   allowOverUsage?: boolean
   defaultApiKeyMultiplier?: number
+  defaultApiKeyRpmLimit?: number
 }
 
 export type ThinkingFormat = 'reasoning_content' | 'thinking' | 'think'

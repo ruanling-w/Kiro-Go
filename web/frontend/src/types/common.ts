@@ -17,6 +17,7 @@ export interface StatusSnapshot {
   failedRequests: number
   totalTokens: number
   totalCredits: number
+  totalRpm?: number
   uptime: number
 }
 

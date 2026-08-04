@@ -11,13 +11,22 @@ import (
 
 const MaxApiKeyMultiplier = 100
 
-// EffectiveApiKeyMultiplier returns the billing factor for a key. Zero preserves
-// legacy behavior and means one times usage.
-func EffectiveApiKeyMultiplier(multiplier float64) float64 {
-	if multiplier == 0 {
-		return 1
+// EffectiveApiKeyMultiplier returns the billing factor for a key.
+// Per-key multiplier wins when set (> 0). Zero on the key means "inherit the
+// server-wide setting". Server zero means 1x.
+//
+//	key=4, server=2 → 4x  (key override)
+//	key=0, server=2 → 2x  (inherit server)
+//	key=0, server=0 → 1x
+func EffectiveApiKeyMultiplier(keyMultiplier float64) float64 {
+	if keyMultiplier > 0 {
+		return keyMultiplier
 	}
-	return multiplier
+	server := GetDefaultApiKeyMultiplier()
+	if server > 0 {
+		return server
+	}
+	return 1
 }
 
 func validateApiKeyMultiplier(multiplier float64) error {
@@ -95,7 +104,8 @@ func AddApiKey(entry ApiKeyEntry) (ApiKeyEntry, error) {
 
 // UpdateApiKey applies a patch to an existing API key. Patch semantics:
 //   - Name, Key are overwritten when non-empty in patch.
-//   - Enabled, TokenLimit, CreditLimit, ExpiresAt are always overwritten (zero values are valid).
+//   - Enabled, TokenLimit, CreditLimit, RpmLimit, ExpiresAt are always overwritten
+//     (zero values are valid).
 //   - Counters (TokensUsed/CreditsUsed/RequestsCount) are not touched here; use
 //     RecordApiKeyUsage or ResetApiKeyUsage instead.
 //   - Migrated stays as-is once true; only flips when explicitly set in patch.
@@ -134,6 +144,7 @@ func UpdateApiKey(id string, patch ApiKeyEntry) error {
 	cfg.ApiKeys[idx].Enabled = patch.Enabled
 	cfg.ApiKeys[idx].TokenLimit = patch.TokenLimit
 	cfg.ApiKeys[idx].CreditLimit = patch.CreditLimit
+	cfg.ApiKeys[idx].RpmLimit = patch.RpmLimit
 	cfg.ApiKeys[idx].Multiplier = patch.Multiplier
 	cfg.ApiKeys[idx].ExpiresAt = patch.ExpiresAt
 	if patch.Migrated {
@@ -269,4 +280,11 @@ func ApiKeyOverLimit(e ApiKeyEntry) (overToken bool, overCredit bool) {
 		overCredit = true
 	}
 	return
+}
+
+// ApiKeyOverRpm reports whether liveRPM is at or above the configured rolling
+// 60s cap. RpmLimit 0 means unlimited. currentRpm comes from the RAM meter
+// (ipTrack); this helper does not read it itself.
+func ApiKeyOverRpm(e ApiKeyEntry, currentRpm int64) bool {
+	return e.RpmLimit > 0 && currentRpm >= e.RpmLimit
 }

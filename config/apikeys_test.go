@@ -349,3 +349,26 @@ func TestGenerateApiKeyValueIsUnique(t *testing.T) {
 		t.Fatalf("expected non-trivial key length, got %q", a)
 	}
 }
+
+func TestEffectiveApiKeyMultiplierOverride(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.json")
+	if err := Init(cfgFile); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := UpdateDefaultApiKeyMultiplier(2); err != nil {
+		t.Fatalf("set server mult: %v", err)
+	}
+
+	if got := EffectiveApiKeyMultiplier(4); got != 4 {
+		t.Fatalf("key override: got %v want 4", got)
+	}
+	if got := EffectiveApiKeyMultiplier(0); got != 2 {
+		t.Fatalf("inherit server: got %v want 2", got)
+	}
+	if err := UpdateDefaultApiKeyMultiplier(0); err != nil {
+		t.Fatal(err)
+	}
+	if got := EffectiveApiKeyMultiplier(0); got != 1 {
+		t.Fatalf("both zero: got %v want 1", got)
+	}
+}

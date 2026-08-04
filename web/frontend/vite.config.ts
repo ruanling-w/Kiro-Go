@@ -59,10 +59,13 @@ function publicRoutes(): PluginOption {
       server.middlewares.use((req: IncomingMessage, res: ServerResponse, next) => {
         const path = pathOnly(req.url ?? '/')
 
-        if (path === '/' || path === '/index.html') {
+        if (path === '/' || path === '/index.html' || path === '/admin') {
           // Trailing slash is required: base is '/admin/', so Vite's transform
-          // middleware does not serve a bare '/admin' (it 404s).
-          res.writeHead(302, { Location: '/admin/' })
+          // middleware does not serve a bare '/admin' (it shows the baseURL notice).
+          const qs = (req.url ?? '').includes('?')
+            ? (req.url ?? '').slice((req.url ?? '').indexOf('?'))
+            : ''
+          res.writeHead(302, { Location: `/admin/${qs}` })
           res.end()
           return
         }

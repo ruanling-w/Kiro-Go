@@ -20,6 +20,9 @@ export function Counter({
 }: CounterProps) {
   const [display, setDisplay] = useState(value)
   const fromRef = useRef(value)
+  // KPI counts are integers — round every frame so formatCompact/etc. never
+  // flash "241.9998" mid-tween when status/SSE updates arrive.
+  const snap = Number.isFinite(value) && Number.isInteger(value)
 
   useEffect(() => {
     const from = fromRef.current
@@ -32,10 +35,10 @@ export function Counter({
     const controls = animate(from, value, {
       duration,
       ease: EASE_OUT,
-      onUpdate: (v) => setDisplay(v),
+      onUpdate: (v) => setDisplay(snap ? Math.round(v) : v),
     })
     return () => controls.stop()
-  }, [value, duration])
+  }, [value, duration, snap])
 
   return <span className={className}>{format(display)}</span>
 }

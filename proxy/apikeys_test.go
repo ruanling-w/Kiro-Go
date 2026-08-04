@@ -221,6 +221,82 @@ func TestAuthenticateRejectsOverCreditLimit(t *testing.T) {
 	}
 }
 
+
+func TestAuthenticateRejectsOverRpmLimit(t *testing.T) {
+	mustInitConfig(t)
+	created, err := config.AddApiKey(config.ApiKeyEntry{
+		Name: "rlimit", Key: "sk-rlimit", Enabled: true, RpmLimit: 2,
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	requireAuth(t)
+
+	h := &Handler{ipTrack: newIPTracker()}
+	// Simulate 2 requests already in the rolling window.
+	h.ipTrack.track(created.ID, "1.1.1.1")
+	h.ipTrack.track(created.ID, "1.1.1.1")
+
+	r := newAuthTestRequest(t, "Authorization", "Bearer sk-rlimit")
+	entry, err := h.authenticate(r)
+	if err == nil {
+		t.Fatalf("expected rpm limit rejection, got entry=%v", entry)
+	}
+	ae, ok := err.(*authError)
+	if !ok {
+		t.Fatalf("expected *authError, got %T", err)
+	}
+	if ae.status != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", ae.status)
+	}
+	if !strings.Contains(ae.message, "rpm limit") {
+		t.Fatalf("expected rpm limit message, got %q", ae.message)
+	}
+}
+
+func TestAuthenticateAllowsUnderRpmLimit(t *testing.T) {
+	mustInitConfig(t)
+	created, err := config.AddApiKey(config.ApiKeyEntry{
+		Name: "runder", Key: "sk-runder", Enabled: true, RpmLimit: 5,
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	requireAuth(t)
+
+	h := &Handler{ipTrack: newIPTracker()}
+	h.ipTrack.track(created.ID, "2.2.2.2")
+
+	r := newAuthTestRequest(t, "Authorization", "Bearer sk-runder")
+	entry, err := h.authenticate(r)
+	if err != nil {
+		t.Fatalf("expected success under rpm limit, got %v", err)
+	}
+	if entry == nil || entry.ID != created.ID {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+}
+
+func TestAuthenticateRpmLimitZeroUnlimited(t *testing.T) {
+	mustInitConfig(t)
+	created, err := config.AddApiKey(config.ApiKeyEntry{
+		Name: "runlim", Key: "sk-runlim", Enabled: true, RpmLimit: 0,
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	requireAuth(t)
+
+	h := &Handler{ipTrack: newIPTracker()}
+	for i := 0; i < 20; i++ {
+		h.ipTrack.track(created.ID, "3.3.3.3")
+	}
+	r := newAuthTestRequest(t, "Authorization", "Bearer sk-runlim")
+	if _, err := h.authenticate(r); err != nil {
+		t.Fatalf("rpmLimit=0 should not reject: %v", err)
+	}
+}
+
 func TestAuthenticateLegacyFallback(t *testing.T) {
 	mustInitConfig(t)
 	if err := config.UpdateSettings("legacy-key", true, ""); err != nil {
@@ -390,5 +466,38 @@ func TestAuthenticateRequiredWithoutKeysFailsClosed(t *testing.T) {
 	}
 	if _, err := h.authenticate(newAuthTestRequest(t, "Authorization", "Bearer anything")); err == nil {
 		t.Fatalf("expected provided-key path to also fail closed when nothing is configured")
+	}
+}
+
+func TestAuthenticateRejectsOverServerRpmLimit(t *testing.T) {
+	mustInitConfig(t)
+	if err := config.UpdateDefaultApiKeyRpmLimit(2); err != nil {
+		t.Fatalf("set server rpm: %v", err)
+	}
+	defer config.UpdateDefaultApiKeyRpmLimit(0)
+	created, err := config.AddApiKey(config.ApiKeyEntry{
+		Name: "srv", Key: "sk-srv-rpm", Enabled: true, RpmLimit: 0,
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	requireAuth(t)
+	h := &Handler{ipTrack: newIPTracker()}
+	h.ipTrack.track(created.ID, "1.1.1.1")
+	h.ipTrack.track(created.ID, "1.1.1.1")
+	r := newAuthTestRequest(t, "Authorization", "Bearer sk-srv-rpm")
+	entry, err := h.authenticate(r)
+	if err == nil {
+		t.Fatalf("expected server rpm rejection, got entry=%v", entry)
+	}
+	ae, ok := err.(*authError)
+	if !ok {
+		t.Fatalf("expected *authError, got %T", err)
+	}
+	if ae.status != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", ae.status)
+	}
+	if !strings.Contains(ae.message, "server rpm") {
+		t.Fatalf("expected server rpm message, got %q", ae.message)
 	}
 }

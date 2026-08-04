@@ -5225,6 +5225,12 @@ func firstNonEmpty(vals ...string) string {
 }
 
 func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
+	var totalRpm int64
+	if h != nil && h.ipTrack != nil {
+		for _, v := range h.ipTrack.rpmByKey() {
+			totalRpm += v
+		}
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"version":         config.Version,
 		"accounts":        h.pool.Count(),
@@ -5234,6 +5240,7 @@ func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 		"failedRequests":  h.failedRequests,
 		"totalTokens":     h.totalTokens,
 		"totalCredits":    h.totalCredits,
+		"totalRpm":        totalRpm,
 		"uptime":          time.Now().Unix() - h.startTime,
 	})
 }
@@ -5246,6 +5253,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"host":                    config.GetHost(),
 		"allowOverUsage":          config.GetAllowOverUsage(),
 		"defaultApiKeyMultiplier": config.GetDefaultApiKeyMultiplier(),
+		"defaultApiKeyRpmLimit":   config.GetDefaultApiKeyRpmLimit(),
 	})
 }
 
@@ -5342,6 +5350,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		Password                string   `json:"password,omitempty"`
 		AllowOverUsage          *bool    `json:"allowOverUsage,omitempty"`
 		DefaultApiKeyMultiplier *float64 `json:"defaultApiKeyMultiplier,omitempty"`
+		DefaultApiKeyRpmLimit   *int64   `json:"defaultApiKeyRpmLimit,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -5363,6 +5372,14 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	if req.DefaultApiKeyMultiplier != nil {
 		if err := config.UpdateDefaultApiKeyMultiplier(*req.DefaultApiKeyMultiplier); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.DefaultApiKeyRpmLimit != nil {
+		if err := config.UpdateDefaultApiKeyRpmLimit(*req.DefaultApiKeyRpmLimit); err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return

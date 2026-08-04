@@ -7,6 +7,7 @@
 // so a KPI can signal health (e.g. success rate → success/warning/danger).
 import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { Card } from '@/components/ui/card'
 import { Counter } from '@/components/ui/animate/Counter'
 import { cn } from '@/lib/utils'
@@ -21,6 +22,8 @@ interface StatCardProps {
   icon?: LucideIcon
   hint?: string
   tone?: StatTone
+  /** Green pulse “live” dot next to the label (e.g. realtime RPM). */
+  live?: boolean
   className?: string
   children?: ReactNode
 }
@@ -54,23 +57,27 @@ export function StatCard({
   icon: Icon,
   hint,
   tone = 'default',
+  live = false,
   className,
   children,
 }: StatCardProps) {
+  const { t } = useTranslation()
   return (
     <Card
       className={cn(
-        'group/stat relative gap-1.5 p-4 transition-all duration-200 hover:-translate-y-0.5',
+        'group/stat relative flex h-full flex-col gap-1.5 p-4 transition-all duration-200 hover:-translate-y-0.5',
         TONE_RING[tone],
         className,
       )}
     >
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">
+          {label}
+        </span>
         {Icon && (
           <span
             className={cn(
-              'flex size-7 items-center justify-center rounded-lg',
+              'flex size-7 shrink-0 items-center justify-center rounded-lg',
               TONE_ICON[tone],
             )}
           >
@@ -81,8 +88,31 @@ export function StatCard({
       <div className="font-telemetry text-[1.75rem] leading-tight font-semibold">
         {count !== undefined ? <Counter value={count} format={format} /> : value}
       </div>
-      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
-      {children}
+
+      {/* Footer block sticks to the bottom so equal-height cards align. */}
+      <div className="mt-auto flex min-h-0 flex-col gap-1">
+        {(hint || live) && (
+          <div className="flex items-end justify-between gap-2">
+            {hint ? (
+              <span className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
+                {hint}
+              </span>
+            ) : (
+              <span />
+            )}
+            {live && (
+              <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium leading-snug text-emerald-600 dark:text-emerald-400">
+                <span className="relative flex size-1.5 shrink-0" aria-hidden>
+                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+                  <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
+                </span>
+                {t('status.live')}
+              </span>
+            )}
+          </div>
+        )}
+        {children}
+      </div>
       <span
         className={cn(
           'pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r to-transparent opacity-0 transition-opacity duration-300 group-hover/stat:opacity-100',

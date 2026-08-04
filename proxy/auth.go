@@ -80,6 +80,24 @@ func (h *Handler) authenticate(r *http.Request) (*config.ApiKeyEntry, error) {
 			}
 			return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", "credit limit exceeded")
 		}
+		// RPM is a live rolling 60s window (RAM). Check before accepting so the
+		// current request is not tracked when already at/over the cap.
+		if h != nil && h.ipTrack != nil {
+			// Server-wide cap: sum of all keys' live RPM.
+			if serverLimit := config.GetDefaultApiKeyRpmLimit(); serverLimit > 0 {
+				var total int64
+				for _, v := range h.ipTrack.rpmByKey() {
+					total += v
+				}
+				if total >= serverLimit {
+					return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", "server rpm limit exceeded")
+				}
+			}
+			// Per-key cap (independent of server total).
+			if entry.RpmLimit > 0 && config.ApiKeyOverRpm(*entry, h.ipTrack.keyRPMValue(entry.ID)) {
+				return nil, newAuthError(http.StatusTooManyRequests, "rate_limit_error", "rpm limit exceeded")
+			}
+		}
 		return entry, nil
 	}
 

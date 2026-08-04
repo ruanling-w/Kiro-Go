@@ -178,7 +178,11 @@ export default function ApiKeysPage() {
         editing={editing}
       />
 
-      <ApiKeyIpsDialog keyId={ipsFor} onClose={() => setIpsFor(null)} />
+      <ApiKeyIpsDialog
+        keyId={ipsFor}
+        rpmLimit={(apiKeys.data ?? []).find((k) => k.id === ipsFor)?.rpmLimit ?? 0}
+        onClose={() => setIpsFor(null)}
+      />
 
       <ConfirmDialog
         open={!!pendingDelete}

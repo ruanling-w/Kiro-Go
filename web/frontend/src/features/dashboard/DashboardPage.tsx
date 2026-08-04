@@ -3,7 +3,7 @@
 // Status polls every 10s (useStatus); logs feed the request timeline.
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Users, Activity, Coins, Cpu } from 'lucide-react'
+import { Users, Activity, Coins, Cpu, Gauge } from 'lucide-react'
 import { useStatus } from '@/hooks/queries/useStatus'
 import { useAccounts } from '@/hooks/queries/useAccounts'
 import { useApiKeys } from '@/hooks/queries/useApiKeys'
@@ -50,9 +50,10 @@ export default function DashboardPage() {
       {status.isPending ? (
         <HamsterLoader label={t('detail.loading')} />
       ) : (
-        <Stagger className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <StaggerItem>
+        <Stagger className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <StaggerItem className="h-full min-h-0">
             <StatCard
+              className="h-full"
               icon={Users}
               label={t('stats.accounts')}
               count={s?.accounts ?? 0}
@@ -60,31 +61,64 @@ export default function DashboardPage() {
               hint={`${formatNumber(s?.available ?? 0)} · ${t('stats.capacity')}`}
             />
           </StaggerItem>
-          <StaggerItem>
+          <StaggerItem className="h-full min-h-0">
             <StatCard
+              className="h-full"
               icon={Activity}
               label={t('stats.requests')}
               count={s?.totalRequests ?? 0}
               format={formatCompact}
               tone={requestsTone}
-              hint={`${successRate.toFixed(1)}% · ${t('stats.reliability')}`}
-            />
+            >
+              <div className="mt-1 space-y-1 text-xs">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                  <span className="tabular-nums font-medium text-emerald-600 dark:text-emerald-400">
+                    {formatCompact(s?.successRequests ?? 0)}{' '}
+                    <span className="font-normal text-muted-foreground">
+                      {t('stats.success')}
+                    </span>
+                  </span>
+                  <span className="tabular-nums font-medium text-destructive">
+                    {formatCompact(s?.failedRequests ?? 0)}{' '}
+                    <span className="font-normal text-muted-foreground">
+                      {t('stats.failed')}
+                    </span>
+                  </span>
+                </div>
+                <span className="text-muted-foreground">
+                  {successRate.toFixed(1)}% · {t('stats.reliability')}
+                </span>
+              </div>
+            </StatCard>
           </StaggerItem>
-          <StaggerItem>
+          <StaggerItem className="h-full min-h-0">
             <StatCard
+              className="h-full"
               icon={Cpu}
               label={t('stats.tokens')}
               count={s?.totalTokens ?? 0}
               format={formatCompact}
             />
           </StaggerItem>
-          <StaggerItem>
+          <StaggerItem className="h-full min-h-0">
             <StatCard
+              className="h-full"
               icon={Coins}
               label={t('stats.credits')}
               count={s?.totalCredits ?? 0}
               format={formatCompact}
               hint={s ? formatUptime(s.uptime) : undefined}
+            />
+          </StaggerItem>
+          <StaggerItem className="h-full min-h-0">
+            <StatCard
+              className="h-full"
+              icon={Gauge}
+              label={t('stats.totalRpm')}
+              count={s?.totalRpm ?? 0}
+              format={formatNumber}
+              hint={t('stats.totalRpmHint')}
+              live
             />
           </StaggerItem>
         </Stagger>

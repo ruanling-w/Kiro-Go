@@ -19,6 +19,7 @@ export interface ApiKeyView {
   expired: boolean
   uniqueIps: number
   rpm: number
+  rpmLimit: number
 }
 
 /** POST /api-keys — all optional; key auto-generated if empty; expiresAt unix seconds, 0 = never. */
@@ -28,6 +29,7 @@ export interface ApiKeyCreate {
   enabled?: boolean
   tokenLimit?: number
   creditLimit?: number
+  rpmLimit?: number
   multiplier?: number
   expiresAt?: number
 }
@@ -39,6 +41,7 @@ export interface ApiKeyUpdate {
   enabled?: boolean
   tokenLimit?: number
   creditLimit?: number
+  rpmLimit?: number
   multiplier?: number
   expiresAt?: number
 }
@@ -60,6 +63,7 @@ export interface KeyIPStat {
   ip: string
   requests: number
   lastSeen: number
+  rpm?: number
 }
 
 export interface ApiKeyIPsResponse {

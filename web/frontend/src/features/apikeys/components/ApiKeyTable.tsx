@@ -84,6 +84,33 @@ export function ApiKeyTable({ rows, onEdit, onDelete, onReset, onToggle, onViewI
       ),
     },
     {
+      id: 'rpm',
+      header: t('apiKeys.rpm'),
+      mobileRole: 'meta',
+      align: 'right',
+      sortValue: (k) => k.rpm || 0,
+      cell: (k) => {
+        const rpm = k.rpm || 0
+        const limit = k.rpmLimit || 0
+        const over = limit > 0 && rpm >= limit
+        const warn = limit > 0 && !over && rpm >= limit * 0.8
+        return (
+          <span
+            className={
+              over
+                ? 'tabular-nums font-semibold text-destructive'
+                : warn
+                  ? 'tabular-nums font-medium text-amber-600 dark:text-amber-400'
+                  : 'tabular-nums text-muted-foreground'
+            }
+            title={t('apiKeys.rpmHint')}
+          >
+            {limit > 0 ? `${formatNumber(rpm)} / ${formatNumber(limit)}` : formatNumber(rpm)}
+          </span>
+        )
+      },
+    },
+    {
       id: 'created',
       header: t('apiKeys.created'),
       mobileRole: 'meta',

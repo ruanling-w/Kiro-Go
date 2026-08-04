@@ -52,6 +52,7 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
   const [enabled, setEnabled] = useState(true)
   const [tokenLimit, setTokenLimit] = useState('0')
   const [creditLimit, setCreditLimit] = useState('0')
+  const [rpmLimit, setRpmLimit] = useState('0')
   const [multiplier, setMultiplier] = useState('0')
   const [expiry, setExpiry] = useState('')
   const [createdKey, setCreatedKey] = useState<string | null>(null)
@@ -64,6 +65,7 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
       setEnabled(editing.enabled)
       setTokenLimit(String(editing.tokenLimit ?? 0))
       setCreditLimit(String(editing.creditLimit ?? 0))
+      setRpmLimit(String(editing.rpmLimit ?? 0))
       setMultiplier(String(editing.multiplier ?? 0))
       setExpiry(toDatetimeLocal(editing.expiresAt))
     } else {
@@ -71,6 +73,7 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
       setEnabled(true)
       setTokenLimit('0')
       setCreditLimit('0')
+      setRpmLimit('0')
       setMultiplier('0')
       setExpiry('')
     }
@@ -82,6 +85,7 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
       enabled,
       tokenLimit: Number(tokenLimit) || 0,
       creditLimit: Number(creditLimit) || 0,
+      rpmLimit: Number(rpmLimit) || 0,
       multiplier: Number(multiplier) || 0,
       expiresAt: fromDatetimeLocal(expiry),
     }
@@ -172,7 +176,17 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="ak-multiplier">Multiplier</Label>
+                <Label htmlFor="ak-rpm">{t('apiKeys.limitRpm')}</Label>
+                <Input
+                  id="ak-rpm"
+                  type="number"
+                  min={0}
+                  value={rpmLimit}
+                  onChange={(e) => setRpmLimit(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="ak-multiplier">{t('apiKeys.multiplier')}</Label>
                 <Input
                   id="ak-multiplier"
                   type="number"
@@ -182,8 +196,10 @@ export function ApiKeyFormDialog({ open, onOpenChange, editing }: Props) {
                   value={multiplier}
                   onChange={(e) => setMultiplier(e.target.value)}
                 />
+                <p className="text-xs text-muted-foreground">{t('apiKeys.multiplierHint')}</p>
               </div>
             </div>
+            <p className="text-xs text-muted-foreground">{t('apiKeys.limitHint')} · {t('apiKeys.rpmHint')}</p>
             <div className="space-y-2">
               <Label htmlFor="ak-exp">{t('apiKeys.formExpiry')}</Label>
               <Input
