@@ -16,6 +16,7 @@ export type ThemePref = 'system' | 'light' | 'dark'
 const THEME_KEY = 'kiro_theme'
 const LANG_KEY = 'kiro_lang'
 const PRIVACY_KEY = 'kiro_privacy'
+const DOCS_BASE_KEY = 'kiro_docs_base'
 
 const prefersDark = () =>
   typeof window !== 'undefined' &&
@@ -59,6 +60,10 @@ interface UiState {
   apiKeyKeyword: string
   apiKeyStatus: ApiKeyStatusFilter
 
+  // API docs page — base URL persists; selected key id is ephemeral.
+  docsBaseURL: string
+  docsApiKeyId: string | null
+
   setTheme: (t: ThemePref) => void
   cycleTheme: () => void
   setLang: (l: Lang) => void
@@ -73,6 +78,9 @@ interface UiState {
 
   setApiKeyKeyword: (v: string) => void
   setApiKeyStatus: (v: ApiKeyStatusFilter) => void
+
+  setDocsBaseURL: (v: string) => void
+  setDocsApiKeyId: (v: string | null) => void
 }
 
 const THEME_ORDER: ThemePref[] = ['system', 'light', 'dark']
@@ -89,6 +97,11 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   apiKeyKeyword: '',
   apiKeyStatus: 'all',
+
+  docsBaseURL:
+    (typeof window !== 'undefined' && localStorage.getItem(DOCS_BASE_KEY)) ||
+    (typeof window !== 'undefined' ? window.location.origin : ''),
+  docsApiKeyId: null,
 
   setTheme: (t) => {
     localStorage.setItem(THEME_KEY, t)
@@ -126,6 +139,12 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   setApiKeyKeyword: (v) => set({ apiKeyKeyword: v }),
   setApiKeyStatus: (v) => set({ apiKeyStatus: v }),
+
+  setDocsBaseURL: (v) => {
+    localStorage.setItem(DOCS_BASE_KEY, v)
+    set({ docsBaseURL: v })
+  },
+  setDocsApiKeyId: (v) => set({ docsApiKeyId: v }),
 }))
 
 /**
