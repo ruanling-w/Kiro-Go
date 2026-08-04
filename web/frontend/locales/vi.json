@@ -67,6 +67,8 @@
   "providerDesc.codex": "OpenAI ChatGPT",
   "nav.system": "Hệ thống",
   "nav.menu": "Menu điều hướng",
+  "nav.expandSidebar": "Mở rộng menu",
+  "nav.collapseSidebar": "Thu gọn menu",
   "nav.usage": "Sử dụng Token",
   "nav.apikeys": "API Keys",
   "nav.apiDocs": "API & CLI",

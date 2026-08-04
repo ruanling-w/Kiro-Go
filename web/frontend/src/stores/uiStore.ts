@@ -17,6 +17,7 @@ const THEME_KEY = 'kiro_theme'
 const LANG_KEY = 'kiro_lang'
 const PRIVACY_KEY = 'kiro_privacy'
 const DOCS_BASE_KEY = 'kiro_docs_base'
+const SIDEBAR_KEY = 'kiro_sidebar_collapsed'
 
 const prefersDark = () =>
   typeof window !== 'undefined' &&
@@ -49,6 +50,8 @@ interface UiState {
   theme: ThemePref
   lang: Lang
   privacyMode: boolean
+  /** Desktop sidebar collapsed to icon rail. Mobile still uses the Sheet. */
+  sidebarCollapsed: boolean
 
   // Accounts list filters.
   accountKeyword: string
@@ -69,6 +72,8 @@ interface UiState {
   cycleTheme: () => void
   setLang: (l: Lang) => void
   togglePrivacy: () => void
+  toggleSidebarCollapsed: () => void
+  setSidebarCollapsed: (v: boolean) => void
 
   setAccountKeyword: (v: string) => void
   setAccountStatus: (v: AccountStatusFilter) => void
@@ -92,6 +97,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   // Privacy OFF by default so provider/account cards show full emails.
   // Only mask when the user explicitly enables it (localStorage '1').
   privacyMode: localStorage.getItem(PRIVACY_KEY) === '1',
+  sidebarCollapsed: localStorage.getItem(SIDEBAR_KEY) === '1',
 
   accountKeyword: '',
   accountStatus: 'all',
@@ -123,6 +129,13 @@ export const useUiStore = create<UiState>((set, get) => ({
     const next = !get().privacyMode
     localStorage.setItem(PRIVACY_KEY, next ? '1' : '0')
     set({ privacyMode: next })
+  },
+  setSidebarCollapsed: (v) => {
+    localStorage.setItem(SIDEBAR_KEY, v ? '1' : '0')
+    set({ sidebarCollapsed: v })
+  },
+  toggleSidebarCollapsed: () => {
+    get().setSidebarCollapsed(!get().sidebarCollapsed)
   },
 
   setAccountKeyword: (v) => set({ accountKeyword: v }),

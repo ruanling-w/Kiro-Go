@@ -67,6 +67,8 @@
   "providerDesc.codex": "OpenAI ChatGPT",
   "nav.system": "System",
   "nav.menu": "Navigation menu",
+  "nav.expandSidebar": "Expand sidebar",
+  "nav.collapseSidebar": "Collapse sidebar",
   "nav.usage": "Token Usage",
   "nav.apikeys": "API Keys",
   "nav.apiDocs": "API & CLI",

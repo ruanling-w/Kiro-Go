@@ -1,7 +1,17 @@
 // Topbar — live status dot, theme cycle, language switch, and logout. On mobile
-// also hosts the hamburger that opens the nav Sheet (wired by AppShell).
+// hosts the hamburger that opens the nav Sheet; on desktop hosts the sidebar
+// collapse toggle (wired by AppShell / uiStore).
 import { useTranslation } from 'react-i18next'
-import { Menu, Moon, Sun, MonitorCog, Languages, LogOut } from 'lucide-react'
+import {
+  Menu,
+  Moon,
+  Sun,
+  MonitorCog,
+  Languages,
+  LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -55,6 +65,8 @@ export function Topbar({ onOpenNav }: TopbarProps) {
   const cycleTheme = useUiStore((s) => s.cycleTheme)
   const lang = useUiStore((s) => s.lang)
   const setLang = useUiStore((s) => s.setLang)
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed)
+  const toggleSidebar = useUiStore((s) => s.toggleSidebarCollapsed)
   const logout = useLogout()
   const ThemeIcon = THEME_ICON[theme]
 
@@ -72,6 +84,20 @@ export function Topbar({ onOpenNav }: TopbarProps) {
             <Menu className="size-5" />
           </Button>
         )}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="hidden md:inline-flex"
+          aria-label={sidebarCollapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')}
+          aria-expanded={!sidebarCollapsed}
+          onClick={toggleSidebar}
+        >
+          {sidebarCollapsed ? (
+            <PanelLeftOpen className="size-5" />
+          ) : (
+            <PanelLeftClose className="size-5" />
+          )}
+        </Button>
         <span className="truncate text-sm font-semibold tracking-tight md:hidden">
           {t('app.title')}
         </span>
