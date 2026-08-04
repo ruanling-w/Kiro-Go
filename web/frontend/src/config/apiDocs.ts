@@ -328,7 +328,3 @@ Cherry Studio (Anthropic provider)
     ],
   },
 ]
-
-// Keep Braces imported for potential future use without unused-import noise —
-// re-export nothing; drop if lint complains.
-void Braces
