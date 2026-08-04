@@ -21,7 +21,6 @@ import (
 	"kiro-go/config"
 	"kiro-go/logger"
 	"net/http"
-	"strings"
 )
 
 const grokImageURL = "https://api.x.ai/v1/images/generations"
@@ -55,10 +54,7 @@ func CallGrokImageAPI(ctx context.Context, account *config.Account, req *CodexIm
 		return "", "", fmt.Errorf("grok image: request is nil")
 	}
 
-	bearer := strings.TrimSpace(account.AccessToken)
-	if bearer == "" {
-		bearer = strings.TrimSpace(account.GrokAPIKey)
-	}
+	bearer := grokBearer(account)
 	if bearer == "" {
 		return "", "", fmt.Errorf("grok image: no credentials configured")
 	}

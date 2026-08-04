@@ -25,10 +25,9 @@ type grokModel struct {
 	Name string
 }
 
-// grokModels lists the models available via the xAI API (https://api.x.ai).
-// Both auth modes — official API key and Grok Build OAuth — hit the same
-// OpenAI-compatible endpoint, so they share one catalog. Source: 9router
-// registry/xai.js.
+// grokModels is the static fallback catalog when live GET /v1/models fails.
+// Prefer FetchGrokModels at runtime. Seeded from 9router registry/xai.js +
+// grok-cli.js common chat/image ids (not grok-web browser-only models).
 var grokModels = []grokModel{
 	{"grok-4.5", "Grok 4.5"},
 	{"grok-4-thinking", "Grok 4 Thinking"},
@@ -37,8 +36,7 @@ var grokModels = []grokModel{
 	{"grok-code-fast-1", "Grok Code Fast"},
 	{"grok-3", "Grok 3"},
 	{"grok-3-mini", "Grok 3 Mini"},
-	// Image-capable model (xAI supports image generation via separate endpoint,
-	// but some chat models accept image input).
+	// Image generation (dedicated images endpoint, not chat.completions).
 	{"grok-2-image-1212", "Grok 2 Image"},
 }
 
@@ -50,7 +48,13 @@ func isGrokImageModel(model string) bool {
 		!strings.Contains(m, "video")
 }
 
-// grokModelIDs returns the model ids for pool routing.
+// isGrokVideoModel reports video-generation model ids (async videos API).
+func isGrokVideoModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(m, "grok-") && strings.Contains(m, "video")
+}
+
+// grokModelIDs returns the static fallback model ids for pool routing.
 func grokModelIDs() []string {
 	ids := make([]string, len(grokModels))
 	for i, m := range grokModels {
@@ -59,17 +63,65 @@ func grokModelIDs() []string {
 	return ids
 }
 
-// grokModelInfos returns ModelInfo entries for /v1/models aggregation.
+// grokModelInfos returns the static fallback catalog as ModelInfo entries.
 func grokModelInfos() []ModelInfo {
 	infos := make([]ModelInfo, len(grokModels))
 	for i, m := range grokModels {
-		infos[i] = ModelInfo{
-			ModelId:     m.ID,
-			ModelName:   m.Name,
-			Description: "xAI Grok",
-		}
+		infos[i] = grokModelInfoFromID(m.ID, m.Name)
 	}
 	return infos
+}
+
+// grokModelInfoFromID builds a ModelInfo with correct modality flags for a Grok id.
+func grokModelInfoFromID(id, name string) ModelInfo {
+	id = strings.TrimSpace(id)
+	if name == "" {
+		name = id
+	}
+	info := ModelInfo{
+		ModelId:     id,
+		ModelName:   name,
+		Description: "xAI Grok",
+		InputTypes:  []string{"text"},
+	}
+	if isGrokImageModel(id) {
+		info.InputTypes = []string{"text", "image"}
+	}
+	return info
+}
+
+// enhanceGrokModelInfos normalizes live-fetched ids (description + image flags).
+func enhanceGrokModelInfos(infos []ModelInfo) []ModelInfo {
+	out := make([]ModelInfo, 0, len(infos))
+	seen := make(map[string]bool, len(infos))
+	for _, m := range infos {
+		id := strings.TrimSpace(m.ModelId)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if seen[key] {
+			continue
+		}
+		// xAI /v1/models can include non-Grok scaffolding; keep grok-* only.
+		if !strings.HasPrefix(key, "grok") {
+			continue
+		}
+		seen[key] = true
+		out = append(out, grokModelInfoFromID(id, m.ModelName))
+	}
+	return out
+}
+
+// modelInfoIDs extracts ModelId values for pool.SetModelList.
+func modelInfoIDs(infos []ModelInfo) []string {
+	ids := make([]string, 0, len(infos))
+	for _, m := range infos {
+		if id := strings.TrimSpace(m.ModelId); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // resolveGrokModel returns the upstream model id to send to xAI.

@@ -38,9 +38,93 @@ import (
 
 const (
 	grokChatURL     = "https://api.x.ai/v1/chat/completions"
+	grokModelsURL   = "https://api.x.ai/v1/models"
 	grokUserAgent   = "kiro-go/1.0"
 	grokMaxRetries  = 1 // simple for first implementation; pool handles failover
+	grokModelsTO    = 20 * time.Second
 )
+
+// grokBearer returns the Bearer credential for an account (OAuth access token
+// preferred, else static GrokAPIKey). Empty when neither is set.
+func grokBearer(account *config.Account) string {
+	if account == nil {
+		return ""
+	}
+	if t := strings.TrimSpace(account.AccessToken); t != "" {
+		return t
+	}
+	return strings.TrimSpace(account.GrokAPIKey)
+}
+
+// FetchGrokModels lists model ids from live GET https://api.x.ai/v1/models.
+// On any failure the caller should fall back to grokModelInfos().
+func FetchGrokModels(account *config.Account) ([]ModelInfo, error) {
+	if account == nil {
+		return nil, fmt.Errorf("grok: account is nil")
+	}
+	bearer := grokBearer(account)
+	if bearer == "" {
+		return nil, fmt.Errorf("grok: no credentials configured")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), grokModelsTO)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, grokModelsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("grok: models request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", fmt.Sprintf("%s (%s/%s)", grokUserAgent, runtime.GOOS, runtime.GOARCH))
+
+	// Use the REST client (bounded timeout) — model list is small and must not hang
+	// the refresh loop the way a streaming chat client might.
+	client := GetRestClientForProxy(ResolveAccountProxyURL(account))
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("grok: models request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, newUpstreamError("grok", resp.StatusCode, string(body), fmt.Sprintf("models HTTP %d", resp.StatusCode))
+	}
+
+	ids, err := parseOpenAIModelIDs(body)
+	if err != nil {
+		return nil, fmt.Errorf("grok: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("grok: /v1/models returned no models")
+	}
+
+	infos := make([]ModelInfo, 0, len(ids))
+	for _, id := range ids {
+		infos = append(infos, ModelInfo{ModelId: id, ModelName: id})
+	}
+	out := enhanceGrokModelInfos(infos)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("grok: /v1/models returned no grok-* models")
+	}
+	return out, nil
+}
+
+// resolveGrokModels prefers a live xAI catalog and falls back to the static list.
+// always returns a non-empty slice so pool routing never goes blank.
+func resolveGrokModels(account *config.Account) []ModelInfo {
+	if account != nil {
+		live, err := FetchGrokModels(account)
+		if err == nil && len(live) > 0 {
+			return live
+		}
+		if err != nil {
+			logger.Warnf("[Grok] live /v1/models failed for %s, using static catalog: %v", account.Email, err)
+		}
+	}
+	return grokModelInfos()
+}
 
 // CallGrokAPI routes the request to xAI (or Grok Web in the future).
 // ctx is the caller's request context; the upstream request is derived from it so
@@ -59,14 +143,7 @@ func CallGrokAPI(ctx context.Context, account *config.Account, payload *KiroPayl
 		return fmt.Errorf("grok: payload is nil")
 	}
 
-	// Both auth modes send a Bearer token to https://api.x.ai. Grok Build OAuth
-	// stores its (refreshable) access token on Account.AccessToken; the official
-	// API-key mode stores a static key on Account.GrokAPIKey. Prefer the OAuth
-	// access token when present, else fall back to the API key.
-	bearer := strings.TrimSpace(account.AccessToken)
-	if bearer == "" {
-		bearer = strings.TrimSpace(account.GrokAPIKey)
-	}
+	bearer := grokBearer(account)
 	if bearer == "" {
 		return fmt.Errorf("grok: no credentials configured (sign in with Grok Build OAuth or set an xAI API key)")
 	}

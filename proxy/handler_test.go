@@ -528,4 +528,40 @@ func TestBuildAnthropicModelsResponseGeneratesThinkingVariants(t *testing.T) {
 	if supportsImage, ok := models[0]["supports_image"].(bool); !ok || !supportsImage {
 		t.Fatalf("expected image capability to be preserved, got %#v", models[0]["supports_image"])
 	}
+	if owner, ok := models[0]["owned_by"].(string); !ok || owner != "anthropic" {
+		t.Fatalf("expected owned_by anthropic, got %#v", models[0]["owned_by"])
+	}
+}
+
+func TestBuildAnthropicModelsResponseGrokOwnedByNoAutoThinking(t *testing.T) {
+	models := buildAnthropicModelsResponse([]ModelInfo{
+		{ModelId: "grok-4.5", Description: "xAI Grok", InputTypes: []string{"text"}},
+		{ModelId: "grok-2-image-1212", Description: "xAI Grok", InputTypes: []string{"text", "image"}},
+		{ModelId: "grok-4-thinking", Description: "xAI Grok", InputTypes: []string{"text"}},
+	}, "-thinking")
+
+	byID := map[string]map[string]interface{}{}
+	for _, m := range models {
+		id, _ := m["id"].(string)
+		byID[id] = m
+	}
+	if _, ok := byID["grok-4.5-thinking"]; ok {
+		t.Fatalf("must not auto-generate grok-4.5-thinking dual id")
+	}
+	if _, ok := byID["grok-2-image-1212-thinking"]; ok {
+		t.Fatalf("must not auto-generate image-thinking dual id")
+	}
+	if m := byID["grok-4.5"]; m == nil || m["owned_by"] != "xai" {
+		t.Fatalf("grok-4.5 owned_by want xai, got %#v", m)
+	}
+	if m := byID["grok-2-image-1212"]; m == nil {
+		t.Fatal("missing grok-2-image-1212")
+	} else if m["owned_by"] != "xai" {
+		t.Fatalf("image owned_by want xai, got %#v", m["owned_by"])
+	} else if ok, _ := m["supports_image"].(bool); !ok {
+		t.Fatalf("image model must supports_image=true, got %#v", m["supports_image"])
+	}
+	if m := byID["grok-4-thinking"]; m == nil || m["owned_by"] != "xai" {
+		t.Fatalf("grok-4-thinking missing or wrong owner: %#v", m)
+	}
 }

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"kiro-go/config"
 	"testing"
 )
 
@@ -365,5 +366,84 @@ func countNulls(v interface{}) int {
 		return n
 	default:
 		return 0
+	}
+}
+
+func TestGrokModelInfosImageFlags(t *testing.T) {
+	infos := grokModelInfos()
+	if len(infos) == 0 {
+		t.Fatal("static catalog empty")
+	}
+	var image *ModelInfo
+	for i := range infos {
+		if infos[i].ModelId == "grok-2-image-1212" {
+			image = &infos[i]
+			break
+		}
+	}
+	if image == nil {
+		t.Fatal("missing grok-2-image-1212 in static catalog")
+	}
+	if !modelSupportsImage(image.InputTypes) {
+		t.Fatalf("image model InputTypes=%v want image", image.InputTypes)
+	}
+	for _, m := range infos {
+		if m.ModelId == "grok-2-image-1212" {
+			continue
+		}
+		if modelSupportsImage(m.InputTypes) {
+			t.Fatalf("chat model %s should not be image-flagged, InputTypes=%v", m.ModelId, m.InputTypes)
+		}
+	}
+}
+
+func TestEnhanceGrokModelInfosFiltersAndFlags(t *testing.T) {
+	in := []ModelInfo{
+		{ModelId: "grok-4"},
+		{ModelId: "grok-2-image-1212"},
+		{ModelId: "something-else"},
+		{ModelId: "grok-4"}, // dup
+	}
+	out := enhanceGrokModelInfos(in)
+	if len(out) != 2 {
+		t.Fatalf("want 2 grok models, got %d: %+v", len(out), out)
+	}
+	byID := map[string]ModelInfo{}
+	for _, m := range out {
+		byID[m.ModelId] = m
+	}
+	if byID["grok-4"].Description != "xAI Grok" {
+		t.Fatalf("description not set: %+v", byID["grok-4"])
+	}
+	if !modelSupportsImage(byID["grok-2-image-1212"].InputTypes) {
+		t.Fatalf("image flags missing: %+v", byID["grok-2-image-1212"])
+	}
+}
+
+func TestEnhanceGrokFromOpenAIBody(t *testing.T) {
+	body := []byte(`{"object":"list","data":[{"id":"grok-4"},{"id":"grok-2-image-1212"},{"id":"other"}]}`)
+	ids, err := parseOpenAIModelIDs(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	infos := make([]ModelInfo, 0, len(ids))
+	for _, id := range ids {
+		infos = append(infos, ModelInfo{ModelId: id})
+	}
+	out := enhanceGrokModelInfos(infos)
+	if len(out) != 2 {
+		t.Fatalf("got %d", len(out))
+	}
+}
+
+
+func TestResolveGrokModelsFallsBackWithoutCreds(t *testing.T) {
+	got := resolveGrokModels(&config.Account{Email: "x@y.z", Provider: "grok"})
+	if len(got) == 0 {
+		t.Fatal("expected static fallback")
+	}
+	// Same length as static catalog.
+	if len(got) != len(grokModelInfos()) {
+		t.Fatalf("fallback len=%d static=%d", len(got), len(grokModelInfos()))
 	}
 }

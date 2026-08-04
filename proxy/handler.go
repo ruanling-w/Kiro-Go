@@ -837,17 +837,45 @@ func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []m
 	if len(cached) == 0 {
 		return nil
 	}
+	if thinkingSuffix == "" {
+		thinkingSuffix = "-thinking"
+	}
 
 	models := make([]map[string]interface{}, 0, len(cached)*2)
-	if len(cached) > 0 {
-		for _, m := range cached {
-			supportsImage := modelSupportsImage(m.InputTypes)
-			models = append(models, buildModelInfo(m.ModelId, "anthropic", supportsImage))
-			// 自动生成 thinking 变体
-			models = append(models, buildModelInfo(m.ModelId+thinkingSuffix, "anthropic", supportsImage))
+	for _, m := range cached {
+		id := strings.TrimSpace(m.ModelId)
+		if id == "" {
+			continue
+		}
+		owner := modelOwnedBy(m)
+		supportsImage := modelSupportsImage(m.InputTypes) || isGrokImageModel(id) || isCodexImageModel(id) || isAntigravityImageModel(id)
+		models = append(models, buildModelInfo(id, owner, supportsImage))
+		// Auto dual-ID thinking variants only for Anthropic/Kiro Claude models.
+		// Grok/Codex/Antigravity already ship their own thinking/image ids.
+		if owner == "anthropic" && !strings.HasSuffix(strings.ToLower(id), strings.ToLower(thinkingSuffix)) {
+			models = append(models, buildModelInfo(id+thinkingSuffix, owner, supportsImage))
 		}
 	}
 	return models
+}
+
+// modelOwnedBy maps a cached ModelInfo to the OpenAI-style owned_by label.
+func modelOwnedBy(m ModelInfo) string {
+	id := strings.ToLower(strings.TrimSpace(m.ModelId))
+	desc := strings.ToLower(m.Description)
+	switch {
+	case strings.HasPrefix(id, "grok") || strings.Contains(desc, "xai") || strings.Contains(desc, "grok"):
+		return "xai"
+	case strings.HasPrefix(id, "gpt-") || strings.HasPrefix(id, "o1") || strings.HasPrefix(id, "o3") || strings.HasPrefix(id, "o4") || strings.Contains(desc, "codex") || strings.Contains(desc, "openai"):
+		return "openai"
+	case strings.HasPrefix(id, "gemini") || strings.Contains(desc, "antigravity") || strings.Contains(desc, "google"):
+		return "google"
+	case id == "auto" || id == "gpt-4o" || id == "gpt-4":
+		return "kiro-proxy"
+	default:
+		// Kiro/Claude physical models (and anything else AWS-backed).
+		return "anthropic"
+	}
 }
 
 func fallbackAnthropicModels(thinkingSuffix string) []map[string]interface{} {
@@ -937,11 +965,11 @@ func (h *Handler) refreshModelsCache() {
 			continue
 		}
 
-		// Grok / xAI accounts use a static model catalog.
+		// Grok / xAI: live GET https://api.x.ai/v1/models, static fallback.
 		if isGrokAccount(account) {
-			modelIDs := grokModelIDs()
-			h.pool.SetModelList(account.ID, modelIDs)
-			aggregated = mergeUniqueModels(aggregated, grokModelInfos())
+			gModels := resolveGrokModels(account)
+			h.pool.SetModelList(account.ID, modelInfoIDs(gModels))
+			aggregated = mergeUniqueModels(aggregated, gModels)
 			continue
 		}
 
@@ -1009,10 +1037,10 @@ func (h *Handler) fetchAndCacheAccountModels(account *config.Account) error {
 		return nil
 	}
 
-	// Grok / xAI accounts use a static model catalog.
+	// Grok / xAI: live catalog with static fallback.
 	if isGrokAccount(account) {
-		h.pool.SetModelList(account.ID, grokModelIDs())
-		gModels := grokModelInfos()
+		gModels := resolveGrokModels(account)
+		h.pool.SetModelList(account.ID, modelInfoIDs(gModels))
 		h.modelsCacheMu.Lock()
 		h.cachedModels = mergeUniqueModels(h.cachedModels, gModels)
 		h.modelsCacheTime = time.Now().Unix()
@@ -4325,9 +4353,10 @@ func (h *Handler) persistGrokResult(w http.ResponseWriter, result *auth.XaiResul
 	}
 
 	h.pool.Reload()
-	// Register the static Grok model list immediately so the first request routes
+	// Register the Grok model list immediately so the first request routes
 	// to this account without waiting for the background models refresh.
-	h.pool.SetModelList(account.ID, grokModelIDs())
+	gModels := resolveGrokModels(&account)
+	h.pool.SetModelList(account.ID, modelInfoIDs(gModels))
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":   true,
@@ -5687,10 +5716,10 @@ func (h *Handler) apiGetAccountModels(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	// Grok / xAI accounts serve a static model catalog.
+	// Grok / xAI: live catalog with static fallback.
 	if isGrokAccount(account) {
-		models := grokModelInfos()
-		h.pool.SetModelList(id, grokModelIDs())
+		models := resolveGrokModels(account)
+		h.pool.SetModelList(id, modelInfoIDs(models))
 		h.modelsCacheMu.Lock()
 		h.cachedModels = mergeUniqueModels(h.cachedModels, models)
 		h.modelsCacheTime = time.Now().Unix()
@@ -5774,8 +5803,7 @@ func (h *Handler) apiGetProviderModels(w http.ResponseWriter, r *http.Request, p
 
 	switch key {
 	case "grok", "xai":
-		infos = grokModelInfos()
-		source = "static"
+		infos, source = h.grokProviderModelInfos()
 		key = "grok"
 	case "codex":
 		infos = codexModelInfos()
@@ -5841,9 +5869,33 @@ func (h *Handler) apiGetProviderModels(w http.ResponseWriter, r *http.Request, p
 	})
 }
 
-// kiroProviderModelInfos returns Kiro/AWS-backed models from the aggregated
-// cache (excluding static Grok/Codex/Antigravity catalogs). Falls back to the
-// built-in Claude list when the cache is empty.
+// grokProviderModelInfos unions models from enabled Grok accounts (live when
+// credentials work) and falls back to the static catalog.
+func (h *Handler) grokProviderModelInfos() ([]ModelInfo, string) {
+	accounts := config.GetEnabledAccounts()
+	var merged []ModelInfo
+	live := false
+	for i := range accounts {
+		a := &accounts[i]
+		if !isGrokAccount(a) {
+			continue
+		}
+		if infos, err := FetchGrokModels(a); err == nil && len(infos) > 0 {
+			live = true
+			merged = mergeUniqueModels(merged, infos)
+			continue
+		}
+		merged = mergeUniqueModels(merged, grokModelInfos())
+	}
+	if len(merged) == 0 {
+		return grokModelInfos(), "static"
+	}
+	if live {
+		return merged, "live"
+	}
+	return merged, "static"
+}
+
 // remoteKiroProviderModelInfos unions model ids registered on remotekiro accounts.
 func (h *Handler) remoteKiroProviderModelInfos() ([]ModelInfo, string) {
 	accounts := config.GetAccounts()
@@ -5869,11 +5921,11 @@ func (h *Handler) remoteKiroProviderModelInfos() ([]ModelInfo, string) {
 	return remoteModelInfos(ids), "remote"
 }
 
+// kiroProviderModelInfos returns Kiro/AWS-backed models from the aggregated
+// cache (excluding Grok/Codex/Antigravity). Falls back to the built-in Claude
+// list when the cache is empty.
 func (h *Handler) kiroProviderModelInfos() ([]ModelInfo, string) {
 	exclude := make(map[string]bool)
-	for _, id := range grokModelIDs() {
-		exclude[strings.ToLower(id)] = true
-	}
 	for _, id := range codexModelIDs() {
 		exclude[strings.ToLower(id)] = true
 	}
@@ -5895,6 +5947,10 @@ func (h *Handler) kiroProviderModelInfos() ([]ModelInfo, string) {
 	for _, m := range cached {
 		id := strings.ToLower(strings.TrimSpace(m.ModelId))
 		if id == "" || exclude[id] {
+			continue
+		}
+		// Non-Kiro providers land in the same cache — skip them here.
+		if strings.HasPrefix(id, "grok") || strings.HasPrefix(id, "gemini") {
 			continue
 		}
 		// Proxy aliases are not Kiro catalog entries.
