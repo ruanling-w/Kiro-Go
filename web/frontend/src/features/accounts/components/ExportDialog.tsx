@@ -77,13 +77,16 @@ export function ExportDialog({ open, onOpenChange, accounts }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      {/* sm:max-w-* is required, not just max-w-*: DialogContent's own default
+          sm:max-w-sm wins over an unprefixed max-w-lg from 640px up. Wide because
+          the JSON lines (access/refresh tokens) are very long. */}
+      <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-3xl lg:max-w-5xl">
         <DialogHeader>
           <DialogTitle>{t('export.title')}</DialogTitle>
         </DialogHeader>
 
         {json ? (
-          <pre className="max-h-[50vh] overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs">
+          <pre className="max-h-[60vh] overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs">
             {json}
           </pre>
         ) : (
