@@ -63,6 +63,10 @@ const (
 
 	agLoginTimeout   = 10 * time.Minute
 	agDefaultTierID  = "legacy-tier"
+)
+
+// Tunable for tests (onboard poll loop).
+var (
 	agOnboardRetries = 10
 	agOnboardWait    = 3 * time.Second
 )
@@ -332,16 +336,34 @@ func (s *AntigravitySession) bootstrap(code string) (*AntigravityResult, string,
 	if err != nil {
 		return nil, "", fmt.Errorf("loadCodeAssist failed: %w", err)
 	}
+	if tier == "" {
+		tier = agDefaultTierID
+	}
+
+	// New / never-onboarded accounts often return an empty cloudaicompanionProject
+	// from loadCodeAssist but still expose allowedTiers. 9router falls through to
+	// onboardUser in that case (open-sse/services/projectId.js) — onboard creates
+	// the project. Do not hard-fail on empty project before onboarding.
 	if projectID == "" {
-		return nil, "", fmt.Errorf("no Google Cloud project found; ensure the account has Gemini Code Assist enabled")
+		logger.Warnf("[Antigravity] loadCodeAssist returned no project for %s; onboarding with tier=%s", email, tier)
 	}
 
 	finalProject, err := onboardAntigravityUser(client, accessToken, projectID, tier)
 	if err != nil {
-		// Onboarding is best-effort: the project id from loadCodeAssist is usable
-		// even if onboarding does not converge in time. Log and continue.
-		logger.Warnf("[Antigravity] onboardUser did not complete for %s: %v", email, err)
+		// If loadCodeAssist already gave us a project, keep going (onboard is
+		// best-effort for already-provisioned accounts).
+		if projectID != "" {
+			logger.Warnf("[Antigravity] onboardUser did not complete for %s: %v", email, err)
+			finalProject = projectID
+		} else {
+			return nil, "", fmt.Errorf("Gemini Code Assist project not provisioned after onboardUser: %w", err)
+		}
+	}
+	if strings.TrimSpace(finalProject) == "" {
 		finalProject = projectID
+	}
+	if strings.TrimSpace(finalProject) == "" {
+		return nil, "", fmt.Errorf("Gemini Code Assist project not provisioned after onboardUser; enable Gemini Code Assist on this Google account and retry")
 	}
 
 	if scope == "" {
@@ -429,13 +451,14 @@ func getAntigravityUserInfo(client *http.Client, accessToken string) string {
 }
 
 // agBootstrapHeaders sets the spoofed headers the real Antigravity binary sends on
-// loadCodeAssist / onboardUser.
+// loadCodeAssist / onboardUser. x-request-source mirrors 9router providers.js.
 func agBootstrapHeaders(req *http.Request, accessToken string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("User-Agent", agLoadCodeAssistUserAgent)
 	req.Header.Set("X-Goog-Api-Client", agLoadCodeAssistApiClient)
 	req.Header.Set("Client-Metadata", agClientMetadataJSON())
+	req.Header.Set("X-Request-Source", "local")
 }
 
 // loadAntigravityCodeAssist resolves the real GCP project id and the account's
@@ -588,7 +611,13 @@ func RefreshAntigravityAccount(client *http.Client, accessToken, projectID strin
 }
 
 // onboardAntigravityUser polls onboardUser until done, returning the final project id.
+// projectID may be empty for first-time accounts — the request body only needs tierId
+// + metadata; Google provisions cloudaicompanionProject in the done response.
 func onboardAntigravityUser(client *http.Client, accessToken, projectID, tier string) (string, error) {
+	if strings.TrimSpace(tier) == "" {
+		tier = agDefaultTierID
+	}
+	var lastBody string
 	for i := 0; i < agOnboardRetries; i++ {
 		payload := map[string]interface{}{"tierId": tier, "metadata": agClientMetadata()}
 		body, _ := json.Marshal(payload)
@@ -605,13 +634,15 @@ func onboardAntigravityUser(client *http.Client, accessToken, projectID, tier st
 		}
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		lastBody = string(respBody)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+			return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncateForErr(lastBody, 300))
 		}
 
 		var out struct {
-			Done     bool `json:"done"`
-			Response struct {
+			Done                    bool            `json:"done"`
+			CloudaicompanionProject json.RawMessage `json:"cloudaicompanionProject"`
+			Response                struct {
 				CloudaicompanionProject json.RawMessage `json:"cloudaicompanionProject"`
 			} `json:"response"`
 		}
@@ -622,30 +653,67 @@ func onboardAntigravityUser(client *http.Client, accessToken, projectID, tier st
 			if final := parseAntigravityProject(out.Response.CloudaicompanionProject); final != "" {
 				return final, nil
 			}
-			return projectID, nil
+			// Some responses put the project at the top level.
+			if final := parseAntigravityProject(out.CloudaicompanionProject); final != "" {
+				return final, nil
+			}
+			if projectID != "" {
+				return projectID, nil
+			}
+			return "", fmt.Errorf("onboardUser done but no project id in response: %s", truncateForErr(lastBody, 300))
 		}
 		time.Sleep(agOnboardWait)
 	}
-	return "", fmt.Errorf("onboarding did not complete after %d attempts", agOnboardRetries)
+	return "", fmt.Errorf("onboarding did not complete after %d attempts (last=%s)", agOnboardRetries, truncateForErr(lastBody, 200))
+}
+
+func truncateForErr(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // parseAntigravityProject extracts a project id from the cloudaicompanionProject
-// field, which may be a bare string or an object with an "id" field.
+// field, which may be a bare string, a resource name ("projects/foo"), or an
+// object with "id" / "name".
 func parseAntigravityProject(raw json.RawMessage) string {
-	if len(raw) == 0 {
+	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
-		return strings.TrimSpace(asString)
+		return normalizeAntigravityProjectID(asString)
 	}
 	var asObj struct {
-		ID string `json:"id"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(raw, &asObj); err == nil {
-		return strings.TrimSpace(asObj.ID)
+		if id := normalizeAntigravityProjectID(asObj.ID); id != "" {
+			return id
+		}
+		return normalizeAntigravityProjectID(asObj.Name)
 	}
 	return ""
+}
+
+// normalizeAntigravityProjectID trims whitespace and strips a leading
+// "projects/" resource-name prefix when present.
+func normalizeAntigravityProjectID(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if strings.HasPrefix(s, "projects/") {
+		s = strings.TrimPrefix(s, "projects/")
+		// projects/{id}/locations/... → keep first segment only
+		if i := strings.IndexByte(s, '/'); i >= 0 {
+			s = s[:i]
+		}
+	}
+	return strings.TrimSpace(s)
 }
 
 // RefreshAntigravityToken refreshes a Google access token via the refresh_token
