@@ -71,6 +71,28 @@ var (
 	agOnboardWait    = 3 * time.Second
 )
 
+// Synthetic project id word lists — mirrors 9router generateProjectId /
+// open-sse/executors/antigravity.js so chat traffic can proceed when Google
+// returns an empty cloudaicompanionProject after onboard.
+var (
+	agProjectAdjectives = []string{"useful", "bright", "swift", "calm", "bold"}
+	agProjectNouns      = []string{"fuze", "wave", "spark", "flow", "core"}
+)
+
+// GenerateAntigravityProjectID synthesizes adj-noun-xxxxx fallback project ids
+// (same shape as 9router). Used at login when Google does not provision a real
+// GCP project, and at chat time when AGProjectID is empty.
+func GenerateAntigravityProjectID() string {
+	id := uuid.New().String()
+	short := id
+	if len(short) > 5 {
+		short = short[:5]
+	}
+	adj := agProjectAdjectives[int(time.Now().UnixNano())%len(agProjectAdjectives)]
+	noun := agProjectNouns[int(time.Now().UnixNano()/7)%len(agProjectNouns)]
+	return fmt.Sprintf("%s-%s-%s", adj, noun, short)
+}
+
 // agClientID returns the Antigravity OAuth client id. It prefers the
 // ANTIGRAVITY_CLIENT_ID env var and falls back to the public Antigravity CLI
 // client (shared by all accounts; see 9router open-sse/providers/shared.js).
@@ -332,39 +354,12 @@ func (s *AntigravitySession) bootstrap(code string) (*AntigravityResult, string,
 
 	email := getAntigravityUserInfo(client, accessToken)
 
-	projectID, tier, tierName, err := loadAntigravityCodeAssist(client, accessToken)
+	load, err := loadAntigravityCodeAssistDetailed(client, accessToken)
 	if err != nil {
 		return nil, "", fmt.Errorf("loadCodeAssist failed: %w", err)
 	}
-	if tier == "" {
-		tier = agDefaultTierID
-	}
 
-	// New / never-onboarded accounts often return an empty cloudaicompanionProject
-	// from loadCodeAssist but still expose allowedTiers. 9router falls through to
-	// onboardUser in that case (open-sse/services/projectId.js) — onboard creates
-	// the project. Do not hard-fail on empty project before onboarding.
-	if projectID == "" {
-		logger.Warnf("[Antigravity] loadCodeAssist returned no project for %s; onboarding with tier=%s", email, tier)
-	}
-
-	finalProject, err := onboardAntigravityUser(client, accessToken, projectID, tier)
-	if err != nil {
-		// If loadCodeAssist already gave us a project, keep going (onboard is
-		// best-effort for already-provisioned accounts).
-		if projectID != "" {
-			logger.Warnf("[Antigravity] onboardUser did not complete for %s: %v", email, err)
-			finalProject = projectID
-		} else {
-			return nil, "", fmt.Errorf("Gemini Code Assist project not provisioned after onboardUser: %w", err)
-		}
-	}
-	if strings.TrimSpace(finalProject) == "" {
-		finalProject = projectID
-	}
-	if strings.TrimSpace(finalProject) == "" {
-		return nil, "", fmt.Errorf("Gemini Code Assist project not provisioned after onboardUser; enable Gemini Code Assist on this Google account and retry")
-	}
+	finalProject, tier, tierName := resolveAntigravityProject(client, accessToken, email, load)
 
 	if scope == "" {
 		scope = strings.Join(agScopes, " ")
@@ -388,6 +383,109 @@ func (s *AntigravitySession) bootstrap(code string) (*AntigravityResult, string,
 		Scopes:       scope,
 		Quota:        quota,
 	}, "completed", nil
+}
+
+// agCodeAssistLoad is the parsed loadCodeAssist payload used by bootstrap.
+type agCodeAssistLoad struct {
+	ProjectID    string
+	Tier         string
+	TierName     string
+	AllowedTiers []string // tier ids to try for onboard (primary first)
+}
+
+// resolveAntigravityProject turns a loadCodeAssist result into a usable project id.
+// Mirrors 9router: onboard when missing, retry load, try a few tiers, then
+// synthetic fallback so login never hard-fails solely on empty project (chat
+// runtime already accepts synthetic ids).
+func resolveAntigravityProject(client *http.Client, accessToken, email string, load agCodeAssistLoad) (projectID, tier, tierName string) {
+	projectID = strings.TrimSpace(load.ProjectID)
+	tier = strings.TrimSpace(load.Tier)
+	tierName = strings.TrimSpace(load.TierName)
+	if tier == "" {
+		tier = agDefaultTierID
+	}
+
+	// Already have a real project — still run onboard best-effort (may refresh
+	// linkage) but never block login on onboard failure.
+	if projectID != "" {
+		if final, err := onboardAntigravityUser(client, accessToken, projectID, tier); err != nil {
+			logger.Warnf("[Antigravity] onboardUser did not complete for %s: %v", email, err)
+		} else if final != "" {
+			projectID = final
+		}
+		return projectID, tier, tierName
+	}
+
+	logger.Warnf("[Antigravity] loadCodeAssist returned no project for %s; onboarding…", email)
+
+	tried := map[string]bool{}
+	tiersToTry := make([]string, 0, 3)
+	for _, id := range load.AllowedTiers {
+		id = strings.TrimSpace(id)
+		if id == "" || tried[id] {
+			continue
+		}
+		tried[id] = true
+		tiersToTry = append(tiersToTry, id)
+		if len(tiersToTry) >= 3 {
+			break
+		}
+	}
+	if !tried[tier] {
+		tiersToTry = append([]string{tier}, tiersToTry...)
+	}
+	if !tried[agDefaultTierID] {
+		tiersToTry = append(tiersToTry, agDefaultTierID)
+	}
+	// de-dupe while preserving order
+	tiersToTry = uniqueNonEmpty(tiersToTry)
+	if len(tiersToTry) > 3 {
+		tiersToTry = tiersToTry[:3]
+	}
+
+	for _, tryTier := range tiersToTry {
+		final, err := onboardAntigravityUser(client, accessToken, "", tryTier)
+		if err != nil {
+			logger.Warnf("[Antigravity] onboardUser tier=%s for %s: %v", tryTier, email, err)
+			// Empty-project "done" is returned as error — still retry load below.
+		}
+		if final != "" {
+			return final, tryTier, tierName
+		}
+		// Google sometimes only attaches the project on a subsequent loadCodeAssist.
+		time.Sleep(agOnboardWait)
+		if reload, err := loadAntigravityCodeAssistDetailed(client, accessToken); err == nil {
+			if p := strings.TrimSpace(reload.ProjectID); p != "" {
+				if reload.Tier != "" {
+					tryTier = reload.Tier
+				}
+				if reload.TierName != "" {
+					tierName = reload.TierName
+				}
+				return p, tryTier, tierName
+			}
+		}
+	}
+
+	// 9router chat path: credentials.projectId || generateProjectId(). Login must
+	// not 400 here — persist a synthetic id so the account is usable immediately.
+	projectID = GenerateAntigravityProjectID()
+	logger.Warnf("[Antigravity] no real cloudaicompanionProject after onboard for %s; using synthetic project %s", email, projectID)
+	return projectID, tier, tierName
+}
+
+func uniqueNonEmpty(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // exchangeAntigravityCode swaps an authorization code for Google OAuth tokens.
@@ -462,26 +560,37 @@ func agBootstrapHeaders(req *http.Request, accessToken string) {
 }
 
 // loadAntigravityCodeAssist resolves the real GCP project id and the account's
-// current tier. It prefers currentTier (the tier the account is actually on) over
-// the allowedTiers default, so a paid/standard account is not misreported as free.
+// current tier. Wrapper around loadAntigravityCodeAssistDetailed for callers that
+// only need the three scalars (refresh path).
 func loadAntigravityCodeAssist(client *http.Client, accessToken string) (projectID, tier, tierName string, err error) {
+	load, err := loadAntigravityCodeAssistDetailed(client, accessToken)
+	if err != nil {
+		return "", "", "", err
+	}
+	return load.ProjectID, load.Tier, load.TierName, nil
+}
+
+// loadAntigravityCodeAssistDetailed is the full loadCodeAssist parse including the
+// allowedTiers list used when bootstrapping accounts without a project yet.
+func loadAntigravityCodeAssistDetailed(client *http.Client, accessToken string) (agCodeAssistLoad, error) {
+	var zero agCodeAssistLoad
 	payload := map[string]interface{}{"metadata": agClientMetadata()}
 	body, _ := json.Marshal(payload)
 
 	req, err := http.NewRequest(http.MethodPost, agLoadCodeAssistURL, strings.NewReader(string(body)))
 	if err != nil {
-		return "", "", "", err
+		return zero, err
 	}
 	agBootstrapHeaders(req, accessToken)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", "", err
+		return zero, err
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		return zero, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncateForErr(string(respBody), 300))
 	}
 
 	type agTierObj struct {
@@ -495,27 +604,40 @@ func loadAntigravityCodeAssist(client *http.Client, accessToken string) (project
 		AllowedTiers            []agTierObj     `json:"allowedTiers"`
 	}
 	if err := json.Unmarshal(respBody, &out); err != nil {
-		return "", "", "", err
+		return zero, err
 	}
 
-	projectID = parseAntigravityProject(out.CloudaicompanionProject)
+	load := agCodeAssistLoad{
+		ProjectID: parseAntigravityProject(out.CloudaicompanionProject),
+	}
 
 	// 1) currentTier is authoritative — it is the tier the account is on now.
 	if out.CurrentTier != nil && strings.TrimSpace(out.CurrentTier.ID) != "" {
-		tier = strings.TrimSpace(out.CurrentTier.ID)
-		tierName = strings.TrimSpace(out.CurrentTier.Name)
-		return projectID, tier, tierName, nil
-	}
-	// 2) Fall back to the default allowed tier.
-	tier = agDefaultTierID
-	for _, t := range out.AllowedTiers {
-		if t.IsDefault && strings.TrimSpace(t.ID) != "" {
-			tier = strings.TrimSpace(t.ID)
-			tierName = strings.TrimSpace(t.Name)
-			break
+		load.Tier = strings.TrimSpace(out.CurrentTier.ID)
+		load.TierName = strings.TrimSpace(out.CurrentTier.Name)
+	} else {
+		// 2) Fall back to the default allowed tier.
+		load.Tier = agDefaultTierID
+		for _, t := range out.AllowedTiers {
+			if t.IsDefault && strings.TrimSpace(t.ID) != "" {
+				load.Tier = strings.TrimSpace(t.ID)
+				load.TierName = strings.TrimSpace(t.Name)
+				break
+			}
 		}
 	}
-	return projectID, tier, tierName, nil
+
+	// Collect allowed tier ids (primary tier first) for multi-tier onboard attempts.
+	if load.Tier != "" {
+		load.AllowedTiers = append(load.AllowedTiers, load.Tier)
+	}
+	for _, t := range out.AllowedTiers {
+		if id := strings.TrimSpace(t.ID); id != "" {
+			load.AllowedTiers = append(load.AllowedTiers, id)
+		}
+	}
+	load.AllowedTiers = uniqueNonEmpty(load.AllowedTiers)
+	return load, nil
 }
 
 // RetrieveAntigravityQuota fetches per-model quota from the Antigravity Cloud Code

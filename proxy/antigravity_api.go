@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"kiro-go/auth"
 	"kiro-go/config"
 	"kiro-go/logger"
 	"net/http"
@@ -37,10 +38,6 @@ var agBaseURLs = []string{
 // agUserAgentVersion mirrors the real Antigravity binary version string.
 const agUserAgentVersion = "1.107.0"
 
-// agProjectAdjectives / agProjectNouns are used to synthesize a fallback project
-// id when the account has none (mirrors 9router generateProjectId).
-var agProjectAdjectives = []string{"useful", "bright", "swift", "calm", "bold"}
-var agProjectNouns = []string{"fuze", "wave", "spark", "flow", "core"}
 
 // CallAntigravityAPI translates the stashed source request into a Gemini envelope
 // and streams the Antigravity response back through the callback.
@@ -203,16 +200,9 @@ func resolvePayloadModelID(payload *KiroPayload) string {
 	return payload.ConversationState.CurrentMessage.UserInputMessage.ModelID
 }
 
-// generateAntigravityProjectID synthesizes a fallback project id (adj-noun-uid5).
+// generateAntigravityProjectID delegates to auth so login + chat share one shape.
 func generateAntigravityProjectID() string {
-	id := uuid.New().String()
-	short := id
-	if len(short) > 5 {
-		short = short[:5]
-	}
-	adj := agProjectAdjectives[int(time.Now().UnixNano())%len(agProjectAdjectives)]
-	noun := agProjectNouns[int(time.Now().UnixNano()/7)%len(agProjectNouns)]
-	return fmt.Sprintf("%s-%s-%s", adj, noun, short)
+	return auth.GenerateAntigravityProjectID()
 }
 
 // ==================== Image generation ====================

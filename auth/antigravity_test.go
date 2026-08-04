@@ -237,3 +237,98 @@ func rewriteCloudCodeClient(t *testing.T, mockBase string) *http.Client {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestParseAntigravityProjectEmptyObject(t *testing.T) {
+	if got := parseAntigravityProject(json.RawMessage(`{}`)); got != "" {
+		t.Fatalf("got %q", got)
+	}
+	// Production onboard body shape.
+	raw := json.RawMessage(`{"@type":"type.googleapis.com/google.internal.cloud.code.v1internal.OnboardUserResponse"}`)
+	if got := parseAntigravityProject(raw); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestResolveAntigravityProjectSyntheticWhenOnboardEmpty(t *testing.T) {
+	oldWait, oldRetries := agOnboardWait, agOnboardRetries
+	agOnboardWait = time.Millisecond
+	agOnboardRetries = 2
+	defer func() {
+		agOnboardWait = oldWait
+		agOnboardRetries = oldRetries
+	}()
+
+	// load: no project; onboard: done with empty {} (production failure mode).
+	m := &cloudCodeMock{
+		loadBody: `{
+			"cloudaicompanionProject": null,
+			"allowedTiers": [{"id":"free-tier","name":"Free","isDefault":true}]
+		}`,
+		onboardSeq: []string{
+			`{"done":true,"response":{"@type":"type.googleapis.com/google.internal.cloud.code.v1internal.OnboardUserResponse","cloudaicompanionProject":{}}}`,
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(m.handler))
+	defer srv.Close()
+	client := rewriteCloudCodeClient(t, srv.URL)
+
+	load, err := loadAntigravityCodeAssistDetailed(client, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if load.ProjectID != "" {
+		t.Fatalf("expected empty load project, got %q", load.ProjectID)
+	}
+
+	projectID, tier, _ := resolveAntigravityProject(client, "tok", "user@example.com", load)
+	if projectID == "" {
+		t.Fatal("expected synthetic non-empty project id")
+	}
+	// Synthetic shape: adj-noun-xxxxx
+	parts := strings.Split(projectID, "-")
+	if len(parts) < 3 {
+		t.Fatalf("synthetic shape unexpected: %q", projectID)
+	}
+	if tier == "" {
+		t.Fatal("tier empty")
+	}
+}
+
+func TestResolveAntigravityProjectUsesRealAfterOnboard(t *testing.T) {
+	oldWait, oldRetries := agOnboardWait, agOnboardRetries
+	agOnboardWait = time.Millisecond
+	agOnboardRetries = 3
+	defer func() {
+		agOnboardWait = oldWait
+		agOnboardRetries = oldRetries
+	}()
+
+	m := &cloudCodeMock{
+		loadBody: `{"cloudaicompanionProject": null, "allowedTiers": [{"id":"legacy-tier","isDefault":true}]}`,
+		onboardSeq: []string{
+			`{"done":true,"response":{"cloudaicompanionProject":{"id":"real-gcp-proj"}}}`,
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(m.handler))
+	defer srv.Close()
+	client := rewriteCloudCodeClient(t, srv.URL)
+
+	load, err := loadAntigravityCodeAssistDetailed(client, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID, _, _ := resolveAntigravityProject(client, "tok", "u@e.com", load)
+	if projectID != "real-gcp-proj" {
+		t.Fatalf("got %q want real-gcp-proj", projectID)
+	}
+}
+
+func TestGenerateAntigravityProjectIDShape(t *testing.T) {
+	id := GenerateAntigravityProjectID()
+	if id == "" || !strings.Contains(id, "-") {
+		t.Fatalf("bad id %q", id)
+	}
+	id2 := GenerateAntigravityProjectID()
+	// Extremely unlikely equal; if equal still ok shape-wise.
+	_ = id2
+}
