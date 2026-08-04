@@ -1,6 +1,6 @@
-// Logs — live SSE stream + xterm renderer. Filters (status / per-API-key /
-// search) run client-side over the live buffer. The Live switch pauses/resumes
-// the SSE connection. Clear goes through the shared ConfirmDialog and also
+// Logs — live SSE stream + 9router-style mono table. Filters (status /
+// per-API-key / search) run client-side over the live buffer. The Live switch
+// pauses/resumes the SSE connection. Clear goes through ConfirmDialog and also
 // empties the local buffer immediately.
 import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -10,6 +10,9 @@ import { toast } from 'sonner'
 import { useLogStream } from '@/hooks/queries/useLogStream'
 import { useClearLogs } from '@/hooks/mutations/useLogMutations'
 import { useApiKeys } from '@/hooks/queries/useApiKeys'
+import { useAccounts } from '@/hooks/queries/useAccounts'
+import { useUiStore } from '@/stores/uiStore'
+import { displayEmail } from '@/lib/mask'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { Button } from '@/components/ui/button'
@@ -24,7 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { LogsTerminal } from './components/LogsTerminal'
+import { LogsTable } from './components/LogsTable'
 
 type StatusFilter = 'all' | 'success' | 'error'
 
@@ -39,6 +42,8 @@ export default function LogsPage() {
   const stream = useLogStream(!live)
   const clearLogs = useClearLogs()
   const apiKeys = useApiKeys()
+  const accounts = useAccounts()
+  const privacy = useUiStore((s) => s.privacyMode)
 
   const apiKeyFilter = params.get('apiKey') ?? ''
 
@@ -49,11 +54,25 @@ export default function LogsPage() {
     setParams(next, { replace: true })
   }
 
+  // Resolve opaque ids → human labels for the table + search haystack.
   const keyNames = useMemo(() => {
     const map = new Map<string, string>()
-    for (const k of apiKeys.data ?? []) map.set(k.id, k.name || t('apiKeys.unnamed'))
+    for (const k of apiKeys.data ?? []) {
+      const name = k.name?.trim() || t('apiKeys.unnamed')
+      map.set(k.id, k.keyMasked ? `${name} · ${k.keyMasked}` : name)
+    }
     return map
   }, [apiKeys.data, t])
+
+  const accountNames = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const a of accounts.data ?? []) {
+      // Prefer email; fall back to nickname; privacy mode masks email.
+      const raw = a.email || a.nickname || a.userId || ''
+      map.set(a.id, displayEmail(raw, a.id, privacy))
+    }
+    return map
+  }, [accounts.data, privacy])
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -63,11 +82,13 @@ export default function LogsPage() {
       if (apiKeyFilter && log.apiKeyId !== apiKeyFilter) return false
       if (term) {
         const keyName = log.apiKeyId ? keyNames.get(log.apiKeyId) ?? '' : ''
+        const accountName = log.accountId ? accountNames.get(log.accountId) ?? '' : ''
         const haystack = [
           log.model,
           log.endpoint,
           log.provider,
           log.accountId,
+          accountName,
           log.clientIp,
           log.errorType,
           log.error,
@@ -80,7 +101,7 @@ export default function LogsPage() {
       }
       return true
     })
-  }, [stream.logs, statusFilter, apiKeyFilter, search, keyNames])
+  }, [stream.logs, statusFilter, apiKeyFilter, search, keyNames, accountNames])
 
   const statusBadge = {
     connecting: { variant: 'secondary' as const, label: t('logs.reconnecting') },
@@ -96,7 +117,7 @@ export default function LogsPage() {
       <PageHeader
         title={t('logs.title')}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Badge variant={statusBadge.variant}>{statusBadge.label}</Badge>
             <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
               <Trash2 className="size-4" />
@@ -106,8 +127,8 @@ export default function LogsPage() {
         }
       />
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative min-w-48 flex-1">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="relative min-w-0 w-full flex-1 sm:min-w-48">
           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="pl-9"
@@ -117,38 +138,50 @@ export default function LogsPage() {
           />
         </div>
 
-        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-          <SelectTrigger className="w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">{t('logs.filterAll')}</SelectItem>
-            <SelectItem value="success">{t('logs.filterSuccess')}</SelectItem>
-            <SelectItem value="error">{t('logs.filterError')}</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+            <SelectTrigger className="w-full sm:w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t('logs.filterAll')}</SelectItem>
+              <SelectItem value="success">{t('logs.filterSuccess')}</SelectItem>
+              <SelectItem value="error">{t('logs.filterError')}</SelectItem>
+            </SelectContent>
+          </Select>
 
-        <Select value={apiKeyFilter || 'all'} onValueChange={(v) => setApiKeyFilter(v === 'all' ? '' : v)}>
-          <SelectTrigger className="w-52">
-            <SelectValue placeholder={t('logs.apiKey')} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">{t('logs.apiKey')}</SelectItem>
-            {(apiKeys.data ?? []).map((k) => (
-              <SelectItem key={k.id} value={k.id}>
-                {k.name || t('apiKeys.unnamed')} · {k.keyMasked}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          <Select
+            value={apiKeyFilter || 'all'}
+            onValueChange={(v) => setApiKeyFilter(v === 'all' ? '' : v)}
+          >
+            <SelectTrigger className="w-full sm:w-52">
+              <SelectValue placeholder={t('logs.apiKey')} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t('logs.apiKey')}</SelectItem>
+              {(apiKeys.data ?? []).map((k) => (
+                <SelectItem key={k.id} value={k.id}>
+                  {k.name || t('apiKeys.unnamed')} · {k.keyMasked}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-        <div className="flex items-center gap-2">
-          <Switch id="live" checked={live} onCheckedChange={setLive} />
-          <Label htmlFor="live" className="text-sm">{t('logs.autoRefresh')}</Label>
+          <div className="flex items-center gap-2">
+            <Switch id="live" checked={live} onCheckedChange={setLive} />
+            <Label htmlFor="live" className="text-sm">
+              {t('logs.autoRefresh')}
+            </Label>
+          </div>
         </div>
       </div>
 
-      <LogsTerminal logs={filtered} keyNames={keyNames} searchTerm={search} />
+      <LogsTable
+        logs={filtered}
+        keyNames={keyNames}
+        accountNames={accountNames}
+        totalCount={stream.logs.length}
+      />
 
       <ConfirmDialog
         open={clearOpen}

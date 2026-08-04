@@ -1,4 +1,4 @@
-// checkKey.service — the PUBLIC key-lookup endpoint behind /check. No admin
+// checkKey.service — the PUBLIC key-lookup endpoint behind /check/key. No admin
 // session/CSRF: it self-authenticates on the submitted key value. Uses a bare
 // axios call (not the admin httpClient) since it lives outside /admin/api.
 import axios, { AxiosError } from 'axios'

@@ -28,13 +28,16 @@ export function CheckDashboard({
   const { t } = useTranslation()
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="min-w-0 space-y-4 sm:space-y-5">
+      <div className="flex flex-col gap-3 rounded-xl border bg-card/70 p-3 shadow-sm ring-1 ring-foreground/5 backdrop-blur-sm sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:p-4">
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium">
+          <p className="truncate text-sm font-semibold tracking-tight">
             {data.name || data.keyMasked}
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+            {data.keyMasked}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {t('check.autoRefresh')}
             {updatedAt
               ? ` · ${t('check.lastUpdated', {
@@ -43,18 +46,25 @@ export function CheckDashboard({
               : null}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Button
             type="button"
             variant="outline"
             size="sm"
+            className="flex-1 sm:flex-none"
             onClick={onRefresh}
             disabled={refreshing}
           >
             <RefreshCw className={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} />
             {t('check.refresh')}
           </Button>
-          <Button type="button" variant="ghost" size="sm" onClick={onClear}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="flex-1 sm:flex-none"
+            onClick={onClear}
+          >
             <LogOut className="size-3.5" />
             {t('check.clear')}
           </Button>
@@ -63,11 +73,13 @@ export function CheckDashboard({
 
       <CheckKpiRow data={data} />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="min-w-0 lg:col-span-2">
           <CheckQuotaCard data={data} />
         </div>
-        <CheckExpiryCard data={data} />
+        <div className="min-w-0">
+          <CheckExpiryCard data={data} />
+        </div>
       </div>
 
       <CheckUsageChart logs={data.logs} />

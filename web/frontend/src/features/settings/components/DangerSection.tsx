@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { useResetStats } from '@/hooks/mutations/useSettingsMutations'
 import { SettingsSection } from './SettingsSection'
+import { SettingsToggleRow } from './SettingsToggleRow'
 
 export function DangerSection() {
   const { t } = useTranslation()
@@ -14,16 +15,25 @@ export function DangerSection() {
   const [open, setOpen] = useState(false)
 
   return (
-    <SettingsSection id="danger" title={t('settings.dangerTitle')} description={t('settings.dangerHint')}>
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <p className="font-medium">{t('settings.statistics')}</p>
-          <p className="mt-1 text-sm text-muted-foreground">{t('settings.statsDesc')}</p>
-        </div>
-        <Button variant="destructive" onClick={() => setOpen(true)} disabled={reset.isPending}>
-          {t('settings.resetStats')}
-        </Button>
-      </div>
+    <SettingsSection
+      id="danger"
+      title={t('settings.dangerTitle')}
+      description={t('settings.dangerHint')}
+    >
+      <SettingsToggleRow
+        label={t('settings.statistics')}
+        hint={t('settings.statsDesc')}
+        control={
+          <Button
+            variant="destructive"
+            className="whitespace-normal sm:whitespace-nowrap"
+            onClick={() => setOpen(true)}
+            disabled={reset.isPending}
+          >
+            {t('settings.resetStats')}
+          </Button>
+        }
+      />
 
       <ConfirmDialog
         open={open}

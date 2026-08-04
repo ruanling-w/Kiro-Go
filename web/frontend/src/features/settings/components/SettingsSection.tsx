@@ -12,12 +12,16 @@ interface Props {
 
 export function SettingsSection({ id, title, description, children }: Props) {
   return (
-    <Card id={id} className="scroll-mt-20">
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        {description && <CardDescription>{description}</CardDescription>}
+    <Card id={id} className="min-w-0 scroll-mt-20">
+      <CardHeader className="min-w-0 gap-1.5">
+        <CardTitle className="min-w-0 break-words">{title}</CardTitle>
+        {description && (
+          <CardDescription className="min-w-0 text-pretty leading-relaxed">
+            {description}
+          </CardDescription>
+        )}
       </CardHeader>
-      <CardContent className="space-y-4">{children}</CardContent>
+      <CardContent className="min-w-0 space-y-4">{children}</CardContent>
     </Card>
   )
 }

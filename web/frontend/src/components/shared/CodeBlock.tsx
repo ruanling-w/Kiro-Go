@@ -22,7 +22,7 @@ export function CodeBlock({
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-lg border border-border/60 bg-muted/40',
+        'min-w-0 overflow-hidden rounded-lg border border-border/60 bg-muted/40',
         className,
       )}
     >
@@ -46,7 +46,8 @@ export function CodeBlock({
           <CopyButton value={code} size="icon-xs" label={copyLabel} />
         </div>
       ) : null}
-      <pre className="max-h-[28rem] overflow-auto p-3 text-xs leading-relaxed sm:text-[13px]">
+      {/* Own horizontal scroll so long curl/json lines don't blow out the page. */}
+      <pre className="max-h-[22rem] overflow-x-auto overflow-y-auto overscroll-x-contain p-3 text-[11px] leading-relaxed sm:max-h-[28rem] sm:text-[13px]">
         <code className="font-mono whitespace-pre text-foreground/90">{code}</code>
       </pre>
     </div>

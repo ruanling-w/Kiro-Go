@@ -726,11 +726,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveAdminPage(w, r)
 	case strings.HasPrefix(path, "/admin/api/"):
 		h.handleAdminAPI(w, r)
+	// Public check UI is NOT under /admin — old bookmarks / SPA guesses land here.
+	case path == "/admin/check" || path == "/admin/check/" ||
+		path == "/admin/check.html" ||
+		path == "/admin/check/key" || path == "/admin/check/key/":
+		http.Redirect(w, r, "/check/key", http.StatusFound)
 	case strings.HasPrefix(path, "/admin/"):
 		h.serveStaticFile(w, r)
 
 	// 公开的 Key 查询页面（无需管理员密码，凭 Key 自身鉴权）
-	case path == "/check" || path == "/check/" || path == "/check/key":
+	// Canonical URL is /check/key; /check and /check/ redirect there.
+	case path == "/check" || path == "/check/":
+		http.Redirect(w, r, "/check/key", http.StatusFound)
+	case path == "/check/key" || path == "/check/key/":
 		h.serveStatic(w, r, "web/dist/check.html")
 	case path == "/check/api/lookup" && r.Method == "POST":
 		h.handleCheckKeyLookup(w, r)

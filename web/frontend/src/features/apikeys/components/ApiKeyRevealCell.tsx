@@ -31,11 +31,14 @@ export function ApiKeyRevealCell({ id, masked }: { id: string; masked: string })
   }
 
   return (
-    <div className="flex items-center gap-1">
-      <code className="max-w-40 truncate font-mono text-xs">{revealed ?? masked}</code>
+    <div className="flex min-w-0 items-center gap-1">
+      <code className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+        {revealed ?? masked}
+      </code>
       <Button
         variant="ghost"
         size="icon-xs"
+        className="shrink-0"
         onClick={toggle}
         disabled={loading}
         aria-label={revealed ? t('apiKeys.hideKey') : t('apiKeys.showKey')}

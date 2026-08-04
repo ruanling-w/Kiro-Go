@@ -52,16 +52,17 @@ export function CheckUsageChart({ logs }: { logs: CheckKeyLog[] }) {
   const axis = chartAxis()
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="min-w-0">
+      <CardHeader className="min-w-0">
         <CardTitle>{t('check.chart.title')}</CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="min-w-0">
         {data.length === 0 ? (
           <EmptyState message={t('check.logs.empty')} />
         ) : (
-          <ResponsiveContainer width="100%" height={260}>
-            <AreaChart data={data} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+          <div className="h-[220px] w-full min-w-0 sm:h-[260px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={data} margin={{ top: 8, right: 4, left: -20, bottom: 0 }}>
               <defs>
                 <linearGradient id="checkGradSuccess" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor={CHART_SERIES[0]} stopOpacity={0.38} />
@@ -99,6 +100,7 @@ export function CheckUsageChart({ logs }: { logs: CheckKeyLog[] }) {
               />
             </AreaChart>
           </ResponsiveContainer>
+          </div>
         )}
       </CardContent>
     </Card>

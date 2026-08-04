@@ -1,9 +1,7 @@
-// Topbar — live status dot, theme cycle, language switch, and logout. Sits above
-// the routed page content inside AppShell. Theme/lang read from uiStore; logout
-// goes through the cookie-session mutation. The live dot reflects the real
-// status poll (useStatus, 10s): teal pulse when data is flowing, muted on error.
+// Topbar — live status dot, theme cycle, language switch, and logout. On mobile
+// also hosts the hamburger that opens the nav Sheet (wired by AppShell).
 import { useTranslation } from 'react-i18next'
-import { Moon, Sun, MonitorCog, Languages, LogOut } from 'lucide-react'
+import { Menu, Moon, Sun, MonitorCog, Languages, LogOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -40,12 +38,18 @@ function LiveDot() {
           )}
         />
       </span>
-      <span className="text-xs font-medium text-muted-foreground">{t('status.live')}</span>
+      <span className="hidden text-xs font-medium text-muted-foreground sm:inline">
+        {t('status.live')}
+      </span>
     </div>
   )
 }
 
-export function Topbar() {
+interface TopbarProps {
+  onOpenNav?: () => void
+}
+
+export function Topbar({ onOpenNav }: TopbarProps) {
   const { t } = useTranslation()
   const theme = useUiStore((s) => s.theme)
   const cycleTheme = useUiStore((s) => s.cycleTheme)
@@ -55,40 +59,59 @@ export function Topbar() {
   const ThemeIcon = THEME_ICON[theme]
 
   return (
-    <header className="flex h-16 shrink-0 items-center justify-end gap-1 border-b bg-background px-4">
-      <LiveDot />
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" aria-label={t('lang.label')}>
-            <Languages className="size-5" />
+    <header className="flex h-14 shrink-0 items-center justify-between gap-1 border-b bg-background px-3 md:h-16 md:px-4">
+      <div className="flex min-w-0 items-center gap-1">
+        {onOpenNav && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden"
+            aria-label={t('nav.menu')}
+            onClick={onOpenNav}
+          >
+            <Menu className="size-5" />
           </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {LANGS.map((l) => (
-            <DropdownMenuItem
-              key={l}
-              onClick={() => setLang(l as Lang)}
-              className={l === lang ? 'font-semibold' : ''}
-            >
-              {t(`lang.${l}`)}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+        )}
+        <span className="truncate text-sm font-semibold tracking-tight md:hidden">
+          {t('app.title')}
+        </span>
+      </div>
 
-      <Button variant="ghost" size="icon" aria-label={t('theme.toggle')} onClick={cycleTheme}>
-        <ThemeIcon className="size-5" />
-      </Button>
+      <div className="flex items-center gap-0.5 sm:gap-1">
+        <LiveDot />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" aria-label={t('lang.label')}>
+              <Languages className="size-5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {LANGS.map((l) => (
+              <DropdownMenuItem
+                key={l}
+                onClick={() => setLang(l as Lang)}
+                className={l === lang ? 'font-semibold' : ''}
+              >
+                {t(`lang.${l}`)}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
 
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label={t('common.logout')}
-        onClick={() => logout.mutate()}
-        disabled={logout.isPending}
-      >
-        <LogOut className="size-5" />
-      </Button>
+        <Button variant="ghost" size="icon" aria-label={t('theme.toggle')} onClick={cycleTheme}>
+          <ThemeIcon className="size-5" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={t('common.logout')}
+          onClick={() => logout.mutate()}
+          disabled={logout.isPending}
+        >
+          <LogOut className="size-5" />
+        </Button>
+      </div>
     </header>
   )
 }

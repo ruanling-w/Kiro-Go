@@ -24,7 +24,7 @@ export default function ApiDocsPage() {
   const handleConn = useCallback((v: ConnectionValues) => setConn(v), [])
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-5 md:space-y-6">
       <PageHeader
         title={t('apiDocs.title')}
         description={t('apiDocs.subtitle')}
@@ -32,8 +32,9 @@ export default function ApiDocsPage() {
 
       <ConnectionCard onChange={handleConn} />
 
-      <div className="grid gap-6 xl:grid-cols-5">
-        <div className="space-y-6 xl:col-span-3">
+      {/* Guides + endpoints first on phone; catalog stacks below until xl. */}
+      <div className="grid min-w-0 gap-5 md:gap-6 xl:grid-cols-5">
+        <div className="min-w-0 space-y-5 md:space-y-6 xl:col-span-3">
           <EndpointTable base={conn.base} />
           <ToolGuideTabs
             vars={{
@@ -43,7 +44,7 @@ export default function ApiDocsPage() {
             }}
           />
         </div>
-        <div className="xl:col-span-2">
+        <div className="min-w-0 xl:col-span-2">
           <ModelCatalogCard
             models={conn.models}
             loading={conn.modelsLoading}

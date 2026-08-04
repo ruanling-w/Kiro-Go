@@ -53,9 +53,10 @@ export function UsageTable({ accounts, loading }: UsageTableProps) {
     {
       id: 'account',
       header: t('usage.account'),
+      mobileRole: 'primary',
       cell: (a) => (
-        <div className="flex items-center gap-2">
-          <ProviderIcon provider={bucketOf(a.provider)} className="size-4" />
+        <div className="flex min-w-0 items-center gap-2">
+          <ProviderIcon provider={bucketOf(a.provider)} className="size-4 shrink-0" />
           <span className="truncate">{privacy ? maskEmail(a.email) : a.email || a.id}</span>
         </div>
       ),
@@ -64,6 +65,7 @@ export function UsageTable({ accounts, loading }: UsageTableProps) {
     {
       id: 'requests',
       header: t('usage.requests'),
+      mobileRole: 'meta',
       align: 'right',
       cell: (a) => <span className="tabular-nums">{formatNumber(a.requestCount)}</span>,
       sortValue: (a) => a.requestCount,
@@ -71,6 +73,7 @@ export function UsageTable({ accounts, loading }: UsageTableProps) {
     {
       id: 'tokens',
       header: t('usage.tokens'),
+      mobileRole: 'meta',
       align: 'right',
       cell: (a) => <span className="tabular-nums">{formatNumber(a.totalTokens)}</span>,
       sortValue: (a) => a.totalTokens,
@@ -78,6 +81,7 @@ export function UsageTable({ accounts, loading }: UsageTableProps) {
     {
       id: 'credits',
       header: t('usage.credits'),
+      mobileRole: 'meta',
       align: 'right',
       cell: (a) => <span className="tabular-nums">{formatNumber(a.totalCredits)}</span>,
       sortValue: (a) => a.totalCredits,
@@ -89,7 +93,7 @@ export function UsageTable({ accounts, loading }: UsageTableProps) {
 
   return (
     <div className="space-y-3">
-      <div className="relative max-w-xs">
+      <div className="relative w-full max-w-full sm:max-w-xs">
         <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={keyword}

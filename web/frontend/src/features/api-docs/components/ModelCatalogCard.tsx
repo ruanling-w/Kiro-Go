@@ -31,23 +31,23 @@ export function ModelCatalogCard({ models, loading, error }: ModelCatalogCardPro
   }, [models, q])
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="min-w-0">
+      <CardHeader className="gap-1.5">
         <CardTitle>{t('api.modelList')}</CardTitle>
         <CardDescription>{t('apiDocs.modelsDesc')}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-xs text-muted-foreground">
+      <CardContent className="min-w-0 space-y-3">
+        <p className="text-xs leading-relaxed text-muted-foreground">
           {tp(t, 'apiDocs.thinkingHint', suffix)}
         </p>
 
-        <div className="relative">
+        <div className="relative min-w-0">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder={t('api.searchModels')}
-            className="pl-8"
+            className="min-w-0 pl-8"
           />
         </div>
 
@@ -58,12 +58,14 @@ export function ModelCatalogCard({ models, loading, error }: ModelCatalogCardPro
         ) : filtered.length === 0 ? (
           <EmptyState title={t('api.noModels')} />
         ) : (
-          <ul className="max-h-[36rem] divide-y overflow-auto rounded-lg border border-border/60">
+          <ul className="max-h-[22rem] divide-y overflow-auto rounded-lg border border-border/60 md:max-h-[36rem]">
             {filtered.map((m) => (
-              <li key={m.id} className="flex items-center gap-2 px-3 py-2">
+              <li key={m.id} className="flex items-start gap-2 px-3 py-2.5 sm:items-center">
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-mono text-sm">{m.id}</p>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                  <p className="break-all font-mono text-sm leading-snug sm:truncate sm:break-normal">
+                    {m.id}
+                  </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
                     {m.owned_by ? (
                       <span className="text-[11px] text-muted-foreground">{m.owned_by}</span>
                     ) : null}
@@ -76,7 +78,12 @@ export function ModelCatalogCard({ models, loading, error }: ModelCatalogCardPro
                     ) : null}
                   </div>
                 </div>
-                <CopyButton value={m.id} size="icon-xs" label={t('common.copy')} />
+                <CopyButton
+                  value={m.id}
+                  size="icon-xs"
+                  label={t('common.copy')}
+                  className="mt-0.5 shrink-0 sm:mt-0"
+                />
               </li>
             ))}
           </ul>

@@ -1,9 +1,13 @@
-// CheckKeyForm — public key entry. Password-masked input + submit.
+// CheckKeyForm — public key entry. Password-masked input + submit, styled for
+// the centered landing card.
 import { useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
 import { PasswordInput } from '@/components/shared/PasswordInput'
 import { HamsterWheel } from '@/components/shared/HamsterLoader'
+import { cn } from '@/lib/utils'
 
 interface CheckKeyFormProps {
   onSubmit: (key: string) => void
@@ -12,7 +16,12 @@ interface CheckKeyFormProps {
   initialValue?: string
 }
 
-export function CheckKeyForm({ onSubmit, pending, error, initialValue = '' }: CheckKeyFormProps) {
+export function CheckKeyForm({
+  onSubmit,
+  pending,
+  error,
+  initialValue = '',
+}: CheckKeyFormProps) {
   const { t } = useTranslation()
   const [value, setValue] = useState(initialValue)
 
@@ -22,29 +31,50 @@ export function CheckKeyForm({ onSubmit, pending, error, initialValue = '' }: Ch
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-3">
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <div className="min-w-0 sm:flex-1">
-          <PasswordInput
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder={t('check.placeholder')}
-            autoFocus
-            autoComplete="off"
-            spellCheck={false}
-            className="font-mono"
-            disabled={pending}
-          />
-        </div>
-        <Button type="submit" disabled={pending} className="sm:min-w-28">
-          {pending ? <HamsterWheel size="sm" /> : t('check.submit')}
-        </Button>
+    <form onSubmit={handleSubmit} className="min-w-0 space-y-4">
+      <div className="min-w-0 space-y-2">
+        <Label htmlFor="check-api-key" className="text-sm font-medium">
+          {t('check.keyLabel')}
+        </Label>
+        <PasswordInput
+          id="check-api-key"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={t('check.placeholder')}
+          autoFocus
+          autoComplete="off"
+          spellCheck={false}
+          disabled={pending}
+          aria-invalid={!!error || undefined}
+          className={cn(
+            'h-11 min-w-0 font-mono text-sm tracking-wide md:text-sm',
+            error && 'border-destructive',
+          )}
+        />
+        {error ? (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">{t('check.keyHint')}</p>
+        )}
       </div>
-      {error && (
-        <p className="text-sm text-destructive" role="alert">
-          {error}
-        </p>
-      )}
+
+      <Button
+        type="submit"
+        disabled={pending}
+        size="lg"
+        className="h-11 w-full gap-2 text-sm font-semibold"
+      >
+        {pending ? (
+          <HamsterWheel size="sm" />
+        ) : (
+          <>
+            <Search className="size-4" />
+            {t('check.submit')}
+          </>
+        )}
+      </Button>
     </form>
   )
 }

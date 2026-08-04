@@ -23,9 +23,9 @@ function statusBadge(data: CheckKeyResponse, t: (k: string) => string) {
 
 function MetaRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2 last:border-0">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="min-w-0 truncate text-right font-medium">{children}</span>
+    <div className="flex min-w-0 items-start justify-between gap-3 border-b border-border/60 py-2 last:border-0 sm:items-center">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 break-words text-right font-medium">{children}</span>
     </div>
   )
 }
@@ -34,14 +34,16 @@ export function CheckQuotaCard({ data }: { data: CheckKeyResponse }) {
   const { t } = useTranslation()
 
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <CardTitle className="truncate">{data.name || t('check.meta.title')}</CardTitle>
-            <p className="mt-1 font-mono text-xs text-muted-foreground">{data.keyMasked}</p>
+    <Card className="h-full min-w-0">
+      <CardHeader className="min-w-0 pb-2">
+        <div className="flex min-w-0 items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <CardTitle className="break-words">{data.name || t('check.meta.title')}</CardTitle>
+            <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+              {data.keyMasked}
+            </p>
           </div>
-          {statusBadge(data, t)}
+          <div className="shrink-0">{statusBadge(data, t)}</div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">

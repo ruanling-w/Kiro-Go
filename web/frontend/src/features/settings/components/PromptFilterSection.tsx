@@ -6,13 +6,13 @@ import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { HamsterLoader } from '@/components/shared/HamsterLoader'
 import { usePromptFilter } from '@/hooks/queries/useSettings'
 import { useUpdatePromptFilter } from '@/hooks/mutations/useSettingsMutations'
 import type { PromptFilterConfig, PromptFilterRule } from '@/types/settings'
 import { SettingsSection } from './SettingsSection'
+import { SettingsToggleRow } from './SettingsToggleRow'
 
 const EMPTY: PromptFilterConfig = {
   filterClaudeCode: false,
@@ -59,26 +59,30 @@ export function PromptFilterSection() {
   }
 
   return (
-    <SettingsSection id="prompt-filter" title={t('settings.promptFilter')} description={t('settings.promptFilterDesc')}>
+    <SettingsSection
+      id="prompt-filter"
+      title={t('settings.promptFilter')}
+      description={t('settings.promptFilterDesc')}
+    >
       {query.isPending ? (
         <HamsterLoader size="sm" />
       ) : (
         <>
-          <div className="space-y-3">
+          <div className="min-w-0 space-y-3">
             <p className="text-sm font-medium">{t('settings.builtinFilters')}</p>
-            <ToggleRow
+            <SettingsToggleRow
               label={t('settings.filterClaudeCode')}
               hint={t('settings.filterClaudeCodeHint')}
               checked={cfg.filterClaudeCode}
               onChange={(v) => setBuiltin('filterClaudeCode', v)}
             />
-            <ToggleRow
+            <SettingsToggleRow
               label={t('settings.filterEnvNoise')}
               hint={t('settings.filterEnvNoiseHint')}
               checked={cfg.filterEnvNoise}
               onChange={(v) => setBuiltin('filterEnvNoise', v)}
             />
-            <ToggleRow
+            <SettingsToggleRow
               label={t('settings.filterStripBoundaries')}
               hint={t('settings.filterStripBoundariesHint')}
               checked={cfg.filterStripBoundaries}
@@ -86,18 +90,24 @@ export function PromptFilterSection() {
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="min-w-0 space-y-2">
             <p className="text-sm font-medium">{t('settings.customRules')}</p>
             {cfg.rules.length === 0 ? (
               <p className="text-sm text-muted-foreground">{t('promptFilter.noRules')}</p>
             ) : (
               <div className="space-y-2">
                 {cfg.rules.map((rule, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <span className="w-20 shrink-0 text-xs text-muted-foreground">
-                      {rule.type === 'regex' ? t('promptFilter.typeRegex') : t('promptFilter.typeContains')}
+                  <div
+                    key={i}
+                    className="flex min-w-0 flex-col gap-2 rounded-lg border border-border/60 p-2.5 sm:flex-row sm:items-center"
+                  >
+                    <span className="shrink-0 text-xs font-medium text-muted-foreground sm:w-20">
+                      {rule.type === 'regex'
+                        ? t('promptFilter.typeRegex')
+                        : t('promptFilter.typeContains')}
                     </span>
                     <Input
+                      className="min-w-0 flex-1"
                       value={rule.pattern}
                       onChange={(e) => updateRule(i, { pattern: e.target.value })}
                       placeholder={
@@ -106,56 +116,51 @@ export function PromptFilterSection() {
                           : t('promptFilter.matchPlaceholderContains')
                       }
                     />
-                    <Switch
-                      checked={rule.enabled !== false}
-                      onCheckedChange={(v) => updateRule(i, { enabled: v })}
-                    />
-                    <Button variant="ghost" size="icon-sm" onClick={() => removeRule(i)} aria-label={t('common.remove')}>
-                      <Trash2 className="size-4 text-destructive" />
-                    </Button>
+                    <div className="flex shrink-0 items-center justify-end gap-2">
+                      <Switch
+                        checked={rule.enabled !== false}
+                        onCheckedChange={(v) => updateRule(i, { enabled: v })}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => removeRule(i)}
+                        aria-label={t('common.remove')}
+                      >
+                        <Trash2 className="size-4 text-destructive" />
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </div>
             )}
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => addRule('regex')}>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full justify-center sm:w-auto"
+                onClick={() => addRule('regex')}
+              >
                 <Plus className="size-4" />
                 {t('promptFilter.addRegex')}
               </Button>
-              <Button variant="outline" size="sm" onClick={() => addRule('contains')}>
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full justify-center sm:w-auto"
+                onClick={() => addRule('contains')}
+              >
                 <Plus className="size-4" />
                 {t('promptFilter.addContains')}
               </Button>
             </div>
           </div>
 
-          <Button disabled={save.isPending} onClick={onSave}>
+          <Button className="w-full sm:w-auto" disabled={save.isPending} onClick={onSave}>
             {t('settings.savePromptFilter')}
           </Button>
         </>
       )}
     </SettingsSection>
-  )
-}
-
-function ToggleRow({
-  label,
-  hint,
-  checked,
-  onChange,
-}: {
-  label: string
-  hint: string
-  checked: boolean
-  onChange: (v: boolean) => void
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <div>
-        <Label>{label}</Label>
-        <p className="mt-1 text-sm text-muted-foreground">{hint}</p>
-      </div>
-      <Switch checked={checked} onCheckedChange={onChange} />
-    </div>
   )
 }

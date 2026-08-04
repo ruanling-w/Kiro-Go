@@ -4,7 +4,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -13,6 +12,7 @@ import { HamsterLoader } from '@/components/shared/HamsterLoader'
 import { useTelegram } from '@/hooks/queries/useSettings'
 import { useUpdateTelegram, useTestTelegram } from '@/hooks/mutations/useSettingsMutations'
 import { SettingsSection } from './SettingsSection'
+import { SettingsToggleRow } from './SettingsToggleRow'
 
 export function TelegramSection() {
   const { t } = useTranslation()
@@ -50,13 +50,12 @@ export function TelegramSection() {
         <HamsterLoader size="sm" />
       ) : (
         <>
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label>{t('settings.telegramEnabled')}</Label>
-              <p className="mt-1 text-sm text-muted-foreground">{t('settings.telegramEnabledHint')}</p>
-            </div>
-            <Switch checked={enabled} onCheckedChange={setEnabled} />
-          </div>
+          <SettingsToggleRow
+            label={t('settings.telegramEnabled')}
+            hint={t('settings.telegramEnabledHint')}
+            checked={enabled}
+            onChange={setEnabled}
+          />
           <div className="space-y-2">
             <Label>{t('settings.telegramBotToken')}</Label>
             <PasswordInput
@@ -72,11 +71,12 @@ export function TelegramSection() {
             <Input value={chatId} onChange={(e) => setChatId(e.target.value)} />
             <p className="text-sm text-muted-foreground">{t('settings.telegramChatIdHint')}</p>
           </div>
-          <div className="flex gap-2">
-            <Button disabled={save.isPending} onClick={onSave}>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button className="w-full sm:w-auto" disabled={save.isPending} onClick={onSave}>
               {t('settings.saveTelegram')}
             </Button>
             <Button
+              className="w-full sm:w-auto"
               variant="outline"
               disabled={test.isPending}
               onClick={() =>

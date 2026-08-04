@@ -197,12 +197,12 @@ claude`,
         titleKey: 'apiDocs.tools.codexConfig',
         filename: '~/.codex/config.toml',
         lang: 'toml',
-        code: `# Kiro-Go Configuration for Codex CLI
+        code: `# Kiro Proxy Configuration for Codex CLI
 model = "{{MODEL}}"
 model_provider = "kiro-go"
 
 [model_providers.kiro-go]
-name = "Kiro-Go"
+name = "Kiro Proxy"
 base_url = "{{BASE}}/v1"
 wire_api = "responses"
 

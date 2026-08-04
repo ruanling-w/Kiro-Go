@@ -135,13 +135,13 @@ export default function AccountsPage() {
       <PageHeader
         title={lockedMeta ? t(lockedMeta.labelKey) : t('accounts.title')}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="icon" aria-label={t('theme.status')} onClick={togglePrivacy}>
               {privacy ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
             </Button>
-            <Button variant="outline" onClick={() => setExportOpen(true)}>
+            <Button variant="outline" onClick={() => setExportOpen(true)} aria-label={t('accounts.export')}>
               <Download className="size-4" />
-              {t('accounts.export')}
+              <span className="hidden sm:inline">{t('accounts.export')}</span>
             </Button>
             <Button onClick={() => setAddOpen(true)}>
               <Plus className="size-4" />

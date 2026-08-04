@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -11,6 +10,7 @@ import { HamsterLoader } from '@/components/shared/HamsterLoader'
 import { useSettings } from '@/hooks/queries/useSettings'
 import { useUpdateSettings } from '@/hooks/mutations/useSettingsMutations'
 import { SettingsSection } from './SettingsSection'
+import { SettingsToggleRow } from './SettingsToggleRow'
 
 export function UsageSection() {
   const { t } = useTranslation()
@@ -32,19 +32,31 @@ export function UsageSection() {
         <HamsterLoader size="sm" />
       ) : (
         <>
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label>{t('settings.allowOverUsage')}</Label>
-              <p className="mt-1 text-sm text-muted-foreground">{t('settings.allowOverUsageHint')}</p>
-            </div>
-            <Switch checked={allow} onCheckedChange={setAllow} />
-          </div>
-          <div className="space-y-2">
-            <Label>Default multiplier for new API keys</Label>
-            <Input type="number" min={0} max={100} step={0.1} value={multiplier} onChange={(e) => setMultiplier(e.target.value)} />
-            <p className="text-sm text-muted-foreground">0 = default 1x; new keys use this value unless explicitly configured.</p>
+          <SettingsToggleRow
+            label={t('settings.allowOverUsage')}
+            hint={t('settings.allowOverUsageHint')}
+            checked={allow}
+            onChange={setAllow}
+          />
+          <div className="min-w-0 space-y-2">
+            <Label className="block whitespace-normal leading-snug">
+              Default multiplier for new API keys
+            </Label>
+            <Input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={multiplier}
+              onChange={(e) => setMultiplier(e.target.value)}
+              className="min-w-0"
+            />
+            <p className="text-sm leading-relaxed text-muted-foreground text-pretty">
+              0 = default 1x; new keys use this value unless explicitly configured.
+            </p>
           </div>
           <Button
+            className="w-full sm:w-auto"
             disabled={save.isPending}
             onClick={() =>
               save.mutate(

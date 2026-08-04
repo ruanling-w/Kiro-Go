@@ -124,16 +124,16 @@ export default function ApiKeysPage() {
       </div>
 
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle>{t('apiKeys.listTitle')}</CardTitle>
-          <Button onClick={openCreate}>
+          <Button onClick={openCreate} className="w-full sm:w-auto">
             <Plus className="size-4" />
             {t('apiKeys.add')}
           </Button>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="relative min-w-56 flex-1">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative min-w-0 w-full flex-1 sm:min-w-56">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 className="pl-9"
@@ -143,7 +143,7 @@ export default function ApiKeysPage() {
               />
             </div>
             <Select value={status} onValueChange={(v) => setStatus(v as ApiKeyStatusFilter)}>
-              <SelectTrigger className="w-40">
+              <SelectTrigger className="w-full sm:w-40">
                 <SelectValue placeholder={t('apiKeys.filterStatus')} />
               </SelectTrigger>
               <SelectContent>

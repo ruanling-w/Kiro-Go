@@ -31,8 +31,8 @@ export function AccountFilters({ hideProvider }: { hideProvider?: boolean }) {
   const setProvider = useUiStore((s) => s.setProviderFilter)
 
   return (
-    <div className="flex flex-wrap items-center gap-3">
-      <div className="relative min-w-56 flex-1">
+    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+      <div className="relative min-w-0 w-full flex-1 sm:min-w-56">
         <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           className="pl-9"
@@ -42,34 +42,36 @@ export function AccountFilters({ hideProvider }: { hideProvider?: boolean }) {
         />
       </div>
 
-      <Select value={status} onValueChange={(v) => setStatus(v as AccountStatusFilter)}>
-        <SelectTrigger className="w-40">
-          <SelectValue placeholder={t('filter.status')} />
-        </SelectTrigger>
-        <SelectContent>
-          {STATUS_OPTIONS.map((o) => (
-            <SelectItem key={o.value} value={o.value}>
-              {t(o.key)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {!hideProvider && (
-        <Select value={provider || 'all'} onValueChange={(v) => setProvider(v === 'all' ? '' : v)}>
-          <SelectTrigger className="w-44">
-            <SelectValue />
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <Select value={status} onValueChange={(v) => setStatus(v as AccountStatusFilter)}>
+          <SelectTrigger className="w-full sm:w-40">
+            <SelectValue placeholder={t('filter.status')} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">{t('filter.all')}</SelectItem>
-            {PROVIDERS.map((p) => (
-              <SelectItem key={p.key} value={p.key}>
-                {t(p.labelKey)}
+            {STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {t(o.key)}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
-      )}
+
+        {!hideProvider && (
+          <Select value={provider || 'all'} onValueChange={(v) => setProvider(v === 'all' ? '' : v)}>
+            <SelectTrigger className="w-full sm:w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t('filter.all')}</SelectItem>
+              {PROVIDERS.map((p) => (
+                <SelectItem key={p.key} value={p.key}>
+                  {t(p.labelKey)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
     </div>
   )
 }

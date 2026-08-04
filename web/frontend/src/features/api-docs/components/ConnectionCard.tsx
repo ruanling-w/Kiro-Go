@@ -15,7 +15,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { StatusBadge } from '@/components/shared/StatusBadge'
 import { useUiStore } from '@/stores/uiStore'
 import { useApiKeys } from '@/hooks/queries/useApiKeys'
 import { useSettings } from '@/hooks/queries/useSettings'
@@ -140,31 +139,37 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
   const requireApiKey = settings.data?.requireApiKey ?? true
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="min-w-0">
+      <CardHeader className="gap-1.5">
         <CardTitle>{t('apiDocs.connectionTitle')}</CardTitle>
         <CardDescription>{t('apiDocs.connectionDesc')}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="min-w-0 space-y-4">
         {!requireApiKey && (
-          <StatusBadge tone="warning">{t('apiDocs.requireApiKeyOff')}</StatusBadge>
+          <div
+            role="status"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm leading-snug text-amber-800 dark:text-amber-300"
+          >
+            {t('apiDocs.requireApiKeyOff')}
+          </div>
         )}
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-1.5 md:col-span-2">
+        <div className="grid min-w-0 gap-4 sm:grid-cols-2">
+          <div className="min-w-0 space-y-1.5 sm:col-span-2">
             <Label htmlFor="docs-base-url">{t('apiDocs.baseUrl')}</Label>
-            <div className="flex gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <Input
                 id="docs-base-url"
                 value={docsBaseURL}
                 onChange={(e) => setDocsBaseURL(e.target.value)}
                 placeholder={gatewayBase || 'http://localhost:8080'}
-                className="font-mono text-sm"
+                className="min-w-0 flex-1 font-mono text-sm"
               />
               <Button
                 type="button"
                 variant="outline"
                 size="icon"
+                className="shrink-0"
                 onClick={() => setDocsBaseURL(gatewayBase)}
                 aria-label={t('apiDocs.resetBase')}
                 title={t('apiDocs.resetBase')}
@@ -175,21 +180,23 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
             <p className="text-xs text-muted-foreground">{t('apiDocs.baseUrlHint')}</p>
           </div>
 
-          <div className="space-y-1.5">
+          <div className="min-w-0 space-y-1.5">
             <Label>{t('apiDocs.apiKey')}</Label>
-            <div className="flex gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <Select
                 value={docsApiKeyId || 'none'}
                 onValueChange={(v) => setDocsApiKeyId(v === 'none' ? null : v)}
               >
-                <SelectTrigger className="flex-1">
+                <SelectTrigger className="min-w-0 flex-1">
                   <SelectValue placeholder={t('apiDocs.selectKey')} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">{t('apiDocs.selectKey')}</SelectItem>
                   {enabledKeys.map((k) => (
                     <SelectItem key={k.id} value={k.id}>
-                      {k.name || k.keyMasked} · {k.keyMasked}
+                      <span className="truncate">
+                        {k.name || k.keyMasked} · {k.keyMasked}
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -198,6 +205,7 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
                 type="button"
                 variant="outline"
                 size="icon"
+                className="shrink-0"
                 disabled={!docsApiKeyId || revealing}
                 onClick={() => void handleReveal()}
                 aria-label={revealedKey ? t('apiKeys.hideKey') : t('apiKeys.showKey')}
@@ -205,7 +213,7 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
                 {revealedKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
               </Button>
             </div>
-            <p className="truncate font-mono text-xs text-muted-foreground">
+            <p className="break-all font-mono text-xs text-muted-foreground">
               {revealedKey
                 ? revealedKey
                 : docsApiKeyId
@@ -217,10 +225,10 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
             ) : null}
           </div>
 
-          <div className="space-y-1.5">
+          <div className="min-w-0 space-y-1.5">
             <Label>{t('apiDocs.model')}</Label>
             <Select value={modelId} onValueChange={setModelId} disabled={!models.length}>
-              <SelectTrigger>
+              <SelectTrigger className="w-full min-w-0">
                 <SelectValue
                   placeholder={
                     modelsQ.isPending
@@ -234,8 +242,10 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
               <SelectContent className="max-h-72">
                 {models.map((m) => (
                   <SelectItem key={m.id} value={m.id}>
-                    {m.id}
-                    {m.combo ? ' · combo' : ''}
+                    <span className="truncate">
+                      {m.id}
+                      {m.combo ? ' · combo' : ''}
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>

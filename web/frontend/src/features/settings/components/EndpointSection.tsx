@@ -2,7 +2,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import {
@@ -17,6 +16,7 @@ import { useEndpoint } from '@/hooks/queries/useSettings'
 import { useUpdateEndpoint } from '@/hooks/mutations/useSettingsMutations'
 import type { PreferredEndpoint } from '@/types/settings'
 import { SettingsSection } from './SettingsSection'
+import { SettingsToggleRow } from './SettingsToggleRow'
 
 const ENDPOINTS: { value: PreferredEndpoint; key: string }[] = [
   { value: 'auto', key: 'settings.endpointAuto' },
@@ -61,14 +61,14 @@ export function EndpointSection() {
             </Select>
             <p className="text-sm text-muted-foreground">{t('settings.endpointHint')}</p>
           </div>
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label>{t('settings.endpointFallback')}</Label>
-              <p className="mt-1 text-sm text-muted-foreground">{t('settings.endpointFallbackHint')}</p>
-            </div>
-            <Switch checked={fallback} onCheckedChange={setFallback} />
-          </div>
+          <SettingsToggleRow
+            label={t('settings.endpointFallback')}
+            hint={t('settings.endpointFallbackHint')}
+            checked={fallback}
+            onChange={setFallback}
+          />
           <Button
+            className="w-full sm:w-auto"
             disabled={save.isPending}
             onClick={() =>
               save.mutate(

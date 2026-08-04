@@ -1,7 +1,7 @@
-// Router — the guarded app shell wrapping the 6 routed pages. Login lives
+// Router — the guarded app shell wrapping the routed pages. Login lives
 // outside the shell (rendered by AuthGuard when there's no session). Pages are
-// lazy so the initial bundle stays lean (Logs pulls in xterm; charts pull in
-// recharts) — Suspense falls back to the shared hamster loader.
+// lazy so the initial bundle stays lean (charts pull in recharts) — Suspense
+// falls back to the shared hamster loader.
 import { lazy, Suspense } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 import { AuthGuard } from '@/features/login/AuthGuard'

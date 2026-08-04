@@ -20,6 +20,8 @@ export function EndpointTable({ base }: EndpointTableProps) {
       {
         id: 'method',
         header: t('apiDocs.col.method'),
+        // Folded into the mobile primary path row.
+        mobileHidden: true,
         cell: (row) => (
           <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-semibold text-muted-foreground">
             {row.method}
@@ -31,9 +33,15 @@ export function EndpointTable({ base }: EndpointTableProps) {
       {
         id: 'path',
         header: t('apiDocs.col.path'),
+        mobileRole: 'primary',
         cell: (row) => (
           <div className="min-w-0">
-            <p className="font-mono text-sm">{row.path}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-semibold text-muted-foreground md:hidden">
+                {row.method}
+              </span>
+              <p className="break-all font-mono text-sm">{row.path}</p>
+            </div>
             {row.aliases?.length ? (
               <p className="truncate text-xs text-muted-foreground">
                 {row.aliases.join(' · ')}
@@ -46,6 +54,7 @@ export function EndpointTable({ base }: EndpointTableProps) {
       {
         id: 'auth',
         header: t('apiDocs.col.auth'),
+        mobileRole: 'badge',
         cell: (row) =>
           row.auth ? (
             <StatusBadge tone="info">{t('apiDocs.authRequired')}</StatusBadge>
@@ -58,13 +67,17 @@ export function EndpointTable({ base }: EndpointTableProps) {
       {
         id: 'desc',
         header: t('apiDocs.col.desc'),
+        mobileRole: 'secondary',
         cell: (row) => (
-          <span className="text-sm text-muted-foreground">{t(row.descKey)}</span>
+          <span className="text-sm leading-relaxed text-muted-foreground">
+            {t(row.descKey)}
+          </span>
         ),
       },
       {
         id: 'copy',
         header: '',
+        mobileRole: 'actions',
         cell: (row) => (
           <CopyButton
             value={`${origin}${row.path}`}
@@ -80,12 +93,12 @@ export function EndpointTable({ base }: EndpointTableProps) {
   )
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="min-w-0">
+      <CardHeader className="gap-1.5">
         <CardTitle>{t('apiDocs.endpointsTitle')}</CardTitle>
         <CardDescription>{t('apiDocs.endpointsDesc')}</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="min-w-0">
         <DataTable
           rows={API_ENDPOINTS}
           columns={columns}

@@ -34,6 +34,7 @@ export function ApiKeyTable({ rows, onEdit, onDelete, onReset, onToggle, onViewI
     {
       id: 'name',
       header: t('apiKeys.colName'),
+      mobileRole: 'primary',
       sortValue: (k) => k.name || '',
       cell: (k) => (
         <div className="min-w-0">
@@ -47,11 +48,13 @@ export function ApiKeyTable({ rows, onEdit, onDelete, onReset, onToggle, onViewI
     {
       id: 'key',
       header: t('apiKeys.colKey'),
+      mobileRole: 'secondary',
       cell: (k) => <ApiKeyRevealCell id={k.id} masked={k.keyMasked} />,
     },
     {
       id: 'usage',
       header: t('apiKeys.requests'),
+      mobileRole: 'meta',
       align: 'right',
       sortValue: (k) => k.requestsCount,
       cell: (k) => <span className="tabular-nums">{formatNumber(k.requestsCount)}</span>,
@@ -59,6 +62,7 @@ export function ApiKeyTable({ rows, onEdit, onDelete, onReset, onToggle, onViewI
     {
       id: 'tokens',
       header: t('apiKeys.tokens'),
+      mobileRole: 'meta',
       align: 'right',
       sortValue: (k) => k.tokensUsed,
       cell: (k) => <span className="tabular-nums">{formatNumber(k.tokensUsed)}</span>,
@@ -66,6 +70,7 @@ export function ApiKeyTable({ rows, onEdit, onDelete, onReset, onToggle, onViewI
     {
       id: 'ips',
       header: t('apiKeys.colIPs'),
+      mobileRole: 'meta',
       align: 'right',
       sortValue: (k) => k.uniqueIps,
       cell: (k) => (
@@ -81,6 +86,7 @@ export function ApiKeyTable({ rows, onEdit, onDelete, onReset, onToggle, onViewI
     {
       id: 'created',
       header: t('apiKeys.created'),
+      mobileRole: 'meta',
       align: 'right',
       sortValue: (k) => k.createdAt,
       cell: (k) => (
@@ -92,6 +98,7 @@ export function ApiKeyTable({ rows, onEdit, onDelete, onReset, onToggle, onViewI
     {
       id: 'status',
       header: t('apiKeys.colStatus'),
+      mobileRole: 'badge',
       align: 'center',
       cell: (k) => {
         const s = keyStatus(k)
@@ -101,29 +108,32 @@ export function ApiKeyTable({ rows, onEdit, onDelete, onReset, onToggle, onViewI
     {
       id: 'actions',
       header: t('apiKeys.colActions'),
+      mobileRole: 'actions',
       align: 'right',
       cell: (k) => (
-        <div className="flex items-center justify-end gap-0.5">
+        <div className="flex w-full flex-wrap items-center justify-between gap-1">
           <Switch
             checked={k.enabled}
             onCheckedChange={(v) => onToggle(k, v)}
             aria-label={t('apiKeys.statusEnabled')}
           />
-          <Button variant="ghost" size="icon-sm" onClick={() => onViewLogs(k)} aria-label={t('logs.title')}>
-            <ScrollText className="size-4" />
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={() => onViewIps(k)} aria-label={t('apiKeys.viewIPs')}>
-            <Network className="size-4" />
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={() => onEdit(k)} aria-label={t('apiKeys.actionEdit')}>
-            <Pencil className="size-4" />
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={() => onReset(k)} aria-label={t('apiKeys.actionReset')}>
-            <RotateCcw className="size-4" />
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={() => onDelete(k)} aria-label={t('apiKeys.actionDelete')}>
-            <Trash2 className="size-4 text-destructive" />
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-0.5">
+            <Button variant="ghost" size="icon-sm" onClick={() => onViewLogs(k)} aria-label={t('logs.title')}>
+              <ScrollText className="size-4" />
+            </Button>
+            <Button variant="ghost" size="icon-sm" onClick={() => onViewIps(k)} aria-label={t('apiKeys.viewIPs')}>
+              <Network className="size-4" />
+            </Button>
+            <Button variant="ghost" size="icon-sm" onClick={() => onEdit(k)} aria-label={t('apiKeys.actionEdit')}>
+              <Pencil className="size-4" />
+            </Button>
+            <Button variant="ghost" size="icon-sm" onClick={() => onReset(k)} aria-label={t('apiKeys.actionReset')}>
+              <RotateCcw className="size-4" />
+            </Button>
+            <Button variant="ghost" size="icon-sm" onClick={() => onDelete(k)} aria-label={t('apiKeys.actionDelete')}>
+              <Trash2 className="size-4 text-destructive" />
+            </Button>
+          </div>
         </div>
       ),
     },

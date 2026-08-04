@@ -51,18 +51,18 @@ export function CheckExpiryCard({ data }: { data: CheckKeyResponse }) {
   }
 
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="flex items-center gap-2">
-            <CalendarClock className="size-4 text-muted-foreground" />
-            {t('check.kpi.expiry')}
+    <Card className="h-full min-w-0">
+      <CardHeader className="min-w-0 pb-2">
+        <div className="flex min-w-0 items-start justify-between gap-2 sm:items-center">
+          <CardTitle className="flex min-w-0 items-center gap-2">
+            <CalendarClock className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0">{t('check.kpi.expiry')}</span>
           </CardTitle>
-          {badge}
+          <div className="shrink-0">{badge}</div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-2">
-        <p className="text-lg font-semibold leading-snug">{title}</p>
+      <CardContent className="min-w-0 space-y-2">
+        <p className="text-base font-semibold leading-snug break-words sm:text-lg">{title}</p>
         {!data.neverExpires && !data.expired && (
           <p className="text-sm text-muted-foreground">{detail}</p>
         )}

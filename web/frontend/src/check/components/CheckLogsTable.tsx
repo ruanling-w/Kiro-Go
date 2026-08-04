@@ -1,18 +1,12 @@
-// CheckLogsTable — filterable usage history for one API key.
+// CheckLogsTable — filterable usage history for one API key. Uses shared
+// DataTable so mobile gets the same card stack as the admin tables.
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { CheckKeyLog } from '@/services/checkKey.service'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { DataTable, type Column } from '@/components/shared/DataTable'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { formatDuration, formatNumber, formatUnixSeconds } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -41,6 +35,96 @@ export function CheckLogsTable({ logs }: { logs: CheckKeyLog[] }) {
     { id: 'error', label: t('check.logs.filterError') },
   ]
 
+  const columns = useMemo<Column<CheckKeyLog>[]>(
+    () => [
+      {
+        id: 'time',
+        header: t('check.logs.time'),
+        mobileRole: 'primary',
+        sortValue: (log) => log.time,
+        cell: (log) => (
+          <span className="font-mono text-xs text-muted-foreground">
+            {formatUnixSeconds(log.time, {
+              dateStyle: 'short',
+              timeStyle: 'medium',
+            })}
+          </span>
+        ),
+      },
+      {
+        id: 'endpoint',
+        header: t('check.logs.endpoint'),
+        mobileRole: 'meta',
+        cell: (log) => (
+          <span className="max-w-[12rem] truncate font-mono text-xs">
+            {log.endpoint || '—'}
+          </span>
+        ),
+        sortValue: (log) => log.endpoint || '',
+      },
+      {
+        id: 'model',
+        header: t('check.logs.model'),
+        mobileRole: 'secondary',
+        cell: (log) => (
+          <span className="max-w-[14rem] truncate text-sm">{log.model || '—'}</span>
+        ),
+        sortValue: (log) => log.model || '',
+      },
+      {
+        id: 'status',
+        header: t('check.logs.status'),
+        mobileRole: 'meta',
+        cell: (log) => {
+          const ok = log.status === 'success'
+          return ok ? (
+            <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+              {t('check.logs.success')}
+            </Badge>
+          ) : (
+            <Badge variant="destructive">
+              {log.errorType || t('check.logs.error')}
+            </Badge>
+          )
+        },
+        sortValue: (log) => (log.status === 'success' ? 1 : 0),
+      },
+      {
+        id: 'tokens',
+        header: t('check.logs.tokens'),
+        mobileRole: 'meta',
+        align: 'right',
+        cell: (log) => (
+          <span className="font-mono tabular-nums">{formatNumber(log.tokens)}</span>
+        ),
+        sortValue: (log) => log.tokens,
+      },
+      {
+        id: 'credits',
+        header: t('check.logs.credits'),
+        mobileRole: 'meta',
+        align: 'right',
+        cell: (log) => (
+          <span className="font-mono tabular-nums">{formatNumber(log.credits)}</span>
+        ),
+        sortValue: (log) => log.credits,
+      },
+      {
+        id: 'duration',
+        header: t('check.logs.duration'),
+        mobileRole: 'meta',
+        align: 'right',
+        cell: (log) => (
+          <span className="font-mono tabular-nums text-muted-foreground">
+            {formatDuration(log.duration)}
+          </span>
+        ),
+        sortValue: (log) => log.duration,
+      },
+    ],
+    [t],
+  )
+
   return (
     <Card>
       <CardHeader className="gap-3 space-y-0">
@@ -55,7 +139,7 @@ export function CheckLogsTable({ logs }: { logs: CheckKeyLog[] }) {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder={t('check.logs.search')}
-            className="sm:max-w-xs"
+            className="min-w-0 sm:max-w-xs"
           />
           <div className="flex flex-wrap gap-1.5">
             {filters.map((f) => (
@@ -82,58 +166,16 @@ export function CheckLogsTable({ logs }: { logs: CheckKeyLog[] }) {
         ) : filtered.length === 0 ? (
           <EmptyState message={t('check.logs.noMatch')} />
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t('check.logs.time')}</TableHead>
-                <TableHead>{t('check.logs.endpoint')}</TableHead>
-                <TableHead>{t('check.logs.model')}</TableHead>
-                <TableHead>{t('check.logs.status')}</TableHead>
-                <TableHead className="text-right">{t('check.logs.tokens')}</TableHead>
-                <TableHead className="text-right">{t('check.logs.credits')}</TableHead>
-                <TableHead className="text-right">{t('check.logs.duration')}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((log, i) => {
-                const ok = log.status === 'success'
-                return (
-                  <TableRow key={`${log.time}-${log.model}-${i}`}>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      {formatUnixSeconds(log.time, {
-                        dateStyle: 'short',
-                        timeStyle: 'medium',
-                      })}
-                    </TableCell>
-                    <TableCell className="max-w-[8rem] truncate font-mono text-xs">
-                      {log.endpoint || '—'}
-                    </TableCell>
-                    <TableCell className="max-w-[10rem] truncate">{log.model || '—'}</TableCell>
-                    <TableCell>
-                      {ok ? (
-                        <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-                          {t('check.logs.success')}
-                        </Badge>
-                      ) : (
-                        <Badge variant="destructive">
-                          {log.errorType || t('check.logs.error')}
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {formatNumber(log.tokens)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {formatNumber(log.credits)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums text-muted-foreground">
-                      {formatDuration(log.duration)}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
+          <DataTable
+            rows={filtered}
+            columns={columns}
+            rowKey={(log) =>
+              `${log.time}-${log.model ?? ''}-${log.endpoint ?? ''}-${log.status}-${log.tokens}-${log.duration}`
+            }
+            initialSort={{ id: 'time', dir: 'desc' }}
+            pageSize={20}
+            emptyMessage={t('check.logs.noMatch')}
+          />
         )}
       </CardContent>
     </Card>

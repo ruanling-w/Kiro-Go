@@ -89,7 +89,9 @@ const THEME_ORDER: ThemePref[] = ['system', 'light', 'dark']
 export const useUiStore = create<UiState>((set, get) => ({
   theme: initialTheme(),
   lang: initialLang(),
-  privacyMode: localStorage.getItem(PRIVACY_KEY) !== '0',
+  // Privacy OFF by default so provider/account cards show full emails.
+  // Only mask when the user explicitly enables it (localStorage '1').
+  privacyMode: localStorage.getItem(PRIVACY_KEY) === '1',
 
   accountKeyword: '',
   accountStatus: 'all',

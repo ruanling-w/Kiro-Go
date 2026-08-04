@@ -32,7 +32,7 @@ cd web/frontend
 pnpm dev
 ```
 
-Mở `http://localhost:3008` (port cố định, xem `server.port` trong vite.config.ts). Các request `/admin/api` và `/check/api` được proxy sang `http://localhost:8080`, nên auth cookie-session + CSRF hoạt động như production.
+Mở `http://localhost:3008` (port cố định, xem `server.port` trong vite.config.ts) → redirect sang `/admin/`. Trang public check key: `http://localhost:3008/check/key`. Các request `/admin/api` và `/check/api` được proxy sang `http://localhost:8080`, nên auth cookie-session + CSRF hoạt động như production.
 
 ## Các lệnh
 
@@ -51,7 +51,7 @@ cd web/frontend
 pnpm build
 ```
 
-Output đi vào `../dist` (tức `web/dist/`) — gồm `index.html` (admin SPA) và `check.html` (trang public), cùng thư mục `assets/`. Backend Go map `/admin/*` → `web/dist` và phục vụ `check.html` ở `/check`, có SPA fallback cho route không có phần mở rộng.
+Output đi vào `../dist` (tức `web/dist/`) — gồm `index.html` (admin SPA) và `check.html` (trang public), cùng thư mục `assets/`. Backend Go map `/admin/*` → `web/dist` và phục vụ `check.html` ở `/check` + `/check/key` (canonical), có SPA fallback cho route admin không có phần mở rộng.
 
 Không cần chỉnh gì phía Go sau khi build; chỉ cần `web/dist/` được cập nhật.
 
@@ -64,7 +64,7 @@ Không cần chỉnh gì phía Go sau khi build; chỉ cần `web/dist/` đượ
 ```
 web/frontend/
 ├── index.html          # entry admin SPA (/admin/)
-├── check.html          # entry trang public check key (/check)
+├── check.html          # entry trang public check key (/check/key)
 ├── vite.config.ts      # base /admin/, outDir ../dist, dev proxy
 ├── locales/            # vi / en / zh (i18n)
 ├── public/             # asset tĩnh copy nguyên
