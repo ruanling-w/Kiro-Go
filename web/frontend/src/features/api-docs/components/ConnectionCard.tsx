@@ -1,0 +1,221 @@
+// ConnectionCard — base URL + API key reveal + model picker for snippet fill.
+import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { Eye, EyeOff, RotateCcw } from 'lucide-react'
+import { toast } from 'sonner'
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { StatusBadge } from '@/components/shared/StatusBadge'
+import { useUiStore } from '@/stores/uiStore'
+import { useApiKeys } from '@/hooks/queries/useApiKeys'
+import { useSettings } from '@/hooks/queries/useSettings'
+import { usePublicModels } from '@/hooks/queries/usePublicModels'
+import { revealApiKey } from '@/services/apikeys.service'
+import type { PublicModel } from '@/types/publicApi'
+
+export interface ConnectionValues {
+  base: string
+  key: string
+  model: string
+  models: PublicModel[]
+  modelsLoading: boolean
+  modelsError: boolean
+}
+
+interface ConnectionCardProps {
+  onChange: (v: ConnectionValues) => void
+}
+
+export function ConnectionCard({ onChange }: ConnectionCardProps) {
+  const { t } = useTranslation()
+  const docsBaseURL = useUiStore((s) => s.docsBaseURL)
+  const setDocsBaseURL = useUiStore((s) => s.setDocsBaseURL)
+  const docsApiKeyId = useUiStore((s) => s.docsApiKeyId)
+  const setDocsApiKeyId = useUiStore((s) => s.setDocsApiKeyId)
+
+  const apiKeys = useApiKeys()
+  const settings = useSettings()
+  const modelsQ = usePublicModels(docsBaseURL)
+
+  const [revealedKey, setRevealedKey] = useState<string | null>(null)
+  const [revealing, setRevealing] = useState(false)
+  const [modelId, setModelId] = useState('')
+
+  const enabledKeys = useMemo(
+    () => (apiKeys.data ?? []).filter((k) => k.enabled && !k.expired),
+    [apiKeys.data],
+  )
+
+  const models = useMemo(() => modelsQ.data?.data ?? [], [modelsQ.data])
+
+  // Pick a sensible default model once the catalog loads.
+  useEffect(() => {
+    if (!models.length) return
+    if (modelId && models.some((m) => m.id === modelId)) return
+    const preferred =
+      models.find((m) => m.id === 'claude-sonnet-4.5') ??
+      models.find((m) => !m.combo && !m.id.includes('-thinking')) ??
+      models[0]
+    if (preferred) setModelId(preferred.id)
+  }, [models, modelId])
+
+  // Clear revealed key when selection changes.
+  useEffect(() => {
+    setRevealedKey(null)
+  }, [docsApiKeyId])
+
+  useEffect(() => {
+    onChange({
+      base: docsBaseURL,
+      key: revealedKey ?? '',
+      model: modelId,
+      models,
+      modelsLoading: modelsQ.isPending,
+      modelsError: modelsQ.isError,
+    })
+  }, [
+    docsBaseURL,
+    revealedKey,
+    modelId,
+    models,
+    modelsQ.isPending,
+    modelsQ.isError,
+    onChange,
+  ])
+
+  async function handleReveal() {
+    if (!docsApiKeyId) return
+    if (revealedKey) {
+      setRevealedKey(null)
+      return
+    }
+    setRevealing(true)
+    try {
+      const res = await revealApiKey(docsApiKeyId)
+      setRevealedKey(res.key)
+    } catch {
+      toast.error(t('apiKeys.revealFailed'))
+    } finally {
+      setRevealing(false)
+    }
+  }
+
+  const requireApiKey = settings.data?.requireApiKey ?? true
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t('apiDocs.connectionTitle')}</CardTitle>
+        <CardDescription>{t('apiDocs.connectionDesc')}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!requireApiKey && (
+          <StatusBadge tone="warning">{t('apiDocs.requireApiKeyOff')}</StatusBadge>
+        )}
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-1.5 md:col-span-2">
+            <Label htmlFor="docs-base-url">{t('apiDocs.baseUrl')}</Label>
+            <div className="flex gap-2">
+              <Input
+                id="docs-base-url"
+                value={docsBaseURL}
+                onChange={(e) => setDocsBaseURL(e.target.value)}
+                placeholder="http://localhost:8080"
+                className="font-mono text-sm"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setDocsBaseURL(origin)}
+                aria-label={t('apiDocs.resetBase')}
+                title={t('apiDocs.resetBase')}
+              >
+                <RotateCcw className="size-4" />
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">{t('apiDocs.baseUrlHint')}</p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>{t('apiDocs.apiKey')}</Label>
+            <div className="flex gap-2">
+              <Select
+                value={docsApiKeyId || 'none'}
+                onValueChange={(v) => setDocsApiKeyId(v === 'none' ? null : v)}
+              >
+                <SelectTrigger className="flex-1">
+                  <SelectValue placeholder={t('apiDocs.selectKey')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">{t('apiDocs.selectKey')}</SelectItem>
+                  {enabledKeys.map((k) => (
+                    <SelectItem key={k.id} value={k.id}>
+                      {k.name || k.keyMasked} · {k.keyMasked}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                disabled={!docsApiKeyId || revealing}
+                onClick={() => void handleReveal()}
+                aria-label={revealedKey ? t('apiKeys.hideKey') : t('apiKeys.showKey')}
+              >
+                {revealedKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </Button>
+            </div>
+            <p className="truncate font-mono text-xs text-muted-foreground">
+              {revealedKey
+                ? revealedKey
+                : docsApiKeyId
+                  ? t('apiDocs.keyHidden')
+                  : t('apiDocs.keyPlaceholder')}
+            </p>
+            {enabledKeys.length === 0 ? (
+              <p className="text-xs text-muted-foreground">{t('apiDocs.noKeys')}</p>
+            ) : null}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>{t('apiDocs.model')}</Label>
+            <Select value={modelId} onValueChange={setModelId} disabled={!models.length}>
+              <SelectTrigger>
+                <SelectValue
+                  placeholder={
+                    modelsQ.isPending
+                      ? t('api.loading')
+                      : modelsQ.isError
+                        ? t('api.fetchError')
+                        : t('apiDocs.selectModel')
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent className="max-h-72">
+                {models.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.id}
+                    {m.combo ? ' · combo' : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
