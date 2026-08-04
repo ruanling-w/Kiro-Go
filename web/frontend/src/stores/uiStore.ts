@@ -61,6 +61,7 @@ interface UiState {
   apiKeyStatus: ApiKeyStatusFilter
 
   // API docs page — base URL persists; selected key id is ephemeral.
+  // Empty string = not chosen yet; ConnectionCard fills via resolveGatewayBaseURL.
   docsBaseURL: string
   docsApiKeyId: string | null
 
@@ -98,9 +99,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   apiKeyKeyword: '',
   apiKeyStatus: 'all',
 
-  docsBaseURL:
-    (typeof window !== 'undefined' && localStorage.getItem(DOCS_BASE_KEY)) ||
-    (typeof window !== 'undefined' ? window.location.origin : ''),
+  docsBaseURL: (typeof window !== 'undefined' && localStorage.getItem(DOCS_BASE_KEY)) || '',
   docsApiKeyId: null,
 
   setTheme: (t) => {

@@ -1,4 +1,5 @@
 // ConnectionCard — base URL + API key reveal + model picker for snippet fill.
+// Base URL is the public *gateway* origin (not the Vite admin origin in dev).
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Eye, EyeOff, RotateCcw } from 'lucide-react'
@@ -20,6 +21,11 @@ import { useApiKeys } from '@/hooks/queries/useApiKeys'
 import { useSettings } from '@/hooks/queries/useSettings'
 import { usePublicModels } from '@/hooks/queries/usePublicModels'
 import { revealApiKey } from '@/services/apikeys.service'
+import {
+  isDevAdminOrigin,
+  isLocalGatewayBase,
+  resolveGatewayBaseURL,
+} from '@/lib/gatewayBase'
 import type { PublicModel } from '@/types/publicApi'
 
 export interface ConnectionValues {
@@ -44,7 +50,27 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
 
   const apiKeys = useApiKeys()
   const settings = useSettings()
-  const modelsQ = usePublicModels(docsBaseURL)
+
+  const gatewayBase = useMemo(
+    () => resolveGatewayBaseURL({ port: settings.data?.port }),
+    [settings.data?.port],
+  )
+
+  // Auto-fill / correct base: empty, or stale Vite admin origin saved in localStorage.
+  useEffect(() => {
+    if (!docsBaseURL || isDevAdminOrigin(docsBaseURL)) {
+      setDocsBaseURL(gatewayBase)
+    }
+  }, [docsBaseURL, gatewayBase, setDocsBaseURL])
+
+  // Snippets use the gateway base; model catalog in Vite dev goes same-origin
+  // through the /v1 proxy to avoid CORS against :8080.
+  const modelsFetchBase = useMemo(() => {
+    if (import.meta.env.DEV && isLocalGatewayBase(docsBaseURL || gatewayBase)) return ''
+    return docsBaseURL || gatewayBase
+  }, [docsBaseURL, gatewayBase])
+
+  const modelsQ = usePublicModels(modelsFetchBase)
 
   const [revealedKey, setRevealedKey] = useState<string | null>(null)
   const [revealing, setRevealing] = useState(false)
@@ -56,6 +82,8 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
   )
 
   const models = useMemo(() => modelsQ.data?.data ?? [], [modelsQ.data])
+
+  const effectiveBase = docsBaseURL || gatewayBase
 
   // Pick a sensible default model once the catalog loads.
   useEffect(() => {
@@ -75,7 +103,7 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
 
   useEffect(() => {
     onChange({
-      base: docsBaseURL,
+      base: effectiveBase,
       key: revealedKey ?? '',
       model: modelId,
       models,
@@ -83,7 +111,7 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
       modelsError: modelsQ.isError,
     })
   }, [
-    docsBaseURL,
+    effectiveBase,
     revealedKey,
     modelId,
     models,
@@ -110,7 +138,6 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
   }
 
   const requireApiKey = settings.data?.requireApiKey ?? true
-  const origin = typeof window !== 'undefined' ? window.location.origin : ''
 
   return (
     <Card>
@@ -131,14 +158,14 @@ export function ConnectionCard({ onChange }: ConnectionCardProps) {
                 id="docs-base-url"
                 value={docsBaseURL}
                 onChange={(e) => setDocsBaseURL(e.target.value)}
-                placeholder="http://localhost:8080"
+                placeholder={gatewayBase || 'http://localhost:8080'}
                 className="font-mono text-sm"
               />
               <Button
                 type="button"
                 variant="outline"
                 size="icon"
-                onClick={() => setDocsBaseURL(origin)}
+                onClick={() => setDocsBaseURL(gatewayBase)}
                 aria-label={t('apiDocs.resetBase')}
                 title={t('apiDocs.resetBase')}
               >
