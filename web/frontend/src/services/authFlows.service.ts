@@ -125,6 +125,18 @@ export function importCredentials(body: CredentialsImport): Promise<CompleteResp
   return http.post<CompleteResponse>('/auth/credentials', body)
 }
 
+/**
+ * Batch import — the inverse of /export. Accepts the already-parsed+normalized
+ * items (see flows/parseCredentials.ts) and reports per-item errors so one bad
+ * account does not sink the whole file.
+ */
+export interface AccountsJsonImport {
+  accounts: CredentialsImport[]
+}
+export function importAccountsJson(body: AccountsJsonImport): Promise<BatchImportResponse> {
+  return http.post<BatchImportResponse>('/import', body)
+}
+
 export interface CodexImport {
   accessToken: string
   refreshToken: string

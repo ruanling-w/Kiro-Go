@@ -28,6 +28,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"kiro-go/config"
+	"kiro-go/logger"
 	"net/http"
 	"strconv"
 	"strings"
@@ -345,8 +346,20 @@ func (h *Handler) authorizeAdmin(w http.ResponseWriter, r *http.Request) bool {
 		if sess, ok := adminAuth.validate(token); ok {
 			if isMutatingMethod(r.Method) {
 				if !csrfMatches(r, sess.csrf) {
+					// Diagnostic: the usual cause is the kiro_csrf cookie never
+					// reaching JS (Path=/admin, SameSite=Strict, Secure behind a
+					// reverse proxy) so the client cannot echo the header at all.
+					// Log presence only — never the token values.
+					_, cookieErr := r.Cookie(adminCSRFCookie)
+					logger.Warnf("[AdminAuth] CSRF mismatch on %s %s: header=%v cookie=%v secure=%v xfp=%q",
+						r.Method, r.URL.Path,
+						r.Header.Get(adminCSRFHeader) != "", cookieErr == nil,
+						adminRequestIsSecure(r), r.Header.Get("X-Forwarded-Proto"))
 					w.WriteHeader(http.StatusForbidden)
-					json.NewEncoder(w).Encode(map[string]string{"error": "CSRF token mismatch"})
+					json.NewEncoder(w).Encode(map[string]string{
+						"error": "CSRF token mismatch",
+						"code":  "csrf_mismatch",
+					})
 					return false
 				}
 			}

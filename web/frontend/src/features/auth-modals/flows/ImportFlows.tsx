@@ -1,16 +1,17 @@
 // Direct import flows — no OAuth session, just a form → mutation → done. Each
 // posts to its import endpoint and invalidates the accounts list on success.
-import { useState, type FormEvent } from 'react'
+// Shared terminal states (Done/ErrorNote/useImport) live in importShared.tsx so
+// the standalone flows (LocalCacheFlow, WebCookieFlow) reuse them.
+import { useState, type ChangeEvent, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, XCircle } from 'lucide-react'
+import { CheckCircle2, Upload } from 'lucide-react'
 import { qk } from '@/config/queryKeys'
-import { ApiError } from '@/services/httpClient'
 import {
   importKiroApiKey,
   importRemoteKiro,
   importSsoToken,
-  importCredentials,
+  importAccountsJson,
   importCodex,
 } from '@/services/authFlows.service'
 import { Button } from '@/components/ui/button'
@@ -20,38 +21,10 @@ import { PasswordInput } from '@/components/shared/PasswordInput'
 import { RegionSelect } from '@/components/shared/RegionSelect'
 import { HamsterWheel } from '@/components/shared/HamsterLoader'
 import type { FlowComponentProps } from './types'
-
-// Small helper wrapping a form + submit + terminal states, shared by all imports.
-function useImport<T>(fn: (body: T) => Promise<{ success: boolean }>) {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: fn,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.accounts }),
-  })
-}
-
-function Done({ onDone, label }: { onDone?: () => void; label: string }) {
-  const { t } = useTranslation()
-  return (
-    <div className="flex flex-col items-center gap-3 py-8 text-center">
-      <CheckCircle2 className="size-12 text-emerald-500" />
-      <p className="font-medium">{label}</p>
-      <Button onClick={onDone}>{t('common.close')}</Button>
-    </div>
-  )
-}
-
-function ErrorNote({ error }: { error: unknown }) {
-  const { t } = useTranslation()
-  if (!error) return null
-  const msg = error instanceof ApiError ? error.message : t('common.failed')
-  return (
-    <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-      <XCircle className="mt-0.5 size-4 shrink-0" />
-      <span>{msg}</span>
-    </div>
-  )
-}
+import { HelpBlock, Steps, Code } from './HelpBlock'
+import { Done, ErrorNote, useImport } from './importShared'
+import { parseCredentialsInput, normalizeForPost } from './parseCredentials'
+import { tp } from '@/lib/t'
 
 // --- Kiro API key import ---
 export function KiroApiKeyFlow({ onDone }: FlowComponentProps) {
@@ -147,11 +120,16 @@ export function SsoTokenFlow({ onDone }: FlowComponentProps) {
   })
 
   if (m.isSuccess) {
+    const count = m.data.accounts.length
+    const errs = m.data.errors?.length ?? 0
     return (
       <div className="space-y-3 py-4">
         <div className="flex flex-col items-center gap-2 text-center">
           <CheckCircle2 className="size-10 text-emerald-500" />
-          <p className="font-medium">{m.data.accounts.length} ✓</p>
+          <p className="font-medium">
+            {tp(t, 'sso.importSuccess', count)}
+            {errs > 0 && tp(t, 'sso.importPartial', errs)}
+          </p>
         </div>
         {m.data.errors && m.data.errors.length > 0 && (
           <ul className="space-y-1 text-xs text-destructive">
@@ -171,14 +149,25 @@ export function SsoTokenFlow({ onDone }: FlowComponentProps) {
   }
   return (
     <form onSubmit={submit} className="space-y-4">
+      <HelpBlock title={t('sso.howToGet')}>
+        <Steps>
+          <li>
+            {t('sso.step1')} <Code>&lt;tenant&gt;.awsapps.com/start</Code>
+          </li>
+          <li>{t('sso.step2')}</li>
+          <li>{t('sso.step3')}</li>
+        </Steps>
+      </HelpBlock>
       <div className="space-y-2">
-        <Label>Bearer Token</Label>
+        <Label>{t('sso.tokenLabel')}</Label>
         <textarea
           value={bearerToken}
           onChange={(e) => setBearerToken(e.target.value)}
-          className="min-h-24 w-full rounded-lg border bg-transparent px-3 py-2 text-sm"
+          placeholder={t('sso.tokenPlaceholder')}
+          className="min-h-24 w-full rounded-lg border bg-transparent px-3 py-2 font-mono text-xs"
           autoFocus
         />
+        <p className="text-xs text-muted-foreground">{t('sso.tokenHint')}</p>
       </div>
       <div className="space-y-2">
         <Label>{t('detail.region')}</Label>
@@ -192,36 +181,116 @@ export function SsoTokenFlow({ onDone }: FlowComponentProps) {
   )
 }
 
-// --- Raw credentials import ---
+// --- Raw credentials import (JSON bundle / array / single object / ---- lines) ---
+// This is also the JSON *import* counterpart to /export: paste or upload the
+// exported bundle and every account in it is submitted in one batch. refreshToken
+// is the only required field — the server refreshes to mint an accessToken, which
+// is why the legacy importer deliberately sent an empty one.
 export function CredentialsFlow({ onDone }: FlowComponentProps) {
   const { t } = useTranslation()
-  const m = useImport(importCredentials)
-  const [accessToken, setAccessToken] = useState('')
-  const [refreshToken, setRefreshToken] = useState('')
+  const qc = useQueryClient()
+  const [raw, setRaw] = useState('')
   const [region, setRegion] = useState('us-east-1')
+  const [localError, setLocalError] = useState('')
+  const [note, setNote] = useState('')
+  const m = useMutation({
+    mutationFn: importAccountsJson,
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.accounts }),
+  })
 
-  if (m.isSuccess) return <Done onDone={onDone} label={t('accounts.testSuccess')} />
+  if (m.isSuccess) {
+    const count = m.data.accounts.length
+    const errs = m.data.errors?.length ?? 0
+    return (
+      <div className="space-y-3 py-4">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <CheckCircle2 className="size-10 text-emerald-500" />
+          <p className="font-medium">
+            {tp(t, 'sso.importSuccess', count)}
+            {errs > 0 && tp(t, 'sso.importPartial', errs)}
+            {note}
+          </p>
+        </div>
+        {m.data.errors && m.data.errors.length > 0 && (
+          <ul className="max-h-40 space-y-1 overflow-y-auto text-xs text-destructive">
+            {m.data.errors.map((e, i) => (
+              <li key={i}>{e}</li>
+            ))}
+          </ul>
+        )}
+        <Button className="w-full" onClick={onDone}>{t('common.close')}</Button>
+      </div>
+    )
+  }
+
+  function loadFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    void file.text().then(setRaw)
+    e.target.value = '' // allow re-picking the same file
+  }
 
   function submit(e: FormEvent) {
     e.preventDefault()
-    m.mutate({ accessToken: accessToken.trim(), refreshToken: refreshToken.trim(), region })
+    setLocalError('')
+    setNote('')
+
+    let parsed
+    try {
+      parsed = parseCredentialsInput(raw)
+    } catch {
+      return setLocalError(t('credentials.jsonError'))
+    }
+    if (parsed.items.length === 0) {
+      return setLocalError(
+        parsed.usedLineFormat
+          ? tp(t, 'credentials.lineParseAllSkipped', parsed.skipped)
+          : t('credentials.jsonError'),
+      )
+    }
+    if (parsed.skipped > 0) setNote(tp(t, 'credentials.lineParseSkipped', parsed.skipped))
+
+    m.mutate({
+      accounts: parsed.items.map((item) => {
+        const body = normalizeForPost(item)
+        // Only fall back to the picked region when the item carried none.
+        return { ...body, region: item.region || region }
+      }),
+    })
   }
+
   return (
     <form onSubmit={submit} className="space-y-4">
+      <p className="text-xs text-muted-foreground">{t('credentials.batchHint')}</p>
+
       <div className="space-y-2">
-        <Label>Access Token</Label>
-        <PasswordInput value={accessToken} onChange={(e) => setAccessToken(e.target.value)} autoFocus />
+        <Label>{t('credentials.label')}</Label>
+        <textarea
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          placeholder={'[{"refreshToken":"xxx","provider":"BuilderID"}]\nemail----password----refreshToken----clientId----clientSecret'}
+          autoFocus
+          className="min-h-32 w-full rounded-lg border bg-transparent px-3 py-2 font-mono text-xs"
+        />
+        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-muted">
+          <Upload className="size-3.5" />
+          {t('local.upload')}
+          <input type="file" accept=".json,application/json,.txt" onChange={loadFile} className="hidden" />
+        </label>
       </div>
-      <div className="space-y-2">
-        <Label>Refresh Token</Label>
-        <PasswordInput value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} />
-      </div>
+
       <div className="space-y-2">
         <Label>{t('detail.region')}</Label>
         <RegionSelect value={region} onChange={setRegion} />
       </div>
+
+      {localError && (
+        <p className="text-sm text-destructive" role="alert">
+          {localError}
+        </p>
+      )}
       <ErrorNote error={m.error} />
-      <Button type="submit" className="w-full" disabled={!accessToken.trim() || !refreshToken.trim() || m.isPending}>
+      <Button type="submit" className="w-full" disabled={!raw.trim() || m.isPending}>
         {m.isPending ? <HamsterWheel size="sm" /> : t('accounts.add')}
       </Button>
     </form>

@@ -13,6 +13,8 @@ import {
   ShieldCheck,
   FileKey,
   ClipboardPaste,
+  HardDrive,
+  Cookie,
   type LucideIcon,
 } from 'lucide-react'
 import type { FlowComponentProps } from './types'
@@ -22,6 +24,8 @@ import { CodexFlow } from './CodexFlow'
 import { BuilderIdFlow } from './BuilderIdFlow'
 import { IamSsoFlow } from './IamSsoFlow'
 import { KiroSsoFlow } from './KiroSsoFlow'
+import { LocalCacheFlow } from './LocalCacheFlow'
+import { WebCookieFlow } from './WebCookieFlow'
 import {
   KiroApiKeyFlow,
   RemoteKiroFlow,
@@ -47,6 +51,8 @@ export const FLOW_ENTRIES: FlowEntry[] = [
   { id: 'kiro-apikey', labelKey: 'addAccount.kiroApiKey', icon: KeyRound, group: 'kiro', Component: KiroApiKeyFlow },
   { id: 'sso-token', labelKey: 'addAccount.ssoToken', icon: FileKey, group: 'kiro', Component: SsoTokenFlow },
   { id: 'credentials', labelKey: 'addAccount.credentials', icon: ClipboardPaste, group: 'kiro', Component: CredentialsFlow },
+  { id: 'local', labelKey: 'modal.localTitle', icon: HardDrive, group: 'kiro', Component: LocalCacheFlow },
+  { id: 'cookie', labelKey: 'modal.cookieTitle', icon: Cookie, group: 'kiro', Component: WebCookieFlow },
   // Antigravity
   { id: 'antigravity', labelKey: 'addAccount.antigravity', icon: Sparkles, group: 'antigravity', Component: AntigravityFlow },
   // Grok

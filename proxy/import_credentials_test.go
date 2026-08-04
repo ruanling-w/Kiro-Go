@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"kiro-go/auth"
 	"kiro-go/config"
 	accountpool "kiro-go/pool"
@@ -132,6 +134,140 @@ func TestApiImportCredentialsUsesUpstreamExpiresAt(t *testing.T) {
 	}
 	if got.ExpiresAt-time.Now().Unix() < 1500 {
 		t.Fatalf("ExpiresAt too short — looks like the 300s fallback is still in play: %d (delta %d)", got.ExpiresAt, got.ExpiresAt-time.Now().Unix())
+	}
+}
+
+// TestApiImportAccountsPartialFailure covers the batch endpoint (/import, the
+// inverse of /export): a bad account must not sink the good ones, and it must be
+// reported per-item rather than silently swallowed. It also pins the export-bundle
+// un-mapping — nested `credentials`, the prettified "IdC" authMethod, and account
+// level `idp` standing in for provider.
+func TestApiImportAccountsPartialFailure(t *testing.T) {
+	cfgFile := t.TempDir() + "/config.json"
+	if err := config.Init(cfgFile); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	defer installCleanAuthClient(t)()
+
+	// The fake OIDC endpoint fails the refresh for exactly one refresh token.
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(raw), "rt-broken") {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"accessToken":"at-new","refreshToken":"rt-rotated","expiresIn":3600}`)
+	}))
+	defer fake.Close()
+
+	oldOIDC := authOidcURL()
+	auth.SetOIDCTokenURLForTest(func(string) string { return fake.URL })
+	defer auth.SetOIDCTokenURLForTest(oldOIDC)
+
+	h := &Handler{pool: accountpool.GetPool()}
+
+	body := `{"accounts":[
+		{"nickname":"good","idp":"BuilderId","credentials":{"refreshToken":"rt-good","clientId":"c","clientSecret":"s","authMethod":"IdC","region":"us-east-1"}},
+		{"nickname":"bad","credentials":{"refreshToken":"rt-broken","clientId":"c","clientSecret":"s","authMethod":"IdC","region":"us-east-1"}},
+		{"nickname":"flat","refreshToken":"rt-good2","clientId":"c","clientSecret":"s","authMethod":"idc","region":"us-east-1"}
+	]}`
+	req := httptest.NewRequest("POST", "/import", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.apiImportAccounts(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Success  bool `json:"success"`
+		Accounts []struct {
+			ID string `json:"id"`
+		} `json:"accounts"`
+		Errors []string `json:"errors"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Accounts) != 2 {
+		t.Fatalf("expected 2 imported accounts, got %d (%s)", len(resp.Accounts), rec.Body.String())
+	}
+	if len(resp.Errors) != 1 || !strings.Contains(resp.Errors[0], "bad:") {
+		t.Fatalf("expected one per-item error labelled \"bad\", got %v", resp.Errors)
+	}
+
+	accs := config.GetAccounts()
+	if len(accs) != 2 {
+		t.Fatalf("expected exactly the 2 good accounts persisted, got %d", len(accs))
+	}
+	for _, a := range accs {
+		// The export bundle's "IdC" must be un-mapped, or refresh dispatches wrong.
+		if a.AuthMethod != "idc" {
+			t.Fatalf("expected authMethod normalized to idc, got %q", a.AuthMethod)
+		}
+		if a.RefreshToken != "rt-rotated" {
+			t.Fatalf("expected rotated refreshToken persisted, got %q", a.RefreshToken)
+		}
+	}
+}
+
+// TestNormalizeImportAuthMethod pins the mapping table, notably that the Entra
+// spellings resolve to external_idp (the old switch coerced them to social, so an
+// exported M365 account could never refresh) and that "IdC" survives its casing.
+func TestNormalizeImportAuthMethod(t *testing.T) {
+	cases := []struct {
+		in, clientID, clientSecret, want string
+	}{
+		{"IdC", "c", "s", "idc"},
+		{"builderid", "", "", "idc"},
+		{"enterprise", "", "", "idc"},
+		{"entra", "c", "", "external_idp"},
+		{"azuread", "c", "", "external_idp"},
+		{"external_idp", "c", "", "external_idp"},
+		{"social", "", "", "social"},
+		{"google", "", "", "social"},
+		{"", "", "", "social"},
+		{"", "c", "", "idc"},
+		{"nonsense", "c", "s", "idc"},
+		{"nonsense", "", "", "social"},
+	}
+	for _, tc := range cases {
+		req := credentialImportRequest{AuthMethod: tc.in, ClientID: tc.clientID, ClientSecret: tc.clientSecret}
+		normalizeImportAuthMethod(&req)
+		if req.AuthMethod != tc.want {
+			t.Errorf("normalize(%q, id=%q, secret=%q) = %q, want %q", tc.in, tc.clientID, tc.clientSecret, req.AuthMethod, tc.want)
+		}
+	}
+}
+
+// TestExternalIdpImportRejectsUnvalidatedEndpoint is the security regression: the
+// token endpoint must be derived from the credential itself and gated on the IdP
+// allow-list. A credential whose issuer points at an attacker host must NOT yield
+// an endpoint — otherwise import becomes a refresh-token exfiltration primitive.
+func TestExternalIdpImportRejectsUnvalidatedEndpoint(t *testing.T) {
+	// A JWT (unsigned, payload-only is all the deriver reads) whose iss points at a
+	// host that is not on allowedExternalIdpIssuerSuffixes.
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://evil.example.com/tenant-id/v2.0"}`))
+	evilToken := "x." + payload + ".y"
+
+	req := credentialImportRequest{AuthMethod: "external_idp", ClientID: "c", AccessToken: evilToken}
+	if _, _, ok := externalIdpImportEndpoints(&req); ok {
+		t.Fatal("expected a non-allow-listed issuer to be rejected, but an endpoint was accepted")
+	}
+
+	// The legitimate shape still resolves.
+	good := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://login.microsoftonline.com/tenant-id/v2.0"}`))
+	req = credentialImportRequest{AuthMethod: "external_idp", ClientID: "c", AccessToken: "x." + good + ".y"}
+	endpoint, scopes, ok := externalIdpImportEndpoints(&req)
+	if !ok {
+		t.Fatal("expected an allow-listed Microsoft issuer to be accepted")
+	}
+	if !strings.HasPrefix(endpoint, "https://login.microsoftonline.com/tenant-id/") {
+		t.Fatalf("unexpected derived endpoint %q", endpoint)
+	}
+	if !strings.Contains(scopes, "offline_access") {
+		t.Fatalf("expected offline_access in derived scopes, got %q", scopes)
 	}
 }
 

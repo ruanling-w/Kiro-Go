@@ -11,6 +11,14 @@
 // state off (forceLogout) so the guard bounces to /login, then every error is
 // normalized to ApiError{status, message, code} so callers/React Query see a
 // consistent shape.
+//
+// A 403 with code "csrf_mismatch" means the `kiro_csrf` cookie was missing or
+// stale when the mutation went out, so axios could not attach the header. The
+// cookie is scoped Path=/admin, SameSite=Strict and Secure behind TLS, so it can
+// silently go missing after a deployment change. We re-probe /status once to let
+// the server re-issue the cookie pair, then retry the request exactly once; if
+// it fails again the session really is unusable, so force a logout with an
+// actionable message instead of surfacing a bare 403.
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
 import { forceLogout } from '@/stores/authStore'
 
@@ -40,10 +48,15 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null
 }
 
+/** Marks a config we've already retried, so a second 403 cannot loop. */
+interface RetriableConfig extends AxiosRequestConfig {
+  _csrfRetried?: boolean
+}
+
 // Normalize any axios failure into an ApiError, and force logout on 401.
 axiosClient.interceptors.response.use(
   (res) => res,
-  (err: AxiosError) => {
+  async (err: AxiosError) => {
     const status = err.response?.status ?? 0
     const data = err.response?.data
     const msg =
@@ -55,6 +68,26 @@ axiosClient.interceptors.response.use(
     // 401 = session gone/expired. Skip the boot probe (/status) — its caller
     // interprets the failure itself instead of bouncing mid-boot.
     if (status === 401 && err.config?.url !== '/status') forceLogout()
+
+    // 403 CSRF mismatch: the csrf cookie was absent/stale so no header went out.
+    // Re-probe /status to have the server re-issue it, then retry once.
+    const cfg = err.config as RetriableConfig | undefined
+    if (status === 403 && code === 'csrf_mismatch' && cfg && !cfg._csrfRetried) {
+      cfg._csrfRetried = true
+      try {
+        await axiosClient.get('/status')
+        return await axiosClient.request(cfg)
+      } catch {
+        forceLogout()
+        return Promise.reject(
+          new ApiError(
+            403,
+            'Session security token expired. Please sign in again.',
+            'csrf_mismatch',
+          ),
+        )
+      }
+    }
 
     return Promise.reject(new ApiError(status, msg, code))
   },

@@ -3379,6 +3379,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetVersion(w, r)
 	case path == "/export" && r.Method == "POST":
 		h.apiExportAccounts(w, r)
+	case path == "/import" && r.Method == "POST":
+		h.apiImportAccounts(w, r)
 	case path == "/api-keys" && r.Method == "GET":
 		h.apiListApiKeys(w, r)
 	case path == "/api-keys" && r.Method == "POST":
@@ -4885,31 +4887,95 @@ func (h *Handler) apiImportRemoteKiro(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-		ClientID     string `json:"clientId"`
-		ClientSecret string `json:"clientSecret"`
-		AuthMethod   string `json:"authMethod"`
-		Provider     string `json:"provider"`
-		Region       string `json:"region"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
-		return
-	}
+// credentialImportRequest is the wire shape accepted by both /auth/credentials
+// (one account) and /import (a batch). Nickname/UserId are only populated by the
+// batch path, which un-maps a /export bundle; UserId is what lets an external-IdP
+// credential recover its Azure tenant.
+type credentialImportRequest struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	AuthMethod   string `json:"authMethod"`
+	Provider     string `json:"provider"`
+	Region       string `json:"region"`
+	UserId       string `json:"userId"`
+	Nickname     string `json:"nickname"`
+}
 
+// httpError carries the status code the single-account handler should emit. The
+// batch handler ignores the code and reports only the message per item.
+type httpError struct {
+	code int
+	msg  string
+}
+
+func (e *httpError) Error() string { return e.msg }
+
+func errBadRequest(format string, a ...interface{}) *httpError {
+	return &httpError{code: 400, msg: fmt.Sprintf(format, a...)}
+}
+
+// normalizeImportAuthMethod collapses the many spellings a credential blob can
+// carry (export bundles prettify "idc" as "IdC"; Entra accounts show up as
+// "entra"/"azuread") onto the internal values auth.RefreshToken dispatches on.
+//
+// entra/azuread/external_idp only become "external_idp" when we can actually
+// derive an allow-listed token endpoint for them; otherwise they keep the old
+// social fallback rather than becoming un-refreshable.
+func normalizeImportAuthMethod(req *credentialImportRequest) {
+	if req.AuthMethod == "" {
+		if req.ClientID != "" {
+			req.AuthMethod = "idc"
+		} else {
+			req.AuthMethod = "social"
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(req.AuthMethod)) {
+	case "idc", "builderid", "enterprise":
+		req.AuthMethod = "idc"
+	case "external_idp", "entra", "azuread":
+		req.AuthMethod = "external_idp"
+	case "social", "google", "github", "microsoft":
+		req.AuthMethod = "social"
+	default:
+		if req.ClientID != "" && req.ClientSecret != "" {
+			req.AuthMethod = "idc"
+		} else {
+			req.AuthMethod = "social"
+		}
+	}
+}
+
+// externalIdpImportEndpoints derives and validates the token endpoint for an
+// external-IdP credential. The endpoint is NEVER taken from the request body —
+// accepting a caller-supplied endpoint would turn import into a refresh-token
+// exfiltration primitive. It is reconstructed from the credential's own
+// userId/access-token issuer and then gated on the IdP host allow-list.
+// Returns ok=false when no trustworthy endpoint can be derived.
+func externalIdpImportEndpoints(req *credentialImportRequest) (tokenEndpoint, scopes string, ok bool) {
+	tokenEndpoint, _, scopes = auth.DeriveExternalIdpEndpoints(req.UserId, req.ClientID, req.AccessToken)
+	if tokenEndpoint == "" {
+		return "", "", false
+	}
+	if err := auth.ValidateExternalIdpEndpoint(tokenEndpoint); err != nil {
+		logger.Warnf("[Import] rejecting non-allow-listed external IdP endpoint: %v", err)
+		return "", "", false
+	}
+	return tokenEndpoint, scopes, true
+}
+
+// importOneCredential performs the whole import for a single credential and
+// returns the persisted account. It does everything except write the HTTP
+// response and reload the pool, so /auth/credentials and /import share one
+// implementation. On any error nothing is persisted.
+func (h *Handler) importOneCredential(req credentialImportRequest) (*config.Account, error) {
 	// Kiro CLI API-key (ksk_) import — same path as /auth/kiro-apikey, kept here so
 	// clients that post authMethod=api_key to /auth/credentials keep working.
-	// Other auth methods are unchanged below.
 	if strings.EqualFold(strings.TrimSpace(req.AuthMethod), "api_key") {
 		cred, err := ValidateKiroAPIKey(req.AccessToken, req.Region)
 		if err != nil {
-			w.WriteHeader(400)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
+			return nil, errBadRequest("%s", err.Error())
 		}
 		email := strings.TrimSpace(cred.Email)
 		if email == "" {
@@ -4922,6 +4988,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		account := config.Account{
 			ID:                auth.GenerateAccountID(),
 			Email:             email,
+			Nickname:          req.Nickname,
 			UserId:            cred.UserId,
 			AccessToken:       cred.AccessToken,
 			AuthMethod:        "api_key",
@@ -4939,50 +5006,27 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 			LastRefresh:       cred.LastRefresh,
 		}
 		if err := config.AddAccount(account); err != nil {
-			w.WriteHeader(500)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
+			return nil, &httpError{code: 500, msg: err.Error()}
 		}
-		h.pool.Reload()
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"account": map[string]interface{}{
-				"id":           account.ID,
-				"email":        account.Email,
-				"region":       account.Region,
-				"subscription": account.SubscriptionTitle,
-			},
-		})
-		return
+		return &account, nil
 	}
 
 	if req.RefreshToken == "" {
-		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(map[string]string{"error": "refreshToken is required"})
-		return
+		return nil, errBadRequest("refreshToken is required")
 	}
 
 	// 设置默认值
 	if req.Region == "" {
 		req.Region = "us-east-1"
 	}
-	if req.AuthMethod == "" {
-		if req.ClientID != "" {
-			req.AuthMethod = "idc"
-		} else {
-			req.AuthMethod = "social"
-		}
-	}
-	// 标准化 authMethod
-	switch strings.ToLower(req.AuthMethod) {
-	case "idc", "builderid", "enterprise":
-		req.AuthMethod = "idc"
-	case "social", "google", "github", "microsoft", "entra":
-		req.AuthMethod = "social"
-	default:
-		if req.ClientID != "" && req.ClientSecret != "" {
-			req.AuthMethod = "idc"
-		} else {
+	normalizeImportAuthMethod(&req)
+
+	var tokenEndpoint, scopes string
+	if req.AuthMethod == "external_idp" {
+		var ok bool
+		if tokenEndpoint, scopes, ok = externalIdpImportEndpoints(&req); !ok {
+			// No trustworthy endpoint: keep the pre-existing behaviour instead of
+			// persisting an account that could never refresh.
 			req.AuthMethod = "social"
 		}
 	}
@@ -4991,17 +5035,17 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 	// 本地缓存里的 accessToken 不携带可信的过期时间，盲猜短 TTL 会让账号在选号时
 	// 永远被跳过，导致后台/按需刷新都无法触发（详见 ensureValidToken 与 Pick 的过期判定）。
 	tempAccount := &config.Account{
-		RefreshToken: req.RefreshToken,
-		ClientID:     req.ClientID,
-		ClientSecret: req.ClientSecret,
-		AuthMethod:   req.AuthMethod,
-		Region:       req.Region,
+		RefreshToken:  req.RefreshToken,
+		ClientID:      req.ClientID,
+		ClientSecret:  req.ClientSecret,
+		AuthMethod:    req.AuthMethod,
+		Region:        req.Region,
+		TokenEndpoint: tokenEndpoint,
+		Scopes:        scopes,
 	}
 	accessToken, newRefreshToken, expiresAt, newProfileArn, err := auth.RefreshToken(tempAccount)
 	if err != nil {
-		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Token refresh failed: " + err.Error()})
-		return
+		return nil, errBadRequest("Token refresh failed: %s", err.Error())
 	}
 	if newRefreshToken != "" {
 		req.RefreshToken = newRefreshToken
@@ -5012,35 +5056,135 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 
 	// 创建账号
 	account := config.Account{
-		ID:           auth.GenerateAccountID(),
-		Email:        email,
-		AccessToken:  accessToken,
-		RefreshToken: req.RefreshToken,
-		ClientID:     req.ClientID,
-		ClientSecret: req.ClientSecret,
-		AuthMethod:   req.AuthMethod,
-		Provider:     req.Provider,
-		Region:       req.Region,
-		ExpiresAt:    expiresAt,
-		Enabled:      true,
-		MachineId:    config.GenerateMachineId(),
-		ProfileArn:   newProfileArn,
+		ID:            auth.GenerateAccountID(),
+		Email:         email,
+		Nickname:      req.Nickname,
+		UserId:        req.UserId,
+		AccessToken:   accessToken,
+		RefreshToken:  req.RefreshToken,
+		ClientID:      req.ClientID,
+		ClientSecret:  req.ClientSecret,
+		AuthMethod:    req.AuthMethod,
+		Provider:      req.Provider,
+		Region:        req.Region,
+		ExpiresAt:     expiresAt,
+		Enabled:       true,
+		MachineId:     config.GenerateMachineId(),
+		ProfileArn:    newProfileArn,
+		TokenEndpoint: tokenEndpoint,
+		Scopes:        scopes,
 	}
 
 	if err := config.AddAccount(account); err != nil {
-		w.WriteHeader(500)
+		return nil, &httpError{code: 500, msg: err.Error()}
+	}
+	return &account, nil
+}
+
+func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
+	var req credentialImportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	account, err := h.importOneCredential(req)
+	if err != nil {
+		code := 400
+		if he, ok := err.(*httpError); ok {
+			code = he.code
+		}
+		w.WriteHeader(code)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
 	h.pool.Reload()
+	out := map[string]interface{}{"id": account.ID, "email": account.Email}
+	if account.AuthMethod == "api_key" {
+		out["region"] = account.Region
+		out["subscription"] = account.SubscriptionTitle
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "account": out})
+}
+
+// apiImportAccounts is the inverse of /export: a batch import that accepts either
+// the raw {accounts:[...]} export bundle or a list of plain credential objects.
+// Each item is imported independently — one bad account yields an entry in
+// `errors` instead of sinking the whole file. Cosmetic export mappings ("IdC",
+// millisecond expiresAt, `idp` in place of `provider`) are un-mapped here.
+func (h *Handler) apiImportAccounts(w http.ResponseWriter, r *http.Request) {
+	// Accept both the flat shape the React client posts and a raw /export bundle,
+	// so a user can upload the exported file untouched.
+	var body struct {
+		Accounts []struct {
+			credentialImportRequest
+			Idp         string                   `json:"idp"`
+			Credentials *credentialImportRequest `json:"credentials"`
+		} `json:"accounts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	if len(body.Accounts) == 0 {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "accounts is required"})
+		return
+	}
+
+	type importedAccount struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}
+	imported := make([]importedAccount, 0, len(body.Accounts))
+	errs := make([]string, 0)
+
+	for i, raw := range body.Accounts {
+		req := raw.credentialImportRequest
+		// Export bundles nest the secrets under `credentials`; prefer those, but
+		// keep the account-level userId/nickname, which live one level up.
+		if raw.Credentials != nil {
+			c := *raw.Credentials
+			c.UserId = firstNonEmpty(c.UserId, req.UserId)
+			c.Nickname = firstNonEmpty(c.Nickname, req.Nickname)
+			c.Provider = firstNonEmpty(c.Provider, req.Provider)
+			req = c
+		}
+		req.Provider = firstNonEmpty(req.Provider, raw.Idp)
+
+		label := req.Nickname
+		if label == "" {
+			label = fmt.Sprintf("#%d", i+1)
+		}
+
+		account, err := h.importOneCredential(req)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %s", label, err.Error()))
+			continue
+		}
+		imported = append(imported, importedAccount{ID: account.ID, Email: account.Email})
+	}
+
+	if len(imported) > 0 {
+		h.pool.Reload()
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"account": map[string]interface{}{
-			"id":    account.ID,
-			"email": account.Email,
-		},
+		"success":  len(imported) > 0,
+		"accounts": imported,
+		"errors":   errs,
 	})
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
