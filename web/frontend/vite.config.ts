@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 
 // Dev-only: the app is served under base /admin/, so hitting the dev server root
 // shows Vite's "did you mean /admin/?" notice. Redirect / (and other non-prefixed
-// paths) to /admin/ so a plain localhost:5173 or a reload lands on the app.
+// paths) to /admin/ so a plain localhost:3008 or a reload lands on the app.
 function redirectRootToAdmin(): PluginOption {
   return {
     name: 'redirect-root-to-admin',
@@ -14,7 +14,9 @@ function redirectRootToAdmin(): PluginOption {
       server.middlewares.use((req, res, next) => {
         const url = req.url ?? '/'
         if (url === '/' || url === '/index.html') {
-          res.writeHead(302, { Location: '/admin' })
+          // Trailing slash is required: base is '/admin/', so Vite's transform
+          // middleware does not serve a bare '/admin' (it 404s).
+          res.writeHead(302, { Location: '/admin/' })
           res.end()
           return
         }
@@ -48,6 +50,10 @@ export default defineConfig({
     },
   },
   server: {
+    port: 3008,
+    // Fail loudly instead of silently sliding to 3009 — scripts and bookmarks
+    // that assume 3008 would otherwise hit nothing.
+    strictPort: true,
     proxy: {
       // Explicit config (not the string shorthand) so SSE (/admin/api/logs/stream)
       // isn't buffered: changeOrigin fixes the Host header and http-proxy streams

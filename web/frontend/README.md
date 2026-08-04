@@ -32,7 +32,7 @@ cd web/frontend
 pnpm dev
 ```
 
-Mở URL Vite in ra (mặc định `http://localhost:5173`). Các request `/admin/api` và `/check/api` được proxy sang `http://localhost:8080`, nên auth cookie-session + CSRF hoạt động như production.
+Mở `http://localhost:3008` (port cố định, xem `server.port` trong vite.config.ts). Các request `/admin/api` và `/check/api` được proxy sang `http://localhost:8080`, nên auth cookie-session + CSRF hoạt động như production.
 
 ## Các lệnh
 
