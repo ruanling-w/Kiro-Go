@@ -1,16 +1,19 @@
-// CheckPage — public standalone key-lookup page (no admin auth). A key holder
-// pastes their key and sees quota/lifetime/usage. Reuses the app's Tailwind
-// tokens + theme; strings are Vietnamese-first per the legacy page.
-import { useState, type FormEvent } from 'react'
-import { useMutation } from '@tanstack/react-query'
+// CheckPage — public standalone key-lookup mini-dashboard (no admin auth).
+// Flow: enter key → sessionStorage + useQuery → KPI / quota / chart / logs.
+// Auto-refreshes every 30s while a key is held in the tab.
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { KeyRound, Moon, Sun } from 'lucide-react'
-import { lookupKey, type CheckKeyResponse } from '@/services/checkKey.service'
+import { lookupKey } from '@/services/checkKey.service'
 import { ApiError } from '@/services/httpClient'
 import { Button } from '@/components/ui/button'
-import { PasswordInput } from '@/components/shared/PasswordInput'
-import { UsageBar } from '@/components/shared/UsageBar'
-import { HamsterWheel } from '@/components/shared/HamsterLoader'
-import { formatNumber, formatUnixSeconds } from '@/lib/format'
+import { HamsterLoader } from '@/components/shared/HamsterLoader'
+import { useCheckKeySession } from './hooks/useCheckKeySession'
+import { CheckKeyForm } from './components/CheckKeyForm'
+import { CheckDashboard } from './components/CheckDashboard'
+
+const REFETCH_MS = 30_000
 
 function toggleTheme() {
   const root = document.documentElement
@@ -19,143 +22,113 @@ function toggleTheme() {
 }
 
 export function CheckPage() {
-  const [key, setKey] = useState('')
-  const [error, setError] = useState('')
-  const lookup = useMutation({
-    mutationFn: (k: string) => lookupKey(k),
-    onError: (e) => {
-      setError(e instanceof ApiError ? e.message : 'Không thể kiểm tra API key')
-    },
+  const { t } = useTranslation()
+  const { key, setKey, clear } = useCheckKeySession()
+  const [formError, setFormError] = useState('')
+
+  const query = useQuery({
+    queryKey: ['check-key', key],
+    queryFn: () => lookupKey(key!),
+    enabled: !!key,
+    refetchInterval: key ? REFETCH_MS : false,
+    retry: false,
+    staleTime: 10_000,
   })
 
-  const data = lookup.data as CheckKeyResponse | undefined
+  // Drop a stored key that the server says does not exist so the form returns.
+  // Keep the not-found message on the form after clear().
+  useEffect(() => {
+    if (!key || !query.isError) return
+    if (query.error instanceof ApiError && query.error.status === 404) {
+      setFormError(t('check.error.notFound'))
+      clear()
+    }
+  }, [key, query.isError, query.error, clear, t])
 
-  function onSubmit(e: FormEvent) {
-    e.preventDefault()
-    setError('')
-    if (!key.trim()) {
-      setError('Vui lòng nhập API key')
+  const errorMessage = useMemo(() => {
+    if (formError) return formError
+    if (!query.isError) return ''
+    const err = query.error
+    if (err instanceof ApiError) {
+      if (err.status === 0) return t('check.error.network')
+      if (err.status === 404) return t('check.error.notFound')
+      return err.message || t('check.error.generic')
+    }
+    return t('check.error.generic')
+  }, [formError, query.isError, query.error, t])
+
+  function onSubmit(raw: string) {
+    setFormError('')
+    if (!raw) {
+      setFormError(t('check.error.empty'))
       return
     }
-    lookup.mutate(key.trim())
+    setKey(raw)
   }
+
+  function onClear() {
+    setFormError('')
+    clear()
+  }
+
+  const showDashboard = !!key && !!query.data
+  const showLoading = !!key && query.isPending && !query.data
+  // Keep the form visible until we have dashboard data (and after clear / 404).
+  const showForm = !showDashboard && !showLoading
 
   return (
     <div className="min-h-dvh bg-background px-4 py-10 text-foreground">
-      <div className="mx-auto w-full max-w-2xl">
-        <div className="mb-6 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <KeyRound className="size-6 text-primary" />
-            <h1 className="text-xl font-semibold">Kiểm tra API Key</h1>
+      <div className={`mx-auto w-full ${showDashboard ? 'max-w-6xl' : 'max-w-2xl'}`}>
+        <div className="mb-6 flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <KeyRound className="size-6 shrink-0 text-primary" />
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold">{t('check.title')}</h1>
+              {!showDashboard && (
+                <p className="mt-0.5 text-sm text-muted-foreground">{t('check.subtitle')}</p>
+              )}
+            </div>
           </div>
-          <Button variant="ghost" size="icon" aria-label="Theme" onClick={toggleTheme}>
+          <Button variant="ghost" size="icon" aria-label={t('check.theme')} onClick={toggleTheme}>
             <Sun className="size-5 dark:hidden" />
             <Moon className="hidden size-5 dark:block" />
           </Button>
         </div>
 
-        <form onSubmit={onSubmit} className="flex gap-2">
-          <PasswordInput
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="Nhập API key của bạn"
-            autoFocus
+        {showForm && (
+          <CheckKeyForm
+            onSubmit={onSubmit}
+            pending={!!key && query.isFetching}
+            error={errorMessage}
           />
-          <Button type="submit" disabled={lookup.isPending}>
-            {lookup.isPending ? <HamsterWheel size="sm" /> : 'Kiểm tra'}
-          </Button>
-        </form>
+        )}
 
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-
-        {data && (
-          <div className="mt-6 space-y-4">
-            <div className="rounded-xl border bg-card p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium">{data.name || 'API Key'}</p>
-                  <p className="font-mono text-sm text-muted-foreground">{data.keyMasked}</p>
-                </div>
-                <span
-                  className={
-                    data.expired || !data.enabled
-                      ? 'rounded-full bg-destructive/10 px-3 py-1 text-sm text-destructive'
-                      : 'rounded-full bg-emerald-500/10 px-3 py-1 text-sm text-emerald-600 dark:text-emerald-400'
-                  }
-                >
-                  {data.expired ? 'Hết hạn' : data.enabled ? 'Hoạt động' : 'Vô hiệu'}
-                </span>
-              </div>
-
-              <div className="mt-4 space-y-3">
-                {!data.creditUnlimited && (
-                  <UsageBar
-                    label="Credits"
-                    used={data.creditsUsed}
-                    limit={data.creditLimit}
-                  />
-                )}
-                {!data.tokenUnlimited && (
-                  <UsageBar label="Tokens" used={data.tokensUsed} limit={data.tokenLimit} />
-                )}
-              </div>
-
-              <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-                <Field label="Requests" value={formatNumber(data.requestsCount)} />
-                <Field
-                  label="Credits"
-                  value={data.creditUnlimited ? '∞' : formatNumber(data.creditsRemaining)}
-                />
-                <Field
-                  label="Tokens"
-                  value={data.tokenUnlimited ? '∞' : formatNumber(data.tokensRemaining)}
-                />
-                <Field
-                  label="Hết hạn"
-                  value={data.neverExpires ? 'Vĩnh viễn' : formatUnixSeconds(data.expiresAt, { dateStyle: 'short' })}
-                />
-                <Field label="Còn lại" value={data.neverExpires ? '∞' : `${data.daysRemaining} ngày`} />
-                <Field label="Tạo lúc" value={formatUnixSeconds(data.createdAt, { dateStyle: 'short' })} />
-              </dl>
-            </div>
-
-            {data.logs.length > 0 && (
-              <div className="rounded-xl border bg-card p-5">
-                <p className="mb-3 font-medium">Lịch sử ({data.logs.length})</p>
-                <div className="max-h-96 space-y-1 overflow-auto font-mono text-xs">
-                  {data.logs.map((log, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center justify-between gap-2 border-b py-1.5 last:border-0"
-                    >
-                      <span className="text-muted-foreground">
-                        {formatUnixSeconds(log.time, { dateStyle: 'short', timeStyle: 'short' })}
-                      </span>
-                      <span className="truncate">{log.model || log.endpoint}</span>
-                      <span
-                        className={
-                          log.status === 'success' ? 'text-emerald-500' : 'text-destructive'
-                        }
-                      >
-                        {formatNumber(log.tokens)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+        {showLoading && (
+          <div className="mt-10">
+            <HamsterLoader label={t('check.checking')} />
           </div>
         )}
-      </div>
-    </div>
-  )
-}
 
-function Field({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="font-medium tabular-nums">{value}</dd>
+        {showDashboard && query.data && (
+          <CheckDashboard
+            data={query.data}
+            updatedAt={
+              query.dataUpdatedAt ? Math.floor(query.dataUpdatedAt / 1000) : undefined
+            }
+            refreshing={query.isFetching && !query.isPending}
+            onRefresh={() => {
+              void query.refetch()
+            }}
+            onClear={onClear}
+          />
+        )}
+
+        {!showForm && query.isError && errorMessage && (
+          <p className="mt-4 text-sm text-destructive" role="alert">
+            {errorMessage}
+          </p>
+        )}
+      </div>
     </div>
   )
 }
