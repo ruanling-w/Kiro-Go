@@ -1,7 +1,9 @@
 # Frontend: React + Vite SPA → web/dist (Vite build.outDir).
+# Install pnpm via npm — corepack's signature keys drift and break CI/Docker
+# builds with "Cannot find matching keyid".
 FROM node:22-alpine AS fe
 WORKDIR /app/web/frontend
-RUN corepack enable
+RUN npm install -g pnpm@9
 COPY web/frontend/package.json web/frontend/pnpm-lock.yaml ./
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
