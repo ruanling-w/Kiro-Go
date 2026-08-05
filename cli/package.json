@@ -1,7 +1,7 @@
 {
   "name": "proxy-kiro",
   "version": "1.1.5",
-  "description": "Kiro Proxy \u2014 multi-provider AI gateway with Claude, OpenAI and Responses compatible endpoints",
+  "description": "Kiro Proxy — multi-provider AI gateway with Claude, OpenAI and Responses compatible endpoints",
   "bin": {
     "kiroproxy": "cli.js"
   },
@@ -42,10 +42,21 @@
   "homepage": "https://github.com/vtruong2k3/Kiro-Go#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vtruong2k3/Kiro-Go.git"
+    "url": "git+https://github.com/vtruong2k3/Kiro-Go.git",
+    "directory": "cli"
   },
   "bugs": {
     "url": "https://github.com/vtruong2k3/Kiro-Go/issues"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": {
+    "name": "Vũ Trường",
+    "url": "https://github.com/vtruong2k3"
+  },
+  "contributors": [
+    {
+      "name": "Vũ Trường",
+      "url": "https://github.com/vtruong2k3"
+    }
+  ]
 }
