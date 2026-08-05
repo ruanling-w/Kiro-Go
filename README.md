@@ -1,6 +1,7 @@
 # Kiro-Go
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![npm](https://img.shields.io/npm/v/kiroproxy?logo=npm)](https://www.npmjs.com/package/kiroproxy)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -21,12 +22,22 @@ If this project helps you, a Star would mean a lot.
 
 ## Quick Start
 
-### Docker Compose (Recommended)
+### npm (one command)
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
+npm install -g kiroproxy
+kiroproxy
+```
+
+Opens `http://localhost:8080/admin`. State lives in `~/.kiroproxy/`.
+
+### Docker Compose
+
+```bash
+git clone https://github.com/vtruong2k3/Kiro-Go.git
 cd Kiro-Go
 mkdir -p data
+# set ADMIN_PASSWORD in .env
 docker-compose up -d
 ```
 
@@ -39,14 +50,16 @@ docker run -d \
   -e ADMIN_PASSWORD=your_secure_password \
   -v /path/to/data:/app/data \
   --restart unless-stopped \
-  ghcr.io/quorinex/kiro-go:latest
+  ghcr.io/vtruong2k3/kiro-go:latest
 ```
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
+git clone https://github.com/vtruong2k3/Kiro-Go.git
 cd Kiro-Go
+# frontend must be built first so //go:embed can pick it up
+pnpm --dir web/frontend install && pnpm --dir web/frontend build
 go build -o kiro-go .
 ./kiro-go
 ```
@@ -76,7 +89,7 @@ zeabur deploy
 
 Once the service is up, open `https://<your-domain>/admin` to log in.
 
-Config is auto-created at `data/config.json`. Mount `/app/data` for persistence. The default admin password is `changeme` — override it via the `ADMIN_PASSWORD` env var or change it in the admin panel before going to production.
+Config is auto-created at `data/config.json` (Docker) or `~/.kiroproxy/config.json` (npm). Mount `/app/data` for persistence. The default admin password is `changeme` — override it via the `ADMIN_PASSWORD` env var or change it in the admin panel before going to production.
 
 ## Usage
 

@@ -1,0 +1,7 @@
+Committed so //go:embed all:dist in web/embed.go always has a directory to
+embed — go:embed fails the build on a missing or empty directory, and web/dist
+is a gitignored build artifact.
+
+A real build (pnpm --dir web/frontend build) fills this directory. web.DistFS()
+reports "not built" when index.html is absent here and the server falls back to
+reading web/dist off disk.

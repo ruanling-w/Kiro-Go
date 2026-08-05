@@ -1,0 +1,9 @@
+# Ignore everything except what package.json "files" lists — the npm tarball
+# should contain only the launcher, never local test binaries or scratch state.
+*
+!cli.js
+!src/
+!hooks/
+!package.json
+!README.md
+!LICENSE
