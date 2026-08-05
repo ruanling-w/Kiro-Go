@@ -179,15 +179,25 @@ func TestCallRemoteKiroAPIStream(t *testing.T) {
 func TestCallRemoteKiroAPIClaudeSource(t *testing.T) {
 	withPrivateRemoteAllowed(t)
 	ensureConfigForRemoteTests(t)
+	var gotPath string
 	var gotBody map[string]interface{}
+	var gotAPIKey, gotAnthropicVersion string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotAnthropicVersion = r.Header.Get("anthropic-version")
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
+		// Anthropic non-stream shape — NOT OpenAI chat.completions.
 		_, _ = w.Write([]byte(`{
-			"id":"chatcmpl-1",
-			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
-			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+			"id":"msg_1",
+			"type":"message",
+			"role":"assistant",
+			"content":[{"type":"text","text":"ok"}],
+			"model":"claude-sonnet-4.5",
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":4,"output_tokens":1}
 		}`))
 	}))
 	defer srv.Close()
@@ -210,15 +220,145 @@ func TestCallRemoteKiroAPIClaudeSource(t *testing.T) {
 	}
 	payload.ConversationState.CurrentMessage.UserInputMessage.ModelID = "claude-sonnet-4.5"
 
+	var text strings.Builder
+	var inTok, outTok int
 	err := CallRemoteKiroAPI(context.Background(), acc, payload, &KiroStreamCallback{
-		OnText:     func(string, bool) {},
-		OnComplete: func(int, int) {},
+		OnText: func(s string, thinking bool) {
+			if thinking {
+				t.Fatalf("unexpected thinking: %q", s)
+			}
+			text.WriteString(s)
+		},
+		OnComplete: func(in, out int) { inTok, outTok = in, out },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("path=%q want /v1/messages (Claude must not be converted to OpenAI)", gotPath)
+	}
+	if gotAPIKey != "sk-x" {
+		t.Fatalf("x-api-key=%q", gotAPIKey)
+	}
+	if gotAnthropicVersion == "" {
+		t.Fatal("missing anthropic-version header")
+	}
 	if gotBody["model"] != "claude-sonnet-4.5" {
 		t.Fatalf("model=%v", gotBody["model"])
+	}
+	if _, isOpenAI := gotBody["messages"]; !isOpenAI {
+		// Claude body uses "messages" too — ensure max_tokens (Anthropic snake) present
+		// and OpenAI-only fields like "stream" bool still ok. Main guard is path above.
+	}
+	if gotBody["max_tokens"] == nil {
+		t.Fatalf("expected Anthropic max_tokens in body, got %v", gotBody)
+	}
+	if text.String() != "ok" {
+		t.Fatalf("text=%q", text.String())
+	}
+	if inTok != 4 || outTok != 1 {
+		t.Fatalf("tokens in=%d out=%d", inTok, outTok)
+	}
+}
+
+func TestCallRemoteKiroAPIClaudeStream(t *testing.T) {
+	withPrivateRemoteAllowed(t)
+	ensureConfigForRemoteTests(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":9,\"output_tokens\":0}}}\n\n")
+		fl.Flush()
+		_, _ = io.WriteString(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		fl.Flush()
+		_, _ = io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi \"}}\n\n")
+		fl.Flush()
+		_, _ = io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"remote\"}}\n\n")
+		fl.Flush()
+		_, _ = io.WriteString(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		fl.Flush()
+		_, _ = io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n")
+		fl.Flush()
+		_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		fl.Flush()
+	}))
+	defer srv.Close()
+
+	acc := &config.Account{
+		RemoteBaseURL: srv.URL,
+		AccessToken:   "sk-x",
+		AuthMethod:    "remotekiro",
+		Provider:      "remotekiro",
+	}
+	payload := &KiroPayload{
+		SourceClaude: &ClaudeRequest{
+			Model:     "claude-opus-5",
+			MaxTokens: 32,
+			Messages:  []ClaudeMessage{{Role: "user", Content: "x"}},
+			Stream:    true,
+		},
+	}
+	payload.ConversationState.CurrentMessage.UserInputMessage.ModelID = "claude-opus-5"
+
+	var text strings.Builder
+	var inTok, outTok int
+	err := CallRemoteKiroAPI(context.Background(), acc, payload, &KiroStreamCallback{
+		OnText:     func(s string, _ bool) { text.WriteString(s) },
+		OnComplete: func(in, out int) { inTok, outTok = in, out },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text.String() != "hi remote" {
+		t.Fatalf("text=%q", text.String())
+	}
+	if inTok != 9 || outTok != 2 {
+		t.Fatalf("tokens in=%d out=%d", inTok, outTok)
+	}
+}
+
+func TestCallRemoteKiroAPIClaudeEmptyIsError(t *testing.T) {
+	withPrivateRemoteAllowed(t)
+	ensureConfigForRemoteTests(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 200 OK but no content — previously logged as success and client retried.
+		_, _ = w.Write([]byte(`{
+			"id":"msg_empty",
+			"type":"message",
+			"role":"assistant",
+			"content":[],
+			"model":"claude-opus-5",
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":40,"output_tokens":0}
+		}`))
+	}))
+	defer srv.Close()
+
+	acc := &config.Account{
+		RemoteBaseURL: srv.URL,
+		AccessToken:   "sk-x",
+		AuthMethod:    "remotekiro",
+		Provider:      "remotekiro",
+	}
+	payload := &KiroPayload{
+		SourceClaude: &ClaudeRequest{
+			Model:     "claude-opus-5",
+			MaxTokens: 16,
+			Messages:  []ClaudeMessage{{Role: "user", Content: "x"}},
+		},
+	}
+	payload.ConversationState.CurrentMessage.UserInputMessage.ModelID = "claude-opus-5"
+
+	err := CallRemoteKiroAPI(context.Background(), acc, payload, &KiroStreamCallback{
+		OnText:     func(string, bool) {},
+		OnComplete: func(int, int) { t.Fatal("OnComplete must not fire on empty") },
+	})
+	if err == nil || !strings.Contains(err.Error(), "empty claude") {
+		t.Fatalf("err=%v", err)
 	}
 }
 
