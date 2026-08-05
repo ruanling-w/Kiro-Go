@@ -244,19 +244,6 @@ type Config struct {
 	// Defaults to true. Set to false to only use the preferred endpoint.
 	EndpointFallback *bool `json:"endpointFallback,omitempty"`
 
-	// ModelFallback maps a requested model id (e.g. "claude-opus-4.8") to an ordered
-	// list of alternate model ids to try when every native account for the requested
-	// model has failed. Each alternate is resolved through the normal pool model list
-	// (so "grok-4.5" only selects Grok accounts). The original model name is still
-	// returned to the client and written into public usage logs; only the upstream
-	// payload ModelID is rewritten for the alternate provider.
-	//
-	// Example:
-	//   "modelFallback": {
-	//     "claude-opus-4.8": [{"model":"grok-4.5"},{"model":"gemini-2.5-pro"}]
-	//   }
-	ModelFallback map[string][]ModelFallbackTarget `json:"modelFallback,omitempty"`
-
 	// ComboModelAdvertisement exposes validated, routable Combo names from /v1/models
 	// and /models. It defaults to false so upgrades do not change model discovery
 	// until operators deliberately enable the rollout gate.
@@ -323,14 +310,6 @@ type TelegramConfig struct {
 	Enabled  bool   `json:"enabled"`
 	BotToken string `json:"botToken,omitempty"`
 	ChatID   string `json:"chatId,omitempty"`
-}
-
-// ModelFallbackTarget is one alternate model to try after the native pool for the
-// requested model is exhausted (all accounts failed or none available).
-type ModelFallbackTarget struct {
-	// Model is the alternate model id used for pool routing and upstream dispatch
-	// (e.g. "grok-4.5"). The client-facing model name stays the original request.
-	Model string `json:"model"`
 }
 
 // AGQuotaBucket is one per-model quota entry from the Antigravity Cloud Code
@@ -1036,86 +1015,6 @@ func UpdatePreferredEndpoint(endpoint string) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.PreferredEndpoint = endpoint
-	return Save()
-}
-
-// defaultModelFallbackChain is the built-in fallback chain applied to ANY client
-// model when the operator has not configured an explicit chain for it. When the
-// native pool for the requested model is exhausted, requests spill over to
-// Antigravity: Claude 4.6 first, then Gemini 3.1 Pro. The client-facing model
-// name is preserved; only the upstream payload ModelID is rewritten (see
-// proxy/model_fallback.go). Targets equal to the requested model are skipped by
-// the caller, so requesting one of these ids natively is safe.
-var defaultModelFallbackChain = []ModelFallbackTarget{
-	{Model: "claude-sonnet-4-6"},
-	{Model: "gemini-pro-agent"},
-}
-
-// GetModelFallback returns the ordered fallback targets for a requested model.
-// Matching is case-insensitive on the model id. An operator-configured chain for
-// the model takes precedence; otherwise the built-in defaultModelFallbackChain is
-// returned so cross-provider spillover works out of the box.
-func GetModelFallback(model string) []ModelFallbackTarget {
-	cfgLock.RLock()
-	defer cfgLock.RUnlock()
-	key := strings.ToLower(strings.TrimSpace(model))
-	if key == "" {
-		return nil
-	}
-	// Operator-configured chain takes precedence (exact, case-insensitive match).
-	if cfg != nil {
-		for k, v := range cfg.ModelFallback {
-			if strings.ToLower(strings.TrimSpace(k)) == key {
-				out := make([]ModelFallbackTarget, 0, len(v))
-				for _, t := range v {
-					m := strings.TrimSpace(t.Model)
-					if m == "" {
-						continue
-					}
-					out = append(out, ModelFallbackTarget{Model: m})
-				}
-				return out
-			}
-		}
-	}
-	// No explicit chain: fall back to the built-in default.
-	out := make([]ModelFallbackTarget, len(defaultModelFallbackChain))
-	copy(out, defaultModelFallbackChain)
-	return out
-}
-
-// UpdateModelFallback replaces the entire model-fallback map and persists.
-// Pass nil or empty to clear.
-func UpdateModelFallback(m map[string][]ModelFallbackTarget) error {
-	cfgLock.Lock()
-	defer cfgLock.Unlock()
-	if len(m) == 0 {
-		cfg.ModelFallback = nil
-	} else {
-		cleaned := make(map[string][]ModelFallbackTarget, len(m))
-		for k, v := range m {
-			key := strings.TrimSpace(k)
-			if key == "" {
-				continue
-			}
-			list := make([]ModelFallbackTarget, 0, len(v))
-			for _, t := range v {
-				m := strings.TrimSpace(t.Model)
-				if m == "" {
-					continue
-				}
-				list = append(list, ModelFallbackTarget{Model: m})
-			}
-			if len(list) > 0 {
-				cleaned[key] = list
-			}
-		}
-		if len(cleaned) == 0 {
-			cfg.ModelFallback = nil
-		} else {
-			cfg.ModelFallback = cleaned
-		}
-	}
 	return Save()
 }
 

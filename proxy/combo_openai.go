@@ -146,8 +146,7 @@ func (s *comboStreamSink) Flush() { s.gate.Flush() }
 // handleOpenAIComboStream serves a streaming /v1/chat/completions request through
 // a Combo. Candidate order is already resolved (round-robin reservation happened
 // once in resolveComboRoute), and each candidate exhausts its own accounts with
-// GetNextForModelExcluding — Combo never invokes the built-in ModelFallback, so
-// two independent fallback loops cannot fight each other.
+// GetNextForModelExcluding. Cross-model routing is only via Combo candidates.
 //
 // The first published frame pins the attempt: before it, failures switch account
 // and then candidate with nothing visible to the client; after it, the stream is

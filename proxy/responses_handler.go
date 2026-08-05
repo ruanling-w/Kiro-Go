@@ -173,12 +173,11 @@ func (h *Handler) handleResponsesNonStream(
 	var lastErr error
 	reqStart := time.Now()
 
-	nativeDone := false
-	nativeAttempts := 0
-	fallbackIdx := 0
-	fallbackAttempts := 0
-	for attempt := 0; attempt < maxAttemptsForModel(model); attempt++ {
-		account, _ := nextAccountForAttempt(h.pool, model, payload, excluded, &nativeDone, &nativeAttempts, &fallbackIdx, &fallbackAttempts)
+	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		var account *config.Account
+		if h.pool != nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -374,22 +373,10 @@ func (h *Handler) handleResponsesStreamModels(
 	responseStarted := false
 	reqStart := time.Now()
 
-	nativeDone := false
-	nativeAttempts := 0
-	fallbackIdx := 0
-	fallbackAttempts := 0
-	attemptLimit := maxAttemptsForModel(effectiveModel)
-	if comboAttempt {
-		attemptLimit = maxAccountRetryAttempts
-	}
-	for attempt := 0; attempt < attemptLimit; attempt++ {
+	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		var account *config.Account
-		if comboAttempt {
-			if h.pool != nil {
-				account = h.pool.GetNextForModelExcluding(effectiveModel, excluded)
-			}
-		} else {
-			account, _ = nextAccountForAttempt(h.pool, effectiveModel, payload, excluded, &nativeDone, &nativeAttempts, &fallbackIdx, &fallbackAttempts)
+		if h.pool != nil {
+			account = h.pool.GetNextForModelExcluding(effectiveModel, excluded)
 		}
 		if account == nil {
 			break

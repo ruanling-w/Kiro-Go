@@ -1365,9 +1365,11 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 	excluded := map[string]bool{}
 	var lastErr error
 	started := time.Now()
-	nativeDone, nativeAttempts, fallbackIdx, fallbackAttempts := false, 0, 0, 0
-	for attempt := 0; attempt < maxAttemptsForModel(model); attempt++ {
-		account, _ := nextAccountForAttempt(h.pool, model, payload, excluded, &nativeDone, &nativeAttempts, &fallbackIdx, &fallbackAttempts)
+	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		var account *config.Account
+		if h.pool != nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -2199,13 +2201,11 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
-	nativeDone := false
-	nativeAttempts := 0
-	fallbackIdx := 0
-	fallbackAttempts := 0
-
-	for attempt := 0; attempt < maxAttemptsForModel(model); attempt++ {
-		account, _ := nextAccountForAttempt(h.pool, model, payload, excluded, &nativeDone, &nativeAttempts, &fallbackIdx, &fallbackAttempts)
+	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		var account *config.Account
+		if h.pool != nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -2592,13 +2592,11 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
-	nativeDone := false
-	nativeAttempts := 0
-	fallbackIdx := 0
-	fallbackAttempts := 0
-
-	for attempt := 0; attempt < maxAttemptsForModel(model); attempt++ {
-		account, _ := nextAccountForAttempt(h.pool, model, payload, excluded, &nativeDone, &nativeAttempts, &fallbackIdx, &fallbackAttempts)
+	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		var account *config.Account
+		if h.pool != nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}
@@ -3044,13 +3042,11 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
-	nativeDone := false
-	nativeAttempts := 0
-	fallbackIdx := 0
-	fallbackAttempts := 0
-
-	for attempt := 0; attempt < maxAttemptsForModel(model); attempt++ {
-		account, _ := nextAccountForAttempt(h.pool, model, payload, excluded, &nativeDone, &nativeAttempts, &fallbackIdx, &fallbackAttempts)
+	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		var account *config.Account
+		if h.pool != nil {
+			account = h.pool.GetNextForModelExcluding(model, excluded)
+		}
 		if account == nil {
 			break
 		}

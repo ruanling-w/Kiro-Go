@@ -110,7 +110,7 @@ Tạo một core dùng chung, không ba engine riêng:
 7. classifier quyết định next account, next candidate, bounded wait hoặc terminal;
 8. chỉ commit public headers/body khi candidate đã có response hợp lệ; ghi attempt usage/log chính xác.
 
-Account fallback được exhaust trong cùng candidate trước khi chuyển Combo candidate, trừ policy hiện có đánh dấu account-independent/non-retryable. Không cho current `ModelFallback` tự đổi sang model ngoài Combo mà không được core biết; expose nó thành typed candidate/account plan hoặc disable model-level fallback bên trong Combo để tránh hai vòng fallback mâu thuẫn.
+Account fallback được exhaust trong cùng candidate trước khi chuyển Combo candidate, trừ policy hiện có đánh dấu account-independent/non-retryable. Direct-model path không còn cross-model fallback (removed; use Combos); multi-model chỉ qua Combos. Trong Combo, mỗi candidate chỉ exhaust account của model đó (GetNextForModelExcluding), không nhảy model ngoài candidate set.
 
 Retryable mặc định: transport trước first byte, 408, 429, 500, 502, 503, 504, quota/capacity typed. Terminal: malformed/unsupported request, deterministic auth/config error, policy refusal, context overflow không thể sửa bằng candidate capability, client cancellation. 401/403 chỉ next-account khi classifier xác nhận credential/account-specific; không tự động next-model.
 

@@ -79,7 +79,7 @@ func CallRemoteKiroAPI(ctx context.Context, account *config.Account, payload *Ki
 	switch {
 	case payload.SourceClaude != nil:
 		// Pass the original Claude request through. Override model/stream from the
-		// resolved payload so ModelFallback rewrites (if any) still apply.
+		// resolved payload model id (e.g. thinking-suffix stripped).
 		// Force stream onto a map so stream:false is not dropped by omitempty —
 		// peers that default stream differently would otherwise hang the client.
 		reqCopy := *payload.SourceClaude
