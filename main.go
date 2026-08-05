@@ -14,11 +14,13 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"kiro-go/config"
 	"kiro-go/logger"
 	"kiro-go/pool"
 	"kiro-go/proxy"
+	"kiro-go/web"
 	"log"
 	"net/http"
 	"os"
@@ -27,11 +29,30 @@ import (
 )
 
 func main() {
-	// 配置文件路径，支持环境变量覆盖
-	configPath := "data/config.json"
-	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" {
-		configPath = envPath
+	// Flags exist mainly for the `kiroproxy` npm launcher, which needs to point
+	// the server at a per-user config and to move it off a busy port without
+	// editing config.json. Env vars keep working for Docker.
+	var (
+		flagConfig  = flag.String("config", "", "path to config.json (default: $CONFIG_PATH, ./data/config.json, or ~/.kiroproxy/config.json)")
+		flagHost    = flag.String("host", "", "bind host, overrides config for this run")
+		flagPort    = flag.Int("port", 0, "bind port, overrides config for this run")
+		flagVersion = flag.Bool("version", false, "print version and exit")
+	)
+	flag.Parse()
+
+	if *flagVersion {
+		fmt.Println(config.Version)
+		return
 	}
+
+	// Serve the admin SPA from the binary when it was built with the frontend
+	// bundled, so /admin works from any working directory. Falls through to
+	// reading web/dist off disk in a repo checkout.
+	if dist, ok := web.DistFS(); ok {
+		proxy.SetAssetFS(dist)
+	}
+
+	configPath := config.ResolveConfigPath(*flagConfig)
 
 	// 确保数据目录存在
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -42,6 +63,7 @@ func main() {
 	if err := config.Init(configPath); err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	config.SetRuntimeBind(*flagHost, *flagPort)
 
 	// Initialize log level: LOG_LEVEL env var takes priority over config, defaulting to "info".
 	logger.Init(config.GetLogLevel())
@@ -63,8 +85,9 @@ func main() {
 	}()
 
 	// 启动服务器
-	addr := fmt.Sprintf("%s:%d", config.GetHost(), config.GetPort())
-	logger.Infof("Kiro-Go starting on http://%s (log level: %s)", addr, logger.LevelName(logger.GetLevel()))
+	addr := fmt.Sprintf("%s:%d", config.GetBindHost(), config.GetBindPort())
+	logger.Infof("Kiro-Go v%s starting on http://%s (log level: %s)", config.Version, addr, logger.LevelName(logger.GetLevel()))
+	logger.Infof("Config: %s", configPath)
 	logger.Infof("Admin panel: http://%s/admin", addr)
 	logger.Infof("Claude API: http://%s/v1/messages", addr)
 	logger.Infof("OpenAI API: http://%s/v1/chat/completions", addr)
@@ -82,5 +105,6 @@ func main() {
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Errorf("Server failed: %v", err)
+		os.Exit(1)
 	}
 }

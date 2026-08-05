@@ -739,7 +739,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/check" || path == "/check/":
 		http.Redirect(w, r, "/check/key", http.StatusFound)
 	case path == "/check/key" || path == "/check/key/":
-		h.serveStatic(w, r, "web/dist/check.html")
+		h.serveStatic(w, r, "check.html")
 	case path == "/check/api/lookup" && r.Method == "POST":
 		h.handleCheckKeyLookup(w, r)
 

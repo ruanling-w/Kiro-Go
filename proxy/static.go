@@ -5,6 +5,11 @@ package proxy
 // compressed on the wire and the browser can cache immutable-ish files.
 //
 // Design notes:
+//   - Assets come from an fs.FS, not the filesystem directly. In a release build
+//     that FS is the SPA embedded into the binary (see web/embed.go), so /admin
+//     works no matter which directory the process was started from — required
+//     for the global `kiroproxy` install. Tests and `go run` from the repo fall
+//     back to reading web/dist off disk.
 //   - Compression is done by gzipping the file into an in-memory buffer and
 //     handing that to http.ServeContent via a bytes.Reader. This keeps the
 //     Content-Length correct (the gzipped size) and preserves ServeContent's
@@ -18,26 +23,32 @@ package proxy
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
 	"strings"
+	"sync"
+
+	"kiro-go/config"
 )
 
 // staticContentTypes maps file extensions to their Content-Type. Extensions not
 // listed fall back to Go's sniffing inside http.ServeContent.
 var staticContentTypes = map[string]string{
-	".html": "text/html; charset=utf-8",
-	".css":  "text/css; charset=utf-8",
-	".js":   "text/javascript; charset=utf-8",
-	".mjs":  "text/javascript; charset=utf-8",
-	".json": "application/json; charset=utf-8",
-	".svg":  "image/svg+xml",
-	".ico":  "image/x-icon",
-	".png":  "image/png",
+	".html":  "text/html; charset=utf-8",
+	".css":   "text/css; charset=utf-8",
+	".js":    "text/javascript; charset=utf-8",
+	".mjs":   "text/javascript; charset=utf-8",
+	".json":  "application/json; charset=utf-8",
+	".svg":   "image/svg+xml",
+	".ico":   "image/x-icon",
+	".png":   "image/png",
 	".woff2": "font/woff2",
-	".woff": "font/woff",
+	".woff":  "font/woff",
 }
 
 // staticCompressible is the set of extensions worth gzipping. Binary assets
@@ -65,39 +76,89 @@ func staticCacheControl(ext string) string {
 	}
 }
 
-// adminDistRoot is the built React SPA output (Vite build.outDir). All admin
-// assets and the SPA entry point live here.
-const adminDistRoot = "web/dist"
+// diskDistRoot is where the Vite build lands in a repo checkout. Used only as
+// the fallback FS when no embedded assets were installed via SetAssetFS.
+const diskDistRoot = "web/dist"
+
+// assetFS is the tree /admin is served from, guarded because main installs the
+// embedded build at startup while tests may swap it while a server is live.
+//
+// embeddedAssets records whether the active FS is the embedded build: it has
+// zero mtimes, so ServeContent cannot do If-Modified-Since and we substitute a
+// content-derived ETag in that case only.
+var (
+	assetMu        sync.RWMutex
+	assetFS        fs.FS = os.DirFS(diskDistRoot)
+	embeddedAssets bool
+)
+
+// SetAssetFS installs the admin asset tree, rooted so that "index.html" resolves
+// to the SPA entry point. main() calls this with the embedded build; passing nil
+// or never calling it leaves the on-disk web/dist fallback in place.
+func SetAssetFS(f fs.FS) {
+	if f == nil {
+		return
+	}
+	assetMu.Lock()
+	defer assetMu.Unlock()
+	assetFS = f
+	embeddedAssets = true
+}
+
+func currentAssetFS() (fs.FS, bool) {
+	assetMu.RLock()
+	defer assetMu.RUnlock()
+	return assetFS, embeddedAssets
+}
 
 func (h *Handler) serveAdminPage(w http.ResponseWriter, r *http.Request) {
-	h.serveStatic(w, r, adminDistRoot+"/index.html")
+	h.serveStatic(w, r, "index.html")
+}
+
+// cleanAssetName turns a request-relative path into a name safe to open in an
+// fs.FS, or "" when it cannot be one. Rooting the path first means path.Clean
+// collapses every ".." against "/" rather than escaping upward, and the leading
+// "/" is then stripped because fs.FS rejects rooted names.
+func cleanAssetName(rel string) string {
+	clean := strings.TrimPrefix(path.Clean("/"+rel), "/")
+	if clean == "" || !fs.ValidPath(clean) {
+		return ""
+	}
+	return clean
 }
 
 func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request) {
-	rel := strings.TrimPrefix(r.URL.Path, "/admin/")
-	// Guard against path traversal: clean the relative path and reject anything
-	// that escapes the dist root. path.Clean collapses ".." segments; a leading
-	// ".." after cleaning means the request tried to escape.
-	clean := path.Clean("/" + rel) // always rooted, strips ../
-	fp := adminDistRoot + clean     // clean starts with "/"
+	clean := cleanAssetName(strings.TrimPrefix(r.URL.Path, "/admin/"))
+	if clean == "" {
+		http.NotFound(w, r)
+		return
+	}
 
 	// SPA fallback: a path with no file extension is a client-side React Router
 	// route (e.g. /admin/accounts), not a real asset — serve index.html so the
 	// SPA can boot and route. Real missing assets (with an extension) still 404
 	// via serveStatic.
 	if path.Ext(clean) == "" {
-		if _, err := os.Stat(fp); err != nil {
-			h.serveStatic(w, r, adminDistRoot+"/index.html")
+		fsys, _ := currentAssetFS()
+		if _, err := fs.Stat(fsys, clean); err != nil {
+			h.serveStatic(w, r, "index.html")
 			return
 		}
 	}
-	h.serveStatic(w, r, fp)
+	h.serveStatic(w, r, clean)
 }
 
-// serveStatic writes the file at fp with the right Content-Type, Cache-Control,
-// and gzip when the client accepts it and the type is compressible.
-func (h *Handler) serveStatic(w http.ResponseWriter, r *http.Request, fp string) {
-	f, err := os.Open(fp)
+// serveStatic writes the asset at name (a slash-separated path relative to the
+// dist root) with the right Content-Type, Cache-Control, and gzip when the
+// client accepts it and the type is compressible.
+func (h *Handler) serveStatic(w http.ResponseWriter, r *http.Request, name string) {
+	fsys, embedded := currentAssetFS()
+	if fsys == nil || !fs.ValidPath(name) {
+		http.NotFound(w, r)
+		return
+	}
+
+	f, err := fsys.Open(name)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -110,11 +171,18 @@ func (h *Handler) serveStatic(w http.ResponseWriter, r *http.Request, fp string)
 		return
 	}
 
-	ext := strings.ToLower(path.Ext(fp))
+	ext := strings.ToLower(path.Ext(name))
 	if ct := staticContentTypes[ext]; ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.Header().Set("Cache-Control", staticCacheControl(ext))
+	// Embedded files carry no mtime, so ServeContent would skip Last-Modified and
+	// every reload would be a full 200. A version+path ETag restores 304s: the
+	// asset names are content-hashed by Vite, and index.html changes with the
+	// binary version.
+	if embedded {
+		w.Header().Set("ETag", staticETag(name))
+	}
 
 	if staticCompressible[ext] && clientAcceptsGzip(r) {
 		var buf bytes.Buffer
@@ -130,11 +198,31 @@ func (h *Handler) serveStatic(w http.ResponseWriter, r *http.Request, fp string)
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Set("Vary", "Accept-Encoding")
 		// ServeContent sets Content-Length from the reader and handles 304 via modtime.
-		http.ServeContent(w, r, fp, stat.ModTime(), bytes.NewReader(buf.Bytes()))
+		http.ServeContent(w, r, name, stat.ModTime(), bytes.NewReader(buf.Bytes()))
 		return
 	}
 
-	http.ServeContent(w, r, fp, stat.ModTime(), f)
+	rs, ok := f.(io.ReadSeeker)
+	if !ok {
+		// fs.File is not required to be seekable; ServeContent needs that for
+		// range requests, so buffer the (small) asset instead.
+		body, err := io.ReadAll(f)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		http.ServeContent(w, r, name, stat.ModTime(), bytes.NewReader(body))
+		return
+	}
+	http.ServeContent(w, r, name, stat.ModTime(), rs)
+}
+
+// staticETag derives a stable validator from the binary version and the asset
+// path. Vite content-hashes asset filenames, so path+version changing is exactly
+// when the bytes change.
+func staticETag(name string) string {
+	sum := sha256.Sum256([]byte(config.Version + "\x00" + name))
+	return `"` + hex.EncodeToString(sum[:12]) + `"`
 }
 
 // clientAcceptsGzip reports whether the request's Accept-Encoding allows gzip.

@@ -16,7 +16,10 @@
 # Frontend deps + build output
 /web/frontend/node_modules/
 /web/frontend/dist/
-/web/dist/
+# Contents ignored, but the directory itself must exist in git: //go:embed
+# all:dist (web/embed.go) fails the build on a missing dist/.
+/web/dist/*
+!/web/dist/.gitkeep
 # Vite dep pre-bundle cache (lands at repo root when vite runs from here)
 /.vite/
 
