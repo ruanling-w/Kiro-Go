@@ -5,8 +5,7 @@ import { useTranslation } from 'react-i18next'
 import type { LiveLog } from '@/hooks/queries/useLogStream'
 import { Card } from '@/components/ui/card'
 import { EmptyState } from '@/components/shared/EmptyState'
-import { ProviderIcon } from '@/components/shared/ProviderIcon'
-import { bucketOf, providerMeta } from '@/config/providers'
+import { BrandChip, brandFor } from '@/components/shared/ModelBrand'
 import {
   formatDuration,
   formatNumber,
@@ -38,134 +37,6 @@ function resolveLabel(
   if (name) return { label: name, title: id }
   if (id.length > 14) return { label: `${id.slice(0, 8)}…${id.slice(-4)}`, title: id }
   return { label: id, title: id }
-}
-
-/**
- * One palette per upstream provider bucket. Model + Provider chips ALWAYS share
- * this style so a Grok row is Grok-colored end-to-end (not Claude-orange just
- * because the client hit the /claude endpoint).
- */
-const PROVIDER_STYLE: Record<
-  string,
-  { logo?: string; chip: string; text: string }
-> = {
-  kiro: {
-    logo: '/admin/kiro.svg',
-    chip: 'border-violet-500/25 bg-violet-500/10',
-    text: 'text-violet-700 dark:text-violet-300',
-  },
-  antigravity: {
-    logo: '/admin/antigravity-color.svg',
-    chip: 'border-sky-500/25 bg-sky-500/10',
-    text: 'text-sky-700 dark:text-sky-300',
-  },
-  grok: {
-    logo: '/admin/grok.webp',
-    chip: 'border-zinc-500/30 bg-zinc-500/10 dark:border-zinc-400/25 dark:bg-zinc-400/10',
-    text: 'text-zinc-700 dark:text-zinc-200',
-  },
-  codex: {
-    logo: '/admin/codex-color.svg',
-    chip: 'border-emerald-500/25 bg-emerald-500/10',
-    text: 'text-emerald-700 dark:text-emerald-300',
-  },
-  remotekiro: {
-    logo: '/admin/kiro.svg',
-    chip: 'border-teal-500/25 bg-teal-500/10',
-    text: 'text-teal-700 dark:text-teal-300',
-  },
-}
-
-/** Guess bucket only when provider field is empty (legacy rows). */
-function guessBucket(model?: string, provider?: string): string | null {
-  const s = `${provider || ''} ${model || ''}`.toLowerCase()
-  if (!s.trim()) return null
-  if (s.includes('grok') || s.includes('xai')) return 'grok'
-  if (s.includes('gemini') || s.includes('antigravity')) return 'antigravity'
-  if (
-    s.includes('gpt') ||
-    s.includes('codex') ||
-    /\bo[1-4]\b/.test(s) ||
-    s.includes('openai')
-  ) {
-    return 'codex'
-  }
-  if (s.includes('kiro') || s.includes('codewhisperer') || s.includes('amazonq')) {
-    return 'kiro'
-  }
-  // Claude/sonnet models often ride on Kiro upstream when provider missing.
-  if (s.includes('claude') || s.includes('sonnet') || s.includes('opus') || s.includes('haiku')) {
-    return 'kiro'
-  }
-  return null
-}
-
-type Brand = {
-  key: string
-  label: string
-  logo?: string
-  chip: string
-  text: string
-}
-
-function brandForLog(
-  provider: string | undefined,
-  model: string | undefined,
-  t: (k: string) => string,
-): Brand | null {
-  let key: string | null = null
-  if (provider?.trim()) {
-    key = bucketOf(provider)
-  } else {
-    key = guessBucket(model, provider)
-  }
-  if (!key) return null
-  const style = PROVIDER_STYLE[key]
-  if (!style) return null
-  const meta = providerMeta(key)
-  return {
-    key,
-    label: meta ? t(meta.labelKey) : key,
-    logo: meta?.logo ?? style.logo,
-    chip: style.chip,
-    text: style.text,
-  }
-}
-
-function BrandChip({
-  brand,
-  text,
-  title,
-}: {
-  brand: Brand
-  text: string
-  title?: string
-}) {
-  return (
-    <span
-      title={title || text}
-      className={cn(
-        'inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold',
-        brand.chip,
-        brand.text,
-      )}
-    >
-      {brand.logo ? (
-        <img
-          src={brand.logo}
-          alt=""
-          aria-hidden
-          className="size-3.5 shrink-0 object-contain"
-          onError={(e) => {
-            e.currentTarget.style.display = 'none'
-          }}
-        />
-      ) : (
-        <ProviderIcon provider={brand.key} className="size-3.5 shrink-0" />
-      )}
-      <span className="truncate">{text}</span>
-    </span>
-  )
 }
 
 /** Endpoint = client protocol surface, not upstream brand. */
@@ -262,7 +133,7 @@ export function LogsTable({ logs, keyNames, accountNames, totalCount }: LogsTabl
                   ? [log.errorType, log.error].filter(Boolean).join(' — ')
                   : ''
                 // Same brand for Model + Provider columns.
-                const brand = brandForLog(log.provider, log.model, t)
+                const brand = brandFor(log.provider, log.model, t)
 
                 return (
                   <tr

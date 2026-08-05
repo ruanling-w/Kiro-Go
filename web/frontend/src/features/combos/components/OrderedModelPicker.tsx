@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, GripVertical, ListPlus, Plus, X } from 'lucide-reac
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { ModelIcon } from '@/components/shared/ModelBrand'
 import { ModelPickerDialog } from './ModelPickerDialog'
 
 interface Props { models: string[]; onChange: (models: string[]) => void; error?: string }
@@ -42,6 +43,7 @@ export function OrderedModelPicker({ models, onChange, error }: Props) {
           <div key={index} role="listitem" className="flex items-center gap-2" onKeyDown={(e) => handleKeyDown(e, index)}>
             <span className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted font-mono text-xs" aria-hidden="true">{index + 1}</span>
             <GripVertical className="hidden size-4 text-muted-foreground sm:block" aria-hidden="true" />
+            <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden="true"><ModelIcon model={model} /></span>
             <Input value={model} onChange={(e) => onChange(models.map((m, i) => i === index ? e.target.value : m))} placeholder={t('combos.modelPlaceholder')} aria-label={t('combos.modelAt', { position: index + 1 })} />
             <Button type="button" size="icon" variant="ghost" onClick={() => move(index, -1)} disabled={index === 0} aria-label={t('combos.moveUp')}><ArrowUp className="size-4" /></Button>
             <Button type="button" size="icon" variant="ghost" onClick={() => move(index, 1)} disabled={index === models.length - 1} aria-label={t('combos.moveDown')}><ArrowDown className="size-4" /></Button>

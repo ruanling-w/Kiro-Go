@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input'
 import { HamsterLoader } from '@/components/shared/HamsterLoader'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { ProviderIcon } from '@/components/shared/ProviderIcon'
+import { brandFor } from '@/components/shared/ModelBrand'
 import { cn } from '@/lib/utils'
 import { useComboModelOptions } from '@/hooks/queries/useComboModelOptions'
 
@@ -100,6 +101,9 @@ export function ModelPickerDialog({ open, onOpenChange, selected, onToggle, max,
                     {group.models.map((m) => {
                       const active = selectedSet.has(m.id.toLowerCase())
                       const disabled = !active && !single && atCap
+                      // Unselected chips wear their provider palette (same one the
+                      // log table uses); selection overrides it with the primary tint.
+                      const brand = brandFor(group.key, m.id, t)
                       return (
                         <button
                           key={m.id}
@@ -112,11 +116,17 @@ export function ModelPickerDialog({ open, onOpenChange, selected, onToggle, max,
                             'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors',
                             active
                               ? 'border-primary bg-primary/10 text-primary'
-                              : 'border-border hover:bg-muted',
+                              : brand
+                                ? cn(brand.chip, brand.text, 'hover:brightness-110')
+                                : 'border-border hover:bg-muted',
                             disabled && 'cursor-not-allowed opacity-50',
                           )}
                         >
-                          {active && <Check className="size-3.5" />}
+                          {active ? (
+                            <Check className="size-3.5 shrink-0" />
+                          ) : (
+                            <ProviderIcon provider={group.key} className="size-3.5 shrink-0" />
+                          )}
                           <span className="max-w-[16rem] truncate">{m.name || m.id}</span>
                         </button>
                       )
