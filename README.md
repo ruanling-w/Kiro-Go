@@ -1,7 +1,7 @@
 # Kiro-Go
 
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![npm](https://img.shields.io/npm/v/@vtruong2k3/kiroproxy?logo=npm)](https://www.npmjs.com/package/@vtruong2k3%2Fkiroproxy)
+[![npm](https://img.shields.io/npm/v/proxy-kiro?logo=npm)](https://www.npmjs.com/package/proxy-kiro)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -25,7 +25,7 @@ If this project helps you, a Star would mean a lot.
 ### npm (one command)
 
 ```bash
-npm install -g @vtruong2k3/kiroproxy
+npm install -g proxy-kiro
 kiroproxy
 ```
 
