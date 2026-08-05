@@ -1,130 +1,153 @@
-# Kiro-Go
+# Kiro Proxy (Kiro-Go)
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)](https://www.docker.com/)
+[![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![npm](https://img.shields.io/npm/v/proxy-kiro?logo=npm)](https://www.npmjs.com/package/proxy-kiro)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-将 Kiro 账号转换为 OpenAI / Anthropic 兼容的 API 服务。
+将多个 AI 上游（Kiro / Claude、Grok、Codex、Antigravity、Remote Kiro）统一成 **Anthropic + OpenAI** 兼容网关，自带 Web 管理后台、API Key、多模型 Combo、实时日志。
 
-[English](README.md) | 中文
+| | |
+|---|---|
+| **作者** | **Vũ Trường（武长）** |
+| **GitHub** | [@vtruong2k3](https://github.com/vtruong2k3) · [Kiro-Go](https://github.com/vtruong2k3/Kiro-Go) |
+| **npm** | [`proxy-kiro`](https://www.npmjs.com/package/proxy-kiro) → CLI 命令 `kiroproxy` |
+| **版本** | `1.1.5` |
 
-如果这个项目帮到了你，欢迎点个 Star 支持一下。
+[English README](README.md) | 中文
+
+---
 
 ## 功能特性
 
-- Anthropic `/v1/messages` 与 OpenAI `/v1/chat/completions`
-- 多账号池轮询负载均衡
-- 自动 Token 刷新、SSE 流式输出、Web 管理面板
-- 多种认证方式：AWS Builder ID、IAM Identity Center (企业 SSO)、SSO Token、本地缓存、凭证 JSON
-- 用量追踪、账号导入导出、中英双语
-- 支持设置出站代理（SOCKS5 / HTTP）
+- Anthropic `/v1/messages`、OpenAI `/v1/chat/completions` 与 `/v1/responses`
+- 多账号池、同模型重试、配额冷却
+- **Combo**：`fallback` / `round-robin` / `fusion` 多模型路由
+- Web 管理台 `/admin`、API Key、RPM 限制、公开查 Key `/check/key`
+- SSE 流式、Thinking 模式、出站 SOCKS5/HTTP 代理
+- `npm i -g proxy-kiro` 一键安装（二进制内嵌前端）
 
-## 快速开始
+---
 
-### Docker Compose（推荐）
+## 快速开始（npm）
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
-cd Kiro-Go
-mkdir -p data
-docker-compose up -d
+npm install -g proxy-kiro
+kiroproxy
 ```
 
-### Docker 运行
+- 管理台：http://localhost:8080/admin
+- 默认密码：`changeme`（请立即修改）
+- 数据目录：`~/.kiroproxy/`
+
+### Docker
 
 ```bash
-docker run -d \
-  --name kiro-go \
-  -p 8080:8080 \
-  -e ADMIN_PASSWORD=your_secure_password \
+docker run -d -p 8080:8080 \
+  -e ADMIN_PASSWORD=your_password \
   -v /path/to/data:/app/data \
-  --restart unless-stopped \
-  ghcr.io/quorinex/kiro-go:latest
+  ghcr.io/vtruong2k3/kiro-go:latest
 ```
 
-### 源码编译
+### 源码构建
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
+git clone https://github.com/vtruong2k3/Kiro-Go.git
 cd Kiro-Go
+pnpm --dir web/frontend install && pnpm --dir web/frontend build
 go build -o kiro-go .
 ./kiro-go
 ```
 
-### 部署到 Zeabur
+---
 
-仓库已包含 `Dockerfile`，可直接在 Zeabur 上构建运行。
-
-**方式一：面板一键部署**
-
-1. Fork 本仓库到你的 GitHub 账号。
-2. 在 Zeabur 新建服务，选择 **Deploy from GitHub**，绑定刚才 fork 的仓库。
-3. Zeabur 自动识别 `Dockerfile` 并完成构建。
-4. 在 **Networking** 标签暴露端口 `8080` 并绑定域名。
-5. 在 **Variables** 标签至少设置 `ADMIN_PASSWORD`（管理面板密码）。
-6. 如需持久化账号 / 配置，挂载 Volume 到 `/app/data`。
-
-**方式二：CLI 部署**
+## 客户端配置
 
 ```bash
-npm i -g zeabur
-zeabur auth login
-zeabur deploy
+# Claude / Anthropic 兼容
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_AUTH_TOKEN=sk-你的密钥
+
+# OpenAI 兼容
+export OPENAI_BASE_URL=http://localhost:8080/v1
+export OPENAI_API_KEY=sk-你的密钥
 ```
 
-> 命令需在项目根目录执行。CLI 会生成 `.zeabur/context.json` 记录目标 project / service，包含个人 ID，请勿提交。
+密钥在管理台 **API Keys** 中创建。
 
-部署完成后访问 `https://<你的域名>/admin` 登录管理面板。
+---
 
-首次运行会在 `data/config.json` 自动生成配置，挂载 `/app/data` 以持久化。默认管理密码为 `changeme`，生产环境请务必通过 `ADMIN_PASSWORD` 环境变量或在管理面板中修改。
+## CLI
 
-## 使用方法
-
-访问 `http://localhost:8080/admin` 登录、添加账号，然后调用 API：
-
-```bash
-# Claude
-curl http://localhost:8080/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"claude-sonnet-4.5","max_tokens":1024,"messages":[{"role":"user","content":"你好！"}]}'
-
-# OpenAI
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"你好！"}]}'
+```text
+kiroproxy [--port N] [--host ADDR] [--config PATH] [--no-open] [--version]
 ```
 
-## 思考模式
+端口默认 `8080`；被占用时自动尝试后续端口。
 
-在模型名后加后缀（默认 `-thinking`）即可启用，例如 `claude-sonnet-4.5-thinking`。Claude 兼容请求如果带有顶层 `thinking` 配置，例如 `{"type":"enabled","budget_tokens":2048}` 或 `{"type":"adaptive"}`，也会自动启用 thinking 模式。输出格式可在管理面板「设置 - Thinking 模式」中配置。
+---
 
-## 出站代理
+## 主要接口
 
-可在管理面板「设置 - 出站代理设置」中配置代理。支持 SOCKS5 和 HTTP 代理。
+| 路径 | 说明 |
+|------|------|
+| `POST /v1/messages` | Anthropic |
+| `POST /v1/chat/completions` | OpenAI Chat |
+| `POST /v1/responses` | OpenAI Responses |
+| `GET /v1/models` | 模型列表 |
+| `GET /admin` | 管理后台 |
+| `GET /check/key` | 公钥用量查询 |
+| `GET /health` | 健康检查 |
 
-设置保存后即时生效，无需重启服务。
+---
+
+## Combo 多模型
+
+在管理台创建 Combo，客户端使用 **Combo 名称** 作为 `model`：
+
+- **fallback**：按顺序切换模型
+- **round-robin**：轮询
+- **fusion**：多路并行 + judge
+
+直接请求某个模型时，仅在同模型账号池内重试（最多 3 个账号），不会自动跨模型跳转。
+
+---
 
 ## 环境变量
 
-| 变量 | 说明 | 默认值 |
-|-----|------|-------|
-| `CONFIG_PATH` | 配置文件路径 | `data/config.json` |
-| `ADMIN_PASSWORD` | 管理面板密码（覆盖配置文件） | - |
+| 变量 | 说明 |
+|------|------|
+| `CONFIG_PATH` | 配置文件路径 |
+| `ADMIN_PASSWORD` | 覆盖管理员密码 |
+| `LOG_LEVEL` | 日志级别 |
+| `RUNTIME_DB_PATH` | SQLite 路径 |
 
-## 参与贡献
+配置解析顺序：`--config` / `CONFIG_PATH` → 已有 `./data/` → `~/.kiroproxy/config.json`。
 
-欢迎友好交流。遇到问题时，建议先让 Claude Code、Codex 等工具帮忙排查一下，大部分问题都能自己解决。如果能直接提个 PR 就更好了。
+---
 
-## 友情链接
+## 数据目录
 
-- [LINUX DO](https://linux.do)
+```text
+~/.kiroproxy/
+  bin/kiro-go
+  config.json
+  kiro-runtime.db
+```
+
+---
+
+## 作者
+
+**Vũ Trường** · 维护与发布  
+GitHub: [vtruong2k3/Kiro-Go](https://github.com/vtruong2k3/Kiro-Go)  
+npm: [proxy-kiro](https://www.npmjs.com/package/proxy-kiro)
+
+---
 
 ## 免责声明
 
-本项目仅供学习和研究目的使用，与 Amazon、AWS 或 Kiro 没有任何关联。用户需自行确保使用行为符合所有适用的服务条款和法律法规，使用风险自负。
+仅供学习与研究。与 Amazon / AWS / Kiro / Anthropic / OpenAI / xAI / Google 无关联。请遵守当地法律与各平台服务条款。
 
-## 许可证
+## License
 
 [MIT](LICENSE)

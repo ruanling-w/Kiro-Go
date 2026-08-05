@@ -1,87 +1,93 @@
 # proxy-kiro
 
-Multi-provider AI gateway. One install, one command.
+> Kiro Proxy — multi-provider AI gateway by **Vũ Trường** ([@vtruong2k3](https://github.com/vtruong2k3))
+
+Cài một lệnh, chạy một lệnh:
 
 ```bash
 npm install -g proxy-kiro
 kiroproxy
 ```
 
-The admin UI opens at `http://localhost:8080/admin`. Add your accounts there.
+- Admin: http://localhost:8080/admin
+- Mật khẩu mặc định: `changeme`
+- State: `~/.kiroproxy/`
+
+Tài liệu đầy đủ: [github.com/vtruong2k3/Kiro-Go](https://github.com/vtruong2k3/Kiro-Go#readme)
 
 ## Endpoints
 
 | Path | Protocol |
-|---|---|
+|------|----------|
 | `/v1/messages` | Anthropic Claude |
 | `/v1/chat/completions` | OpenAI Chat Completions |
 | `/v1/responses` | OpenAI Responses |
-| `/admin` | Web admin UI |
-| `/check/key` | Public key/quota lookup |
+| `/v1/models` | Model list |
+| `/admin` | Web admin |
+| `/check/key` | Public key / quota lookup |
+| `/health` | Health |
 
-Point any Claude- or OpenAI-compatible client at the base URL and use an API key
-created in the admin UI.
+## Client
 
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8080
-export ANTHROPIC_AUTH_TOKEN=sk-...   # created in /admin
+export ANTHROPIC_AUTH_TOKEN=sk-...   # tạo trong /admin
+
+export OPENAI_BASE_URL=http://localhost:8080/v1
+export OPENAI_API_KEY=sk-...
 ```
 
-## Options
+## CLI
 
 ```
--p, --port <n>       port to listen on (default 8080, next free port if busy)
--h, --host <addr>    address to bind (default 0.0.0.0)
--c, --config <path>  config file (default ~/.kiroproxy/config.json)
-    --no-open        do not open the browser
--v, --version        print version
-    --help           show help
+kiroproxy [options]
+
+  -p, --port <n>       port (default 8080, next free if busy)
+  -h, --host <addr>    bind address
+  -c, --config <path>  config file (default ~/.kiroproxy/config.json)
+      --no-open        do not open browser
+  -v, --version
+      --help
 ```
 
-## Where state lives
+## Data directory
 
-Everything is under `~/.kiroproxy/`:
-
-```
+```text
 ~/.kiroproxy/
-  bin/kiro-go         server binary (downloaded on install)
-  config.json         accounts, API keys, settings
-  kiro-runtime.db     request logs, combos, rate-limit state
+  bin/kiro-go      # server binary (downloaded from GitHub Releases)
+  config.json      # accounts, API keys, settings
+  kiro-runtime.db  # logs, combos, rate limits
 ```
 
-Back up `config.json` and you have your whole setup.
+## How install works
 
-## How the install works
+Package này chỉ là launcher (~9 KB). `postinstall` tải binary Go đúng OS/arch từ
+[GitHub Releases](https://github.com/vtruong2k3/Kiro-Go/releases), verify
+`SHA256SUMS`, rồi `kiroproxy` spawn server (admin UI đã embed trong binary).
 
-This package is a small launcher with no runtime dependencies. On install it
-downloads the Go server binary for your platform from the matching
-[GitHub release](https://github.com/vtruong2k3/Kiro-Go/releases) and verifies it
-against the release's `SHA256SUMS`. The binary embeds the admin UI, so nothing
-else needs to be fetched at runtime.
+Supported: Linux, macOS, Windows · x64, arm64 · Node ≥ 18.
 
-If the download fails (offline, proxy, firewall), the install still succeeds and
-the launcher retries the next time you run `kiroproxy`.
-
-Supported: Linux, macOS and Windows on x64 and arm64.
-
-### Behind a proxy or air-gapped
+### Offline
 
 ```bash
-# skip the download during install, supply the binary yourself
 KIROPROXY_SKIP_DOWNLOAD=1 npm i -g proxy-kiro
 mkdir -p ~/.kiroproxy/bin
-cp /path/to/kiro-go ~/.kiroproxy/bin/kiro-go && chmod +x ~/.kiroproxy/bin/kiro-go
-echo "$(kiroproxy --version)" > ~/.kiroproxy/bin/.version
+cp ./kiro-go-linux-amd64 ~/.kiroproxy/bin/kiro-go && chmod +x ~/.kiroproxy/bin/kiro-go
+echo "1.1.5" > ~/.kiroproxy/bin/.version
 ```
-
-`KIROPROXY_RELEASE_BASE` points the downloader at an internal mirror serving the
-same asset names plus `SHA256SUMS`.
 
 ## Docker
 
 ```bash
-docker run -p 8080:8080 -v $PWD/data:/app/data ghcr.io/vtruong2k3/kiro-go
+docker run -p 8080:8080 \
+  -e ADMIN_PASSWORD=changeme \
+  -v "$PWD/data:/app/data" \
+  ghcr.io/vtruong2k3/kiro-go:latest
 ```
+
+## Author
+
+**Vũ Trường** · [github.com/vtruong2k3](https://github.com/vtruong2k3)
 
 ## License
 
