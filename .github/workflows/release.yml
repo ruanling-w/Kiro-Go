@@ -2,10 +2,10 @@
 # SHA256SUMS GitHub Release + npm publish of the `kiroproxy` launcher.
 #
 # Required secrets:
-#   NPM_TOKEN  — npm automation token with publish rights for `kiroproxy`
+#   NPM_TOKEN  — npm automation token with publish rights for `@vtruong2k3/kiroproxy`
 #
 # The launcher (cli/) downloads the matching binary from this release on
-# `npm i -g kiroproxy` and verifies it against SHA256SUMS before executing it.
+# `npm i -g @vtruong2k3/kiroproxy` and verifies it against SHA256SUMS before executing it.
 
 name: Release
 
@@ -175,7 +175,7 @@ jobs:
 
   # --------------------------------------------------------------- npm publish
   npm:
-    name: Publish kiroproxy to npm
+    name: Publish @vtruong2k3/kiroproxy to npm
     needs: release
     runs-on: ubuntu-latest
     # id-token not required: we publish with --provenance=false so a plain

@@ -3,7 +3,7 @@
 Multi-provider AI gateway. One install, one command.
 
 ```bash
-npm install -g kiroproxy
+npm install -g @vtruong2k3/kiroproxy
 kiroproxy
 ```
 
@@ -68,7 +68,7 @@ Supported: Linux, macOS and Windows on x64 and arm64.
 
 ```bash
 # skip the download during install, supply the binary yourself
-KIROPROXY_SKIP_DOWNLOAD=1 npm i -g kiroproxy
+KIROPROXY_SKIP_DOWNLOAD=1 npm i -g @vtruong2k3/kiroproxy
 mkdir -p ~/.kiroproxy/bin
 cp /path/to/kiro-go ~/.kiroproxy/bin/kiro-go && chmod +x ~/.kiroproxy/bin/kiro-go
 echo "$(kiroproxy --version)" > ~/.kiroproxy/bin/.version
