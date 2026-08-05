@@ -178,6 +178,8 @@ jobs:
     name: Publish kiroproxy to npm
     needs: release
     runs-on: ubuntu-latest
+    # id-token not required: we publish with --provenance=false so a plain
+    # NPM_TOKEN automation/granular token is enough.
     steps:
       - uses: actions/checkout@v4
 
@@ -185,6 +187,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org
+          # Always write an .npmrc that points at NODE_AUTH_TOKEN.
+          always-auth: true
 
       - name: Sync version from tag
         working-directory: cli
@@ -210,4 +214,11 @@ jobs:
             echo "::warning::NPM_TOKEN secret is empty — skipping npm publish"
             exit 0
           fi
-          npm publish --access public
+          echo "npm whoami:"
+          npm whoami || {
+            echo "::error::NPM_TOKEN is set but npm whoami failed — token invalid, expired, or missing publish rights / Bypass 2FA"
+            exit 1
+          }
+          # --provenance=false: first-party automation tokens cannot mint OIDC
+          # provenance attestations; without this flag npm 10 on GHA exits 1.
+          npm publish --access public --provenance=false
