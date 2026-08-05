@@ -210,15 +210,27 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "::warning::NPM_TOKEN secret is empty — skipping npm publish"
             exit 0
           fi
+          # Diagnostics that never print the secret itself.
+          echo "token length: ${#NODE_AUTH_TOKEN}"
+          echo "token prefix: ${NODE_AUTH_TOKEN:0:7}…"
+          if [ ! -f "$HOME/.npmrc" ] && [ ! -f .npmrc ]; then
+            echo "registry=https://registry.npmjs.org/" > .npmrc
+            echo "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" >> .npmrc
+            echo "always-auth=true" >> .npmrc
+            echo "wrote local .npmrc (auth via env expansion)"
+          fi
           echo "npm whoami:"
-          npm whoami || {
-            echo "::error::NPM_TOKEN is set but npm whoami failed — token invalid, expired, or missing publish rights / Bypass 2FA"
+          if ! npm whoami; then
+            echo "::error::npm whoami failed. Recreate the GitHub secret NPM_TOKEN from an npm token with:"
+            echo "  - Packages: Read and write"
+            echo "  - Organizations: No access"
+            echo "  - Bypass 2FA: enabled"
+            echo "  - Classic 'Automation' or Granular with publish rights"
             exit 1
-          }
-          # --provenance=false: first-party automation tokens cannot mint OIDC
-          # provenance attestations; without this flag npm 10 on GHA exits 1.
-          npm publish --access public --provenance=false
+          fi
+          npm publish --access public --provenance=false --verbose
