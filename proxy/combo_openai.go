@@ -52,7 +52,7 @@ func (h *Handler) handleOpenAIComboNonStream(ctx context.Context, w http.Respons
 			h.recordSuccessForApiKey(apiKeyID, result.inputTokens, result.outputTokens, result.credits)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
-			h.recordSuccessLogMeta("openai", route.RequestedModel, account.ID, result.inputTokens+result.outputTokens, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, result.provider)
+			h.recordSuccessLogMeta("openai", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, result.provider)
 			resp := KiroToOpenAIResponseWithReasoning(result.content, result.reasoning, result.toolUses, result.inputTokens, result.outputTokens, route.RequestedModel, config.GetThinkingConfig().OpenAIFormat)
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			_ = json.NewEncoder(w).Encode(resp)
@@ -241,7 +241,7 @@ func (h *Handler) handleOpenAIComboStream(ctx context.Context, w http.ResponseWr
 			h.recordSuccessForApiKey(apiKeyID, result.inputTokens, result.outputTokens, result.credits)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
-			h.recordSuccessLogMeta("openai", route.RequestedModel, account.ID, result.inputTokens+result.outputTokens, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, usedProvider)
+			h.recordSuccessLogMeta("openai", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, usedProvider)
 			return
 		}
 	}

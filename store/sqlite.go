@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	schemaVersion = 5
+	schemaVersion = 6
 	driverName    = "sqlite"
 )
 
@@ -267,6 +267,13 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		{"before_first_byte", `ALTER TABLE request_logs ADD COLUMN before_first_byte INTEGER NOT NULL DEFAULT 0`},
 		{"selected_model", `ALTER TABLE request_logs ADD COLUMN selected_model TEXT NOT NULL DEFAULT ''`},
 		{"billable", `ALTER TABLE request_logs ADD COLUMN billable INTEGER NOT NULL DEFAULT 0`},
+		// v6 splits the flat token count into input/output and adds prompt-cache
+		// counts plus a response-cache-hit flag.
+		{"input_tokens", `ALTER TABLE request_logs ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"output_tokens", `ALTER TABLE request_logs ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"cache_read_tokens", `ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"cache_creation_tokens", `ALTER TABLE request_logs ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"cached", `ALTER TABLE request_logs ADD COLUMN cached INTEGER NOT NULL DEFAULT 0`},
 	}
 	logExisting := map[string]bool{}
 	logRows, err := tx.Query(`PRAGMA table_info(request_logs)`)

@@ -64,6 +64,49 @@ function EndpointChip({ endpoint }: { endpoint?: string }) {
   )
 }
 
+/** Token breakdown cell: shows in/out split with a total, plus a cache tooltip
+ *  and a CACHE badge for response-cache hits. Falls back to the flat `tokens`
+ *  total for older log rows that predate the breakdown fields. */
+function TokensCell({ log }: { log: LiveLog }) {
+  const { t } = useTranslation()
+  const hasBreakdown =
+    (log.inputTokens ?? 0) > 0 || (log.outputTokens ?? 0) > 0
+  const cacheRead = log.cacheReadTokens ?? 0
+  const cacheCreation = log.cacheCreationTokens ?? 0
+
+  const titleParts: string[] = []
+  if (hasBreakdown) {
+    titleParts.push(`${t('logs.tokIn')}: ${formatNumber(log.inputTokens ?? 0)}`)
+    titleParts.push(`${t('logs.tokOut')}: ${formatNumber(log.outputTokens ?? 0)}`)
+  }
+  if (cacheRead > 0) titleParts.push(`${t('logs.cacheRead')}: ${formatNumber(cacheRead)}`)
+  if (cacheCreation > 0) titleParts.push(`${t('logs.cacheCreation')}: ${formatNumber(cacheCreation)}`)
+
+  if (!hasBreakdown) {
+    return <span>{log.tokens ? formatNumber(log.tokens) : '—'}</span>
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1" title={titleParts.join(' · ')}>
+      {log.cached && (
+        <span className="rounded-sm bg-violet-500/15 px-1 text-[9px] font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+          {t('logs.cacheHit')}
+        </span>
+      )}
+      <span>
+        {formatNumber(log.inputTokens ?? 0)}
+        <span className="text-muted-foreground">/</span>
+        {formatNumber(log.outputTokens ?? 0)}
+      </span>
+      {(cacheRead > 0 || cacheCreation > 0) && (
+        <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
+          ⚡{formatNumber(cacheRead + cacheCreation)}
+        </span>
+      )}
+    </span>
+  )
+}
+
 export function LogsTable({ logs, keyNames, accountNames, totalCount }: LogsTableProps) {
   const { t } = useTranslation()
   const total = totalCount ?? logs.length
@@ -207,7 +250,7 @@ export function LogsTable({ logs, keyNames, accountNames, totalCount }: LogsTabl
                       {log.apiKeyId ? apiKey.label : t('logs.noApiKey')}
                     </td>
                     <td className="border-r border-border/30 px-3 py-1.5 text-right tabular-nums font-medium text-sky-600 dark:text-sky-400">
-                      {formatNumber(log.tokens)}
+                      <TokensCell log={log} />
                     </td>
                     <td className="border-r border-border/30 px-3 py-1.5 text-right tabular-nums text-amber-600 dark:text-amber-400">
                       {log.credits ? formatNumber(log.credits) : '—'}

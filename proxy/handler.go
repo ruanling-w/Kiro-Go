@@ -35,6 +35,15 @@ type RequestLog struct {
 	ErrorType string  `json:"errorType"`          // Error category (empty on success)
 	Tokens    int     `json:"tokens"`             // Total tokens (input+output, 0 on failure)
 	Credits   float64 `json:"credits"`            // Credits consumed (0 on failure)
+	// Token breakdown. Tokens above stays the input+output total for backward
+	// compatibility (check-key view, UsageTable); these expose the split plus the
+	// Anthropic prompt-cache accounting. Cached marks a response-cache hit
+	// (served without an upstream call, so Credits is 0).
+	InputTokens         int  `json:"inputTokens,omitempty"`
+	OutputTokens        int  `json:"outputTokens,omitempty"`
+	CacheReadTokens     int  `json:"cacheReadTokens,omitempty"`
+	CacheCreationTokens int  `json:"cacheCreationTokens,omitempty"`
+	Cached              bool `json:"cached,omitempty"`
 	Duration  int64   `json:"duration"`           // Request duration in ms
 	ClientIP  string  `json:"clientIp,omitempty"` // Client IP (proxy-aware when trusted)
 	ApiKeyID  string  `json:"apiKeyId,omitempty"` // Matched multi-key id when auth required
@@ -456,13 +465,18 @@ func requestLogFromRow(r store.RequestLogRow) RequestLog {
 		Status:          r.Status,
 		Error:           r.Error,
 		ErrorType:       r.ErrorType,
-		Tokens:          r.Tokens,
-		Credits:         r.Credits,
-		Duration:        r.Duration,
-		ClientIP:        r.ClientIP,
-		ApiKeyID:        r.ApiKeyID,
-		Provider:        r.Provider,
-		RequestID:       r.RequestID,
+		Tokens:              r.Tokens,
+		InputTokens:         r.InputTokens,
+		OutputTokens:        r.OutputTokens,
+		CacheReadTokens:     r.CacheReadTokens,
+		CacheCreationTokens: r.CacheCreationTokens,
+		Cached:              r.Cached,
+		Credits:             r.Credits,
+		Duration:            r.Duration,
+		ClientIP:            r.ClientIP,
+		ApiKeyID:            r.ApiKeyID,
+		Provider:            r.Provider,
+		RequestID:           r.RequestID,
 		ComboID:         r.ComboID,
 		ComboRevision:   r.ComboRevision,
 		ComboStrategy:   r.ComboStrategy,
@@ -486,13 +500,18 @@ func requestLogToRow(e RequestLog) store.RequestLogRow {
 		Status:          e.Status,
 		Error:           e.Error,
 		ErrorType:       e.ErrorType,
-		Tokens:          e.Tokens,
-		Credits:         e.Credits,
-		Duration:        e.Duration,
-		ClientIP:        e.ClientIP,
-		ApiKeyID:        e.ApiKeyID,
-		Provider:        e.Provider,
-		RequestID:       e.RequestID,
+		Tokens:              e.Tokens,
+		InputTokens:         e.InputTokens,
+		OutputTokens:        e.OutputTokens,
+		CacheReadTokens:     e.CacheReadTokens,
+		CacheCreationTokens: e.CacheCreationTokens,
+		Cached:              e.Cached,
+		Credits:             e.Credits,
+		Duration:            e.Duration,
+		ClientIP:            e.ClientIP,
+		ApiKeyID:            e.ApiKeyID,
+		Provider:            e.Provider,
+		RequestID:           e.RequestID,
 		ComboID:         e.ComboID,
 		ComboRevision:   e.ComboRevision,
 		ComboStrategy:   e.ComboStrategy,
@@ -1380,7 +1399,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 	if hit, ok := cacheIntent.lookup(h.responseCache); ok {
 		replayClaudeStream(sse, msgID, model, thinking, thinkingOpts, hit)
 		if sse.Err() == nil {
-			h.recordSuccessLogMeta("claude", model, "", hit.InputTokens+hit.OutputTokens, 0, 0, clientIP, apiKeyID, "cache")
+			h.recordSuccessLogMeta("claude", model, "", logTokens{Input: hit.InputTokens, Output: hit.OutputTokens, Cached: true}, 0, 0, clientIP, apiKeyID, "cache")
 		}
 		return
 	}
@@ -1426,7 +1445,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, r.inputTokens+r.outputTokens, r.credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLogMeta("claude", model, account.ID, r.inputTokens+r.outputTokens, r.credits, time.Since(started).Milliseconds(), clientIP, apiKeyID, provider)
+		h.recordSuccessLogMeta("claude", model, account.ID, logTokens{Input: r.inputTokens, Output: r.outputTokens, CacheRead: cu.CacheReadInputTokens, CacheCreation: cu.CacheCreationInputTokens}, r.credits, time.Since(started).Milliseconds(), clientIP, apiKeyID, provider)
 		// Store for replay. streamClaudeAttempt sets hasToolUses when the turn
 		// produced tool calls; store() drops "length" (truncated) turns.
 		if !r.hasToolUses {
@@ -2131,24 +2150,38 @@ func (h *Handler) recordFailureWithDetailsMeta(endpoint, model, accountID string
 	h.appendRequestLog(entry)
 }
 
-// recordSuccessLog records a successful request in the request logs.
-func (h *Handler) recordSuccessLog(endpoint, model, accountID string, tokens int, credits float64, durationMs int64) {
-	h.recordSuccessLogMeta(endpoint, model, accountID, tokens, credits, durationMs, "", "", "")
+// logTokens carries the per-request token breakdown for a success log entry.
+// Input/Output are the real split; CacheRead/CacheCreation are Anthropic
+// prompt-cache counts (0 for providers/paths without prompt caching); Cached
+// marks a response-cache hit (served without an upstream call, credit 0).
+type logTokens struct {
+	Input, Output, CacheRead, CacheCreation int
+	Cached                                  bool
 }
 
-func (h *Handler) recordSuccessLogMeta(endpoint, model, accountID string, tokens int, credits float64, durationMs int64, clientIP, apiKeyID, provider string) {
+// recordSuccessLog records a successful request in the request logs.
+func (h *Handler) recordSuccessLog(endpoint, model, accountID string, tok logTokens, credits float64, durationMs int64) {
+	h.recordSuccessLogMeta(endpoint, model, accountID, tok, credits, durationMs, "", "", "")
+}
+
+func (h *Handler) recordSuccessLogMeta(endpoint, model, accountID string, tok logTokens, credits float64, durationMs int64, clientIP, apiKeyID, provider string) {
 	entry := RequestLog{
-		Time:      time.Now().Unix(),
-		Endpoint:  endpoint,
-		Model:     model,
-		AccountID: accountID,
-		Status:    "success",
-		Tokens:    tokens,
-		Credits:   credits,
-		Duration:  durationMs,
-		ClientIP:  clientIP,
-		ApiKeyID:  apiKeyID,
-		Provider:  provider,
+		Time:                time.Now().Unix(),
+		Endpoint:            endpoint,
+		Model:               model,
+		AccountID:           accountID,
+		Status:              "success",
+		Tokens:              tok.Input + tok.Output,
+		InputTokens:         tok.Input,
+		OutputTokens:        tok.Output,
+		CacheReadTokens:     tok.CacheRead,
+		CacheCreationTokens: tok.CacheCreation,
+		Cached:              tok.Cached,
+		Credits:             credits,
+		Duration:            durationMs,
+		ClientIP:            clientIP,
+		ApiKeyID:            apiKeyID,
+		Provider:            provider,
 	}
 
 	h.appendRequestLog(entry)
@@ -2162,6 +2195,8 @@ func (h *Handler) recordComboAttempt(meta comboAttemptLogContext, accountID, pro
 		AccountID:       accountID,
 		Status:          "success",
 		Tokens:          inputTokens + outputTokens,
+		InputTokens:     inputTokens,
+		OutputTokens:    outputTokens,
 		Credits:         credits,
 		Provider:        provider,
 		RequestID:       meta.RequestID,
@@ -2286,7 +2321,7 @@ func renderClaudeNonStreamResponse(w http.ResponseWriter, model, finalContent, r
 func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, cacheIntent *responseCacheIntent, apiKeyID, clientIP string) {
 	if hit, ok := cacheIntent.lookup(h.responseCache); ok {
 		renderClaudeNonStreamResponse(w, model, hit.Content, hit.ThinkingContent, nil, thinking, thinkingOpts, hit.InputTokens, hit.OutputTokens, promptCacheUsage{}, nil)
-		h.recordSuccessLogMeta("claude", model, "", hit.InputTokens+hit.OutputTokens, 0, 0, clientIP, apiKeyID, "cache")
+		h.recordSuccessLogMeta("claude", model, "", logTokens{Input: hit.InputTokens, Output: hit.OutputTokens, Cached: true}, 0, 0, clientIP, apiKeyID, "cache")
 		return
 	}
 
@@ -2374,7 +2409,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLogMeta("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("claude", model, account.ID, logTokens{Input: inputTokens, Output: outputTokens, CacheRead: cacheUsage.CacheReadInputTokens, CacheCreation: cacheUsage.CacheCreationInputTokens}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 
 		// Store the completed answer for replay. Tool responses never reach here
 		// (cacheIntent is nil when tools are present), so toolUses is empty for a
@@ -2678,7 +2713,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	if hit, ok := cacheIntent.lookup(h.responseCache); ok {
 		replayOpenAIStream(sse, chatID, model, thinking, thinkingFormat, hit)
 		if sse.Err() == nil {
-			h.recordSuccessLogMeta("openai", model, "", hit.InputTokens+hit.OutputTokens, 0, 0, clientIP, apiKeyID, "cache")
+			h.recordSuccessLogMeta("openai", model, "", logTokens{Input: hit.InputTokens, Output: hit.OutputTokens, Cached: true}, 0, 0, clientIP, apiKeyID, "cache")
 		}
 		return
 	}
@@ -2733,7 +2768,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		h.recordSuccessForApiKey(apiKeyID, result.inputTokens, result.outputTokens, result.credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
-		h.recordSuccessLogMeta("openai", model, account.ID, result.inputTokens+result.outputTokens, result.credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("openai", model, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens}, result.credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 		// Store for replay. streamOpenAIAttempt leaves content empty when the turn
 		// produced tool calls, and store() drops "length" (truncated) turns.
 		if result.content != "" || result.thinking != "" {
@@ -3276,7 +3311,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		resp := KiroToOpenAIResponseWithReasoning(hit.Content, hit.ThinkingContent, nil, hit.InputTokens, hit.OutputTokens, model, thinkingFormat)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(resp)
-		h.recordSuccessLogMeta("openai", model, "", hit.InputTokens+hit.OutputTokens, 0, 0, clientIP, apiKeyID, "cache")
+		h.recordSuccessLogMeta("openai", model, "", logTokens{Input: hit.InputTokens, Output: hit.OutputTokens, Cached: true}, 0, 0, clientIP, apiKeyID, "cache")
 		return
 	}
 
@@ -3353,7 +3388,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLogMeta("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("openai", model, account.ID, logTokens{Input: inputTokens, Output: outputTokens}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 
 		// Store the completed answer for replay. Tool responses never reach here
 		// (cacheIntent is nil when tools are present), so toolUses is empty for a

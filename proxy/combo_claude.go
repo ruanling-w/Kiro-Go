@@ -53,7 +53,7 @@ func (h *Handler) handleClaudeComboNonStream(ctx context.Context, w http.Respons
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
 			h.promptCache.Update(account.ID, cacheProfile)
-			h.recordSuccessLogMeta("claude", route.RequestedModel, account.ID, result.inputTokens+result.outputTokens, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, providerLabel(account))
+			h.recordSuccessLogMeta("claude", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, providerLabel(account))
 			responseThinking := result.thinking
 			includeEmpty := thinking && thinkingOpts.OmitDisplay && responseThinking != ""
 			if includeEmpty {
@@ -163,7 +163,7 @@ func (h *Handler) handleClaudeComboStream(ctx context.Context, w http.ResponseWr
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
 			h.promptCache.Update(account.ID, cacheProfile)
-			h.recordSuccessLogMeta("claude", route.RequestedModel, account.ID, result.inputTokens+result.outputTokens, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, provider)
+			h.recordSuccessLogMeta("claude", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, provider)
 			return
 		}
 	}

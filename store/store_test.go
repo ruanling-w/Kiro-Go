@@ -199,6 +199,29 @@ func TestRequestLogComboAttemptRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRequestLogTokenBreakdownRoundTrip(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "tokens.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := RequestLogRow{
+		Time: 1, Endpoint: "claude", Model: "claude-opus-4.8", AccountID: "acct",
+		Status: "success", Provider: "kiro", Tokens: 300, Credits: 2.5,
+		InputTokens: 200, OutputTokens: 100, CacheReadTokens: 150, CacheCreationTokens: 40, Cached: true,
+	}
+	if err := s.InsertRequestLogs([]RequestLogRow{want}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadRecentRequestLogs(1)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("load: len=%d err=%v", len(got), err)
+	}
+	if got[0] != want {
+		t.Fatalf("token breakdown mismatch:\n got %+v\nwant %+v", got[0], want)
+	}
+}
+
 func TestStoreCloseIdempotentConcurrent(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "close.db"))
 	if err != nil {

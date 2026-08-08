@@ -8,6 +8,11 @@ export interface RequestLog {
   error?: string
   errorType?: string
   tokens: number
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheCreationTokens?: number
+  cached?: boolean
   credits: number
   duration: number
   provider?: string

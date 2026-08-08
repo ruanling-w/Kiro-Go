@@ -234,7 +234,7 @@ func (h *Handler) handleResponsesNonStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLogMeta("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("responses", model, account.ID, logTokens{Input: inputTokens, Output: outputTokens}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.StoredInput = storedInput
@@ -596,7 +596,7 @@ func (h *Handler) handleResponsesStreamModels(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLogMeta("responses", publicModel, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("responses", publicModel, account.ID, logTokens{Input: inputTokens, Output: outputTokens}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 
 		respObj := buildResponsesObject(respID, publicModel, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt
