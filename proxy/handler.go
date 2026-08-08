@@ -84,6 +84,7 @@ type Handler struct {
 	modelsCacheMu   sync.RWMutex
 	modelsCacheTime int64
 	promptCache     *promptCacheTracker
+	responseCache   *responseCache
 	// Per-account token refresh serialization. tokenRefreshRegMu guards the map
 	// only (held for a map lookup, never across the network refresh), so refreshes
 	// for different accounts run concurrently while duplicate refreshes for the
@@ -296,6 +297,7 @@ func NewHandler() *Handler {
 		stopStatsSaver:    make(chan struct{}),
 		stopRuntime:       make(chan struct{}),
 		promptCache:       newPromptCacheTracker(defaultPromptCacheTTL),
+		responseCache:     newResponseCache(config.GetResponseCacheTTL(), defaultResponseCacheMaxPerKey),
 		ipTrack:           newIPTracker(),
 		tokenRefreshLocks: make(map[string]*sync.Mutex),
 		logHub:            newLogHub(),
@@ -1329,9 +1331,11 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 			h.handleClaudeComboNonStream(r.Context(), w, &req, comboRoute, thinking, thinkingResponseOpts, apiKeyID, clientIP)
 		}
 	} else if req.Stream {
-		h.handleClaudeStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, clientIP)
+		cacheIntent := h.claudeCacheIntent(&req, thinking, apiKeyID)
+		h.handleClaudeStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, cacheIntent, apiKeyID, clientIP)
 	} else {
-		h.handleClaudeNonStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, clientIP)
+		cacheIntent := h.claudeCacheIntent(&req, thinking, apiKeyID)
+		h.handleClaudeNonStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, cacheIntent, apiKeyID, clientIP)
 	}
 }
 
@@ -1349,9 +1353,16 @@ type claudeStreamAttemptResult struct {
 	inputTokens, outputTokens int
 	credits                   float64
 	upstreamErr, writeErr     error
+	// Semantic answer captured for the response cache. content is the
+	// post-extractThinking body, thinking the reasoning text, finishReason the
+	// mapped stop signal ("length" turns are not cached by the caller).
+	content      string
+	thinking     string
+	finishReason string
+	hasToolUses  bool
 }
 
-func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID, clientIP string) {
+func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, cacheIntent *responseCacheIntent, apiKeyID, clientIP string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1362,6 +1373,18 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 	}
 	sse := newClaudeSSEWriter(w, flusher)
 	msgID := "msg_" + uuid.New().String()
+
+	// Cache hit: replay the stored answer as a fresh SSE stream without contacting
+	// any upstream. Uses the same frame builders as a live attempt so the wire
+	// shape is identical; credit is 0 since no upstream call was made.
+	if hit, ok := cacheIntent.lookup(h.responseCache); ok {
+		replayClaudeStream(sse, msgID, model, thinking, thinkingOpts, hit)
+		if sse.Err() == nil {
+			h.recordSuccessLogMeta("claude", model, "", hit.InputTokens+hit.OutputTokens, 0, 0, clientIP, apiKeyID, "cache")
+		}
+		return
+	}
+
 	excluded := map[string]bool{}
 	var lastErr error
 	started := time.Now()
@@ -1404,6 +1427,18 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		h.pool.UpdateStats(account.ID, r.inputTokens+r.outputTokens, r.credits)
 		h.promptCache.Update(account.ID, cacheProfile)
 		h.recordSuccessLogMeta("claude", model, account.ID, r.inputTokens+r.outputTokens, r.credits, time.Since(started).Milliseconds(), clientIP, apiKeyID, provider)
+		// Store for replay. streamClaudeAttempt sets hasToolUses when the turn
+		// produced tool calls; store() drops "length" (truncated) turns.
+		if !r.hasToolUses {
+			cacheIntent.store(h.responseCache, cachedResponse{
+				Content:         r.content,
+				ThinkingContent: r.thinking,
+				InputTokens:     r.inputTokens,
+				OutputTokens:    r.outputTokens,
+				FinishReason:    r.finishReason,
+				Model:           model,
+			})
+		}
 		return
 	}
 	if lastErr == nil {
@@ -1819,6 +1854,13 @@ func (h *Handler) streamClaudeAttempt(ctx context.Context, account *config.Accou
 	result.inputTokens = inputTokens
 	result.outputTokens = outputTokens
 	result.credits = credits
+	// Capture the raw answer for the response cache. Only meaningful for a
+	// tool-free turn (tool responses are never cached); the caller guards on
+	// len(toolUses)==0 as well.
+	result.content = content
+	result.thinking = thought
+	result.finishReason = upstreamFinishReason
+	result.hasToolUses = len(toolUses) > 0
 	if err := sse.Err(); err != nil {
 		result.writeErr = err
 		return result
@@ -2202,8 +2244,52 @@ func (h *Handler) getRequestLogs() []RequestLog {
 	return result
 }
 
+// renderClaudeNonStreamResponse applies the thinking-format transforms and writes
+// the final Claude JSON response. Shared by the live path and the response-cache
+// replay path so a cache hit is shaped identically to a fresh answer. finalContent
+// is the post-extractThinking body and rawThinkingContent the reasoning text; both
+// are stored verbatim in the response cache.
+func renderClaudeNonStreamResponse(w http.ResponseWriter, model, finalContent, rawThinkingContent string, toolUses []KiroToolUse, thinking bool, thinkingOpts claudeThinkingResponseOptions, inputTokens, outputTokens int, cacheUsage promptCacheUsage, cacheProfile *promptCacheProfile) {
+	responseThinkingContent := rawThinkingContent
+	includeEmptyThinkingBlock := thinking && thinkingOpts.OmitDisplay && rawThinkingContent != ""
+	if includeEmptyThinkingBlock {
+		responseThinkingContent = ""
+	}
+
+	if thinking && responseThinkingContent != "" {
+		switch thinkingOpts.Format {
+		case "think":
+			finalContent = "<think>" + responseThinkingContent + "</think>" + finalContent
+			responseThinkingContent = ""
+		case "reasoning_content":
+			finalContent = responseThinkingContent + finalContent
+			responseThinkingContent = ""
+		default:
+		}
+	}
+
+	resp := KiroToClaudeResponse(finalContent, responseThinkingContent, includeEmptyThinkingBlock, toolUses, inputTokens, outputTokens, model)
+	resp.Usage.InputTokens = billedClaudeInputTokens(inputTokens, cacheUsage)
+	resp.Usage.CacheCreationInputTokens = cacheUsage.CacheCreationInputTokens
+	resp.Usage.CacheReadInputTokens = cacheUsage.CacheReadInputTokens
+	if cacheProfile != nil {
+		resp.Usage.CacheCreation = &ClaudeCacheCreationUsage{
+			Ephemeral5mInputTokens: cacheUsage.CacheCreation5mInputTokens,
+			Ephemeral1hInputTokens: cacheUsage.CacheCreation1hInputTokens,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(resp)
+}
+
 // handleClaudeNonStream Claude 非流式响应
-func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID, clientIP string) {
+func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, cacheIntent *responseCacheIntent, apiKeyID, clientIP string) {
+	if hit, ok := cacheIntent.lookup(h.responseCache); ok {
+		renderClaudeNonStreamResponse(w, model, hit.Content, hit.ThinkingContent, nil, thinking, thinkingOpts, hit.InputTokens, hit.OutputTokens, promptCacheUsage{}, nil)
+		h.recordSuccessLogMeta("claude", model, "", hit.InputTokens+hit.OutputTokens, 0, 0, clientIP, apiKeyID, "cache")
+		return
+	}
+
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
@@ -2268,7 +2354,6 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 			continue
 		}
 
-		thinkingFormat := thinkingOpts.Format
 		finalContent, extractedReasoning := extractThinkingFromContent(content)
 		rawThinkingContent := thinkingContent
 		if thinking && rawThinkingContent == "" && extractedReasoning != "" {
@@ -2291,36 +2376,20 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		h.promptCache.Update(account.ID, cacheProfile)
 		h.recordSuccessLogMeta("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 
-		responseThinkingContent := rawThinkingContent
-		includeEmptyThinkingBlock := thinking && thinkingOpts.OmitDisplay && rawThinkingContent != ""
-		if includeEmptyThinkingBlock {
-			responseThinkingContent = ""
+		// Store the completed answer for replay. Tool responses never reach here
+		// (cacheIntent is nil when tools are present), so toolUses is empty for a
+		// cacheable turn; a truncated (max_tokens) answer is rejected by store().
+		if len(toolUses) == 0 {
+			cacheIntent.store(h.responseCache, cachedResponse{
+				Content:         finalContent,
+				ThinkingContent: rawThinkingContent,
+				InputTokens:     inputTokens,
+				OutputTokens:    outputTokens,
+				Model:           model,
+			})
 		}
 
-		if thinking && responseThinkingContent != "" {
-			switch thinkingFormat {
-			case "think":
-				finalContent = "<think>" + responseThinkingContent + "</think>" + finalContent
-				responseThinkingContent = ""
-			case "reasoning_content":
-				finalContent = responseThinkingContent + finalContent
-				responseThinkingContent = ""
-			default:
-			}
-		}
-
-		resp := KiroToClaudeResponse(finalContent, responseThinkingContent, includeEmptyThinkingBlock, toolUses, inputTokens, outputTokens, model)
-		resp.Usage.InputTokens = billedClaudeInputTokens(inputTokens, cacheUsage)
-		resp.Usage.CacheCreationInputTokens = cacheUsage.CacheCreationInputTokens
-		resp.Usage.CacheReadInputTokens = cacheUsage.CacheReadInputTokens
-		if cacheProfile != nil {
-			resp.Usage.CacheCreation = &ClaudeCacheCreationUsage{
-				Ephemeral5mInputTokens: cacheUsage.CacheCreation5mInputTokens,
-				Ephemeral1hInputTokens: cacheUsage.CacheCreation1hInputTokens,
-			}
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		json.NewEncoder(w).Encode(resp)
+		renderClaudeNonStreamResponse(w, model, finalContent, rawThinkingContent, toolUses, thinking, thinkingOpts, inputTokens, outputTokens, cacheUsage, cacheProfile)
 		return
 	}
 
@@ -2404,10 +2473,11 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kiroPayload := OpenAIToKiro(&req, thinking)
+	cacheIntent := h.openAICacheIntent(&req, thinking, apiKeyID)
 	if req.Stream {
-		h.handleOpenAIStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, clientIP)
+		h.handleOpenAIStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, cacheIntent, apiKeyID, clientIP)
 	} else {
-		h.handleOpenAINonStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, apiKeyID, clientIP)
+		h.handleOpenAINonStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, cacheIntent, apiKeyID, clientIP)
 	}
 }
 
@@ -2578,10 +2648,16 @@ type openAIStreamAttemptResult struct {
 	credits      float64
 	upstreamErr  error
 	writeErr     error
+	// Semantic answer captured for the response cache. content is the
+	// post-extractThinking body, thinking the reasoning text, finishReason the
+	// mapped stop signal ("length" turns are not cached by the caller).
+	content      string
+	thinking     string
+	finishReason string
 }
 
 // handleOpenAIStream OpenAI 流式响应
-func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
+func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, cacheIntent *responseCacheIntent, apiKeyID, clientIP string) {
 	setOpenAIStreamHeaders(w)
 
 	flusher, ok := w.(http.Flusher)
@@ -2595,6 +2671,17 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 
 	chatID := "chatcmpl-" + uuid.New().String()
+
+	// Cache hit: replay the stored answer as a fresh SSE stream without contacting
+	// any upstream. Uses the same frame builders as a live attempt so the wire
+	// shape is identical; credit is 0 since no upstream call was made.
+	if hit, ok := cacheIntent.lookup(h.responseCache); ok {
+		replayOpenAIStream(sse, chatID, model, thinking, thinkingFormat, hit)
+		if sse.Err() == nil {
+			h.recordSuccessLogMeta("openai", model, "", hit.InputTokens+hit.OutputTokens, 0, 0, clientIP, apiKeyID, "cache")
+		}
+		return
+	}
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
@@ -2647,6 +2734,18 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
 		h.recordSuccessLogMeta("openai", model, account.ID, result.inputTokens+result.outputTokens, result.credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		// Store for replay. streamOpenAIAttempt leaves content empty when the turn
+		// produced tool calls, and store() drops "length" (truncated) turns.
+		if result.content != "" || result.thinking != "" {
+			cacheIntent.store(h.responseCache, cachedResponse{
+				Content:         result.content,
+				ThinkingContent: result.thinking,
+				InputTokens:     result.inputTokens,
+				OutputTokens:    result.outputTokens,
+				FinishReason:    result.finishReason,
+				Model:           model,
+			})
+		}
 		return
 	}
 
@@ -2658,6 +2757,116 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 
 	h.recordFailureWithDetailsMeta("openai", model, "", lastErr, clientIP, apiKeyID, "")
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
+}
+
+// replayOpenAIStream re-emits a cached answer as a fresh OpenAI SSE stream. It
+// mirrors the terminal frames of streamOpenAIAttempt (content deltas, then a
+// finish chunk carrying usage, then [DONE]) so a cache hit is indistinguishable
+// from a live stream to the client. Clients concatenate deltas, so collapsing
+// the body into one content chunk is wire-valid.
+func replayOpenAIStream(sse *openAISSEWriter, chatID, model string, thinking bool, thinkingFormat string, hit cachedResponse) {
+	created := time.Now().Unix()
+	emit := func(delta map[string]string) {
+		_ = sse.JSON(map[string]interface{}{
+			"id": chatID, "object": "chat.completion.chunk", "created": created, "model": model,
+			"choices": []map[string]interface{}{{"index": 0, "delta": delta, "finish_reason": nil}},
+		})
+	}
+	if thinking && hit.ThinkingContent != "" {
+		switch thinkingFormat {
+		case "thinking":
+			emit(map[string]string{"content": "<thinking>" + hit.ThinkingContent + "</thinking>"})
+		case "think":
+			emit(map[string]string{"content": "<think>" + hit.ThinkingContent + "</think>"})
+		default:
+			emit(map[string]string{"reasoning_content": hit.ThinkingContent})
+		}
+	}
+	if hit.Content != "" {
+		emit(map[string]string{"content": hit.Content})
+	}
+	finishReason := "stop"
+	if hit.FinishReason != "" {
+		finishReason = hit.FinishReason
+	}
+	if writeErr := sse.JSON(map[string]interface{}{
+		"id": chatID, "object": "chat.completion.chunk", "created": created, "model": model,
+		"choices": []map[string]interface{}{{"index": 0, "delta": map[string]interface{}{}, "finish_reason": finishReason}},
+		"usage":   map[string]int{"prompt_tokens": hit.InputTokens, "completion_tokens": hit.OutputTokens, "total_tokens": hit.InputTokens + hit.OutputTokens},
+	}); writeErr != nil {
+		return
+	}
+	_ = sse.Done()
+}
+
+// replayClaudeStream re-emits a cached answer as a fresh Claude SSE stream,
+// mirroring streamClaudeAttempt's terminal frames (message_start → optional
+// thinking block → text block → message_delta with stop_reason → message_stop).
+// The thinking-format folding matches renderClaudeNonStreamResponse so a cached
+// stream and a cached non-stream reply agree.
+func replayClaudeStream(sse *claudeSSEWriter, msgID, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, hit cachedResponse) {
+	finalContent := hit.Content
+	responseThinking := hit.ThinkingContent
+	if !thinking {
+		responseThinking = ""
+	}
+	emitThinkingBlock := false
+	if thinking && responseThinking != "" {
+		switch thinkingOpts.Format {
+		case "think":
+			finalContent = "<think>" + responseThinking + "</think>" + finalContent
+			responseThinking = ""
+		case "reasoning_content":
+			finalContent = responseThinking + finalContent
+			responseThinking = ""
+		default:
+			emitThinkingBlock = !thinkingOpts.OmitDisplay
+		}
+	}
+
+	_ = sse.Send("message_start", map[string]interface{}{
+		"type": "message_start",
+		"message": map[string]interface{}{
+			"id": msgID, "type": "message", "role": "assistant",
+			"content": []interface{}{}, "model": model,
+			"stop_reason": nil, "stop_sequence": nil,
+			"usage": buildClaudeUsageMap(hit.InputTokens, 0, promptCacheUsage{}, false),
+		},
+	})
+
+	idx := 0
+	if emitThinkingBlock && responseThinking != "" {
+		_ = sse.Send("content_block_start", map[string]interface{}{
+			"type": "content_block_start", "index": idx,
+			"content_block": map[string]string{"type": "thinking", "thinking": ""},
+		})
+		_ = sse.Send("content_block_delta", map[string]interface{}{
+			"type": "content_block_delta", "index": idx,
+			"delta": map[string]string{"type": "thinking_delta", "thinking": responseThinking},
+		})
+		_ = sse.Send("content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": idx})
+		idx++
+	}
+
+	_ = sse.Send("content_block_start", map[string]interface{}{
+		"type": "content_block_start", "index": idx,
+		"content_block": map[string]string{"type": "text", "text": ""},
+	})
+	_ = sse.Send("content_block_delta", map[string]interface{}{
+		"type": "content_block_delta", "index": idx,
+		"delta": map[string]string{"type": "text_delta", "text": finalContent},
+	})
+	_ = sse.Send("content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": idx})
+
+	stopReason := "end_turn"
+	if mapped := claudeStopReasonFromFinish(hit.FinishReason); mapped != "" {
+		stopReason = mapped
+	}
+	_ = sse.Send("message_delta", map[string]interface{}{
+		"type": "message_delta", "delta": map[string]interface{}{"stop_reason": stopReason},
+		"usage": buildClaudeUsageMap(hit.InputTokens, hit.OutputTokens, promptCacheUsage{}, false),
+	})
+	_ = sse.Send("message_stop", map[string]interface{}{"type": "message_stop"})
 }
 
 // streamOpenAIAttempt runs exactly one upstream call and publishes its OpenAI SSE
@@ -3039,6 +3248,14 @@ func (h *Handler) streamOpenAIAttempt(ctx context.Context, account *config.Accou
 	result.inputTokens = inputTokens
 	result.outputTokens = outputTokens
 	result.credits = credits
+	// Surface the raw answer so the caller can populate the response cache. Only
+	// meaningful for a tool-free turn (tool responses are never cached); the
+	// caller guards on len(toolCalls)==0 anyway.
+	if len(toolCalls) == 0 {
+		result.content = outputContent
+		result.thinking = reasoningOutput
+		result.finishReason = finishReason
+	}
 	if writeErr := sse.JSON(chunk); writeErr != nil {
 		result.writeErr = writeErr
 		return result
@@ -3053,7 +3270,16 @@ func (h *Handler) streamOpenAIAttempt(ctx context.Context, account *config.Accou
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
-func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID, clientIP string) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, cacheIntent *responseCacheIntent, apiKeyID, clientIP string) {
+	if hit, ok := cacheIntent.lookup(h.responseCache); ok {
+		thinkingFormat := config.GetThinkingConfig().OpenAIFormat
+		resp := KiroToOpenAIResponseWithReasoning(hit.Content, hit.ThinkingContent, nil, hit.InputTokens, hit.OutputTokens, model, thinkingFormat)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(resp)
+		h.recordSuccessLogMeta("openai", model, "", hit.InputTokens+hit.OutputTokens, 0, 0, clientIP, apiKeyID, "cache")
+		return
+	}
+
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
@@ -3128,6 +3354,19 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.recordSuccessLogMeta("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+
+		// Store the completed answer for replay. Tool responses never reach here
+		// (cacheIntent is nil when tools are present), so toolUses is empty for a
+		// cacheable turn.
+		if len(toolUses) == 0 {
+			cacheIntent.store(h.responseCache, cachedResponse{
+				Content:         finalContent,
+				ThinkingContent: reasoningContent,
+				InputTokens:     inputTokens,
+				OutputTokens:    outputTokens,
+				Model:           model,
+			})
+		}
 
 		thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 		resp := KiroToOpenAIResponseWithReasoning(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model, thinkingFormat)
@@ -3221,6 +3460,9 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 
 	// 更新内存
 	h.pool.UpdateToken(account.ID, accessToken, refreshToken, expiresAt)
+	// A rotated token may map to a different profile/region, so drop the cached
+	// model catalog for this account and let the next request re-fetch it.
+	kiroModelCatalogCache.Invalidate(account.ID)
 	account.AccessToken = accessToken
 	if refreshToken != "" {
 		account.RefreshToken = refreshToken

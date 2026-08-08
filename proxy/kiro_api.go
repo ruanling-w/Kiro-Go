@@ -7,6 +7,7 @@ import (
 	"kiro-go/auth"
 	"kiro-go/config"
 	"kiro-go/logger"
+	"kiro-go/pool"
 	"net/http"
 	neturl "net/url"
 	"strings"
@@ -138,8 +139,40 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 	return &result, nil
 }
 
-// ListAvailableModels 获取可用模型列表
+// kiroModelCatalogCache caches per-account Kiro model catalogs with a short TTL
+// and serves a stale copy when a live fetch fails (network/5xx). See
+// model_catalog_cache.go.
+var kiroModelCatalogCache = newModelCatalogCache(defaultModelCatalogTTL)
+
+// ListAvailableModels returns the account's Kiro model catalog, served from a
+// short-TTL per-account cache. On a live-fetch failure it falls back to a stale
+// cached catalog (unless the failure is an auth error, where a stale catalog is
+// unsafe: the credential may have been revoked).
 func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
+	if account == nil {
+		return nil, fmt.Errorf("account is nil")
+	}
+	if models, ok := kiroModelCatalogCache.Get(account.ID); ok {
+		return models, nil
+	}
+
+	models, err := listAvailableModelsUncached(account)
+	if err != nil {
+		if !pool.IsAuthFailure(err) {
+			if stale, ok := kiroModelCatalogCache.GetStale(account.ID); ok {
+				logger.Warnf("[ModelsCache] %s live fetch failed, serving stale catalog: %v", account.Email, err)
+				return stale, nil
+			}
+		}
+		return nil, err
+	}
+
+	kiroModelCatalogCache.Set(account.ID, models)
+	return models, nil
+}
+
+// listAvailableModelsUncached performs the live AWS ListAvailableModels call.
+func listAvailableModelsUncached(account *config.Account) ([]ModelInfo, error) {
 	if err := ensureRestProfileArn(account); err != nil {
 		return nil, fmt.Errorf("resolve profileArn: %w", err)
 	}

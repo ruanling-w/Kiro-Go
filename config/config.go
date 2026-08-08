@@ -254,6 +254,16 @@ type Config struct {
 	// solely because usageCurrent >= usageLimit.
 	AllowOverUsage bool `json:"allowOverUsage,omitempty"`
 
+	// ResponseCacheEnabled turns on the in-memory response cache: identical
+	// tool-free requests (same model + messages + system + params) replay a stored
+	// answer instead of calling upstream, saving credits. Opt-in (default false)
+	// like ComboModelAdvertisement, since a cached answer can be stale.
+	ResponseCacheEnabled bool `json:"responseCacheEnabled,omitempty"`
+
+	// ResponseCacheTTLSeconds bounds how long a cached response stays valid.
+	// Zero falls back to the built-in default (see defaultResponseCacheTTL).
+	ResponseCacheTTLSeconds int `json:"responseCacheTTLSeconds,omitempty"`
+
 	// DefaultApiKeyMultiplier is the SERVER-WIDE billing factor applied to every
 	// API key (multiplied with the per-key multiplier). JSON name kept for compat.
 	// Zero means 1x at the server layer.
@@ -1116,6 +1126,46 @@ func UpdateAllowOverUsage(allow bool) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.AllowOverUsage = allow
+	return Save()
+}
+
+// GetResponseCacheEnabled reports whether the in-memory response cache is on.
+func GetResponseCacheEnabled() bool {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return false
+	}
+	return cfg.ResponseCacheEnabled
+}
+
+// GetResponseCacheTTLSeconds returns the configured response-cache TTL in
+// seconds, or 0 when unset (callers apply their own default).
+func GetResponseCacheTTLSeconds() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return 0
+	}
+	return cfg.ResponseCacheTTLSeconds
+}
+
+// GetResponseCacheTTL returns the response-cache TTL as a duration, or 0 when
+// unset so the cache constructor applies its built-in default.
+func GetResponseCacheTTL() time.Duration {
+	return time.Duration(GetResponseCacheTTLSeconds()) * time.Second
+}
+
+// UpdateResponseCache sets the response-cache switch and TTL and persists them.
+// A negative ttlSeconds is clamped to 0 (use the built-in default).
+func UpdateResponseCache(enabled bool, ttlSeconds int) error {
+	if ttlSeconds < 0 {
+		ttlSeconds = 0
+	}
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.ResponseCacheEnabled = enabled
+	cfg.ResponseCacheTTLSeconds = ttlSeconds
 	return Save()
 }
 
