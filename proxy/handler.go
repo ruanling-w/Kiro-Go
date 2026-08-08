@@ -75,10 +75,13 @@ const requestLogsPendingMax = 2000
 type Handler struct {
 	pool *pool.AccountPool
 	// 运行时统计 (使用原子操作)
-	totalRequests   int64
-	successRequests int64
-	failedRequests  int64
-	totalTokens     int64
+	totalRequests    int64
+	successRequests  int64
+	failedRequests   int64
+	totalTokens      int64
+	totalInputTokens int64
+	totalOutputTokens int64
+	totalCacheTokens int64
 	totalCredits    float64 // float64 需要用锁保护
 	creditsMu       sync.RWMutex
 	startTime       int64
@@ -814,16 +817,19 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":          "ok",
-		"version":         config.Version,
-		"accounts":        h.pool.Count(),
-		"available":       h.pool.AvailableCount(),
-		"totalRequests":   atomic.LoadInt64(&h.totalRequests),
-		"successRequests": atomic.LoadInt64(&h.successRequests),
-		"failedRequests":  atomic.LoadInt64(&h.failedRequests),
-		"totalTokens":     atomic.LoadInt64(&h.totalTokens),
-		"totalCredits":    h.getCredits(),
-		"uptime":          time.Now().Unix() - h.startTime,
+		"status":            "ok",
+		"version":           config.Version,
+		"accounts":          h.pool.Count(),
+		"available":         h.pool.AvailableCount(),
+		"totalRequests":     atomic.LoadInt64(&h.totalRequests),
+		"successRequests":   atomic.LoadInt64(&h.successRequests),
+		"failedRequests":    atomic.LoadInt64(&h.failedRequests),
+		"totalTokens":       atomic.LoadInt64(&h.totalTokens),
+		"totalInputTokens":  atomic.LoadInt64(&h.totalInputTokens),
+		"totalOutputTokens": atomic.LoadInt64(&h.totalOutputTokens),
+		"totalCacheTokens":  atomic.LoadInt64(&h.totalCacheTokens),
+		"totalCredits":      h.getCredits(),
+		"uptime":            time.Now().Unix() - h.startTime,
 	})
 }
 
@@ -2072,6 +2078,8 @@ func (h *Handler) recordSuccess(inputTokens, outputTokens int, credits float64) 
 	atomic.AddInt64(&h.totalRequests, 1)
 	atomic.AddInt64(&h.successRequests, 1)
 	atomic.AddInt64(&h.totalTokens, int64(inputTokens+outputTokens))
+	atomic.AddInt64(&h.totalInputTokens, int64(inputTokens))
+	atomic.AddInt64(&h.totalOutputTokens, int64(outputTokens))
 	h.addCredits(credits)
 }
 
@@ -2184,6 +2192,7 @@ func (h *Handler) recordSuccessLogMeta(endpoint, model, accountID string, tok lo
 		Provider:            provider,
 	}
 
+	atomic.AddInt64(&h.totalCacheTokens, int64(tok.CacheRead+tok.CacheCreation))
 	h.appendRequestLog(entry)
 }
 
