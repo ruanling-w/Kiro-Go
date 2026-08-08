@@ -11,9 +11,9 @@
 package config
 
 import (
-	"errors"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -82,8 +82,8 @@ type Account struct {
 	//   - "apikey": official xAI API key (from console.x.ai) stored in GrokAPIKey,
 	//     sent as Bearer token to https://api.x.ai. No refresh.
 	//   - "oauth": "Grok Build" OAuth (PKCE). The issued access_token/refresh_token
-	//     are stored in the shared AccessToken/RefreshToken/ExpiresAt fields above
-	//     and refreshed against the xAI token endpoint (see auth/xai.go).
+	//     are stored in the shared AccessToken/RefreshToken/ExpiresAt fields above,
+	//     refreshed against auth.x.ai, and used with cli-chat-proxy.grok.com.
 	// GrokAuthType is one of "apikey" | "oauth".
 	GrokAPIKey   string `json:"grokApiKey,omitempty"`
 	GrokAuthType string `json:"grokAuthType,omitempty"`

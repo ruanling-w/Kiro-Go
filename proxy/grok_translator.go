@@ -124,18 +124,33 @@ func modelInfoIDs(infos []ModelInfo) []string {
 	return ids
 }
 
-// resolveGrokModel returns the upstream model id to send to xAI.
-// For now we do light normalization (strip common suffixes if needed).
+// resolveGrokModel returns the real upstream model id to send to api.x.ai.
+// Clients may expose virtual aliases with an effort suffix. Strip only those
+// suffixes; grok-4-fast-reasoning is a real xAI model id and must remain intact.
 func resolveGrokModel(model string) string {
 	m := strings.TrimSpace(model)
 	if m == "" {
 		return "grok-4"
 	}
-	// Accept both "grok-4-thinking" style and plain ids.
+	for _, suffix := range []string{"-thinking", "-xhigh", "-high", "-medium", "-low"} {
+		if base := strings.TrimSuffix(m, suffix); base != m && base != "" {
+			return base
+		}
+	}
 	return m
 }
 
 // ==================== Request conversion: Claude → OpenAI (for Grok) ====================
+
+func grokReasoningEffort(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	for _, effort := range []string{"xhigh", "high", "medium", "low"} {
+		if strings.HasSuffix(m, "-"+effort) {
+			return effort
+		}
+	}
+	return "medium"
+}
 
 // ClaudeToOpenAI converts a ClaudeRequest into a map ready for
 // POST /v1/chat/completions against Grok/xAI.
@@ -163,8 +178,12 @@ func ClaudeToOpenAI(req *ClaudeRequest, thinking bool) (map[string]interface{}, 
 		})
 	}
 
+	// seenToolCalls tracks tool_use ids emitted by earlier assistant turns so a
+	// tool_result whose call was trimmed out of the history can be dropped rather
+	// than sent as an orphan (xAI rejects the request with HTTP 400).
+	seenToolCalls := make(map[string]bool)
 	for _, m := range req.Messages {
-		msgs = append(msgs, claudeMessageToOpenAI(m)...)
+		msgs = append(msgs, claudeMessageToOpenAI(m, seenToolCalls)...)
 	}
 	body["messages"] = msgs
 
@@ -179,16 +198,118 @@ func ClaudeToOpenAI(req *ClaudeRequest, thinking bool) (map[string]interface{}, 
 		body["top_p"] = req.TopP
 	}
 
+	// Chat Completions accepts reasoning_effort as a scalar. The nested
+	// Responses-API `reasoning` object is rejected by api.x.ai/v1/chat/completions.
+	if thinking {
+		body["reasoning_effort"] = grokReasoningEffort(req.Model)
+	}
+
 	// Tools
 	if len(req.Tools) > 0 {
-		body["tools"] = claudeToolsToOpenAITools(req.Tools)
-		if req.ToolChoice != nil {
-			body["tool_choice"] = req.ToolChoice
+		tools := claudeToolsToOpenAITools(req.Tools)
+		body["tools"] = tools
+		if choice := claudeToolChoiceToOpenAI(req.ToolChoice, tools); choice != nil {
+			body["tool_choice"] = choice
 		}
 	}
 
 	// Stream flag is handled by caller
 	return body, nil
+}
+
+// claudeToolChoiceToOpenAI translates Anthropic's tool_choice into the OpenAI
+// shape xAI expects. The two wire formats do not overlap:
+//
+//	Claude                          OpenAI
+//	{"type":"auto"}              →  "auto"
+//	{"type":"any"}               →  "required"
+//	{"type":"none"}              →  "none"
+//	{"type":"tool","name":"x"}   →  {"type":"function","function":{"name":"x"}}
+//
+// Forwarding the Claude object verbatim makes xAI reject the request, so an
+// unrecognized value is dropped instead (letting the model decide) rather than
+// failing the whole call. A forced tool name that is not in the declared tool
+// list is also dropped, since xAI 400s on an unknown name.
+func claudeToolChoiceToOpenAI(choice interface{}, tools []map[string]interface{}) interface{} {
+	if choice == nil {
+		return nil
+	}
+
+	// Some clients already send the OpenAI string form.
+	if s, ok := choice.(string); ok {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "auto":
+			return "auto"
+		case "none":
+			return "none"
+		case "required", "any":
+			return "required"
+		default:
+			return nil
+		}
+	}
+
+	m, ok := choice.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	typ, _ := m["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "auto":
+		return "auto"
+	case "any":
+		return "required"
+	case "none":
+		return "none"
+	case "tool", "function":
+		name := strings.TrimSpace(toolChoiceName(m))
+		if name == "" || !openAIToolsContain(tools, name) {
+			return nil
+		}
+		return map[string]interface{}{
+			"type":     "function",
+			"function": map[string]interface{}{"name": name},
+		}
+	default:
+		return nil
+	}
+}
+
+// toolChoiceName reads the forced tool name from either the Claude flat shape
+// ({"type":"tool","name":"x"}) or the OpenAI nested one
+// ({"type":"function","function":{"name":"x"}}).
+func toolChoiceName(m map[string]interface{}) string {
+	if n, ok := m["name"].(string); ok && strings.TrimSpace(n) != "" {
+		return n
+	}
+	if fn, ok := m["function"].(map[string]interface{}); ok {
+		if n, ok := fn["name"].(string); ok {
+			return n
+		}
+	}
+	return ""
+}
+
+// openAIToolsContain reports whether name matches a declared function tool.
+func openAIToolsContain(tools []map[string]interface{}, name string) bool {
+	for _, t := range tools {
+		fn, ok := t["function"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if n, _ := fn["name"].(string); n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// isHostedTool returns true for tools provided by xAI (web_search, x_search, etc.)
+// that must be passed through without parameter sanitization.
+func isHostedTool(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "web_search" || n == "x_search" || n == "image_generation"
 }
 
 func extractClaudeSystemPrompt(system interface{}) string {
@@ -221,8 +342,20 @@ func extractClaudeSystemPrompt(system interface{}) string {
 //     message per result (OpenAI requires a separate tool message keyed by
 //     tool_call_id), plus a normal user message for any accompanying text.
 //
+// Message ordering matters: OpenAI/xAI require every role:"tool" message to
+// follow the assistant turn that requested it, with nothing in between. Claude
+// clients (notably Claude Code) pack tool_result blocks and ordinary text into
+// the SAME user turn, so the tool messages must be emitted FIRST and the user
+// text after them. Emitting the user text first produces
+// assistant(tool_calls) → user(text) → tool(result), which xAI either rejects
+// or silently ignores — the model then continues as if the tool never ran.
+//
+// seenToolCalls carries the tool_use ids from earlier assistant turns. A
+// tool_result referencing an id that is not present (history trimmed by the
+// client) is dropped, because xAI 400s on an orphan tool message.
+//
 // Plain text/image content passes through as before.
-func claudeMessageToOpenAI(m ClaudeMessage) []map[string]interface{} {
+func claudeMessageToOpenAI(m ClaudeMessage, seenToolCalls map[string]bool) []map[string]interface{} {
 	role := m.Role
 	if role == "" {
 		role = "user"
@@ -245,7 +378,7 @@ func claudeMessageToOpenAI(m ClaudeMessage) []map[string]interface{} {
 		return []map[string]interface{}{{"role": role, "content": m.Content}}
 	}
 
-	var out []map[string]interface{}
+	var toolMsgs []map[string]interface{}
 	var texts []string
 	var toolCalls []map[string]interface{}
 	var imageParts []map[string]interface{}
@@ -275,9 +408,15 @@ func claudeMessageToOpenAI(m ClaudeMessage) []map[string]interface{} {
 		case "tool_use":
 			id, _ := mm["id"].(string)
 			name, _ := mm["name"].(string)
+			if strings.TrimSpace(id) == "" || strings.TrimSpace(name) == "" {
+				continue
+			}
 			args := "{}"
 			if raw, err := json.Marshal(mm["input"]); err == nil {
 				args = string(raw)
+			}
+			if seenToolCalls != nil {
+				seenToolCalls[id] = true
 			}
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"id":   id,
@@ -289,7 +428,14 @@ func claudeMessageToOpenAI(m ClaudeMessage) []map[string]interface{} {
 			})
 		case "tool_result":
 			id, _ := mm["tool_use_id"].(string)
-			out = append(out, map[string]interface{}{
+			if strings.TrimSpace(id) == "" {
+				continue
+			}
+			// Orphan result (its tool_call was trimmed from history) → drop.
+			if seenToolCalls != nil && !seenToolCalls[id] {
+				continue
+			}
+			toolMsgs = append(toolMsgs, map[string]interface{}{
 				"role":         "tool",
 				"tool_call_id": id,
 				"content":      claudeToolResultContent(mm["content"]),
@@ -322,12 +468,11 @@ func claudeMessageToOpenAI(m ClaudeMessage) []map[string]interface{} {
 		hasMain = true
 	}
 
-	// A tool_result-only user turn produces just the tool messages; the empty
-	// user shell would be rejected by OpenAI, so skip it.
+	// Tool messages come first so they stay adjacent to the assistant turn that
+	// requested them; any accompanying user text follows.
+	out := toolMsgs
 	if hasMain {
-		// Prepend the assistant/user message before any tool messages so order
-		// stays: assistant(tool_calls) → tool results, or user text → (rare).
-		out = append([]map[string]interface{}{main}, out...)
+		out = append(out, main)
 	}
 	return out
 }
@@ -431,17 +576,32 @@ func sanitizeGrokOpenAITools(body map[string]interface{}) {
 		if !ok {
 			continue
 		}
+		// Hosted Chat Completions tools identify themselves by type and do not
+		// carry a function/name wrapper. Preserve their provider-specific options.
+		if toolType, _ := tool["type"].(string); isHostedTool(toolType) {
+			cleaned = append(cleaned, tool)
+			continue
+		}
 		// Nested Chat Completions shape: {type, function:{name,parameters,...}}
 		if fn, ok := tool["function"].(map[string]interface{}); ok {
-			fn["parameters"] = sanitizeGrokToolParameters(fn["parameters"])
-			if name, _ := fn["name"].(string); strings.TrimSpace(name) == "" {
+			name, _ := fn["name"].(string)
+			if strings.TrimSpace(name) == "" {
 				continue
 			}
+			if isHostedTool(name) {
+				cleaned = append(cleaned, tool)
+				continue
+			}
+			fn["parameters"] = sanitizeGrokToolParameters(fn["parameters"])
 			cleaned = append(cleaned, tool)
 			continue
 		}
 		// Flat Responses shape: {type, name, parameters, ...}
 		if name, _ := tool["name"].(string); strings.TrimSpace(name) != "" {
+			if isHostedTool(name) {
+				cleaned = append(cleaned, tool)
+				continue
+			}
 			params := sanitizeGrokToolParameters(tool["parameters"])
 			entry := map[string]interface{}{
 				"type": "function",
@@ -658,8 +818,34 @@ func sanitizeGrokSchemaMap(m map[string]interface{}) map[string]interface{} {
 	return m
 }
 
+// grokPayloadKeys are request fields whose interior must never be pruned:
+//
+//   - tools: sanitizeGrokToolParameters deliberately emits `properties: {}` for
+//     no-argument tools because xAI requires an object schema. Recursing here
+//     would delete it again and the request would 400.
+//   - messages: a role:"tool" message legitimately carries `content: ""` (a tool
+//     that produced no output), and tool_calls carry `arguments: ""` mid-stream.
+//     Dropping those breaks the tool protocol.
+//   - tool_choice: already normalized by claudeToolChoiceToOpenAI; its shape is
+//     exact and `{"type":"function","function":{...}}` must survive intact.
+var grokPayloadKeys = map[string]bool{
+	"tools":       true,
+	"messages":    true,
+	"tool_choice": true,
+}
+
+// cleanEmptyOpenAIFields drops top-level request fields that are empty, which
+// xAI rejects for some keys (e.g. `stop: []`, `user: ""`).
+//
+// It is deliberately shallow: it never descends into tools or messages. An
+// earlier recursive version undid sanitizeGrokToolParameters by stripping the
+// `properties: {}` that xAI requires, and stripped empty tool-result content —
+// both of which produced HTTP 400 or a silently broken tool loop.
 func cleanEmptyOpenAIFields(m map[string]interface{}) {
 	for k, v := range m {
+		if grokPayloadKeys[k] {
+			continue
+		}
 		switch val := v.(type) {
 		case string:
 			if val == "" {
@@ -670,7 +856,6 @@ func cleanEmptyOpenAIFields(m map[string]interface{}) {
 				delete(m, k)
 			}
 		case map[string]interface{}:
-			cleanEmptyOpenAIFields(val)
 			if len(val) == 0 {
 				delete(m, k)
 			}
@@ -732,7 +917,8 @@ func extractTextFromOpenAIMessage(msg OpenAIMessage) (content string, reasoning 
 	if s, ok := msg.Content.(string); ok {
 		content = s
 	}
-	// Some responses put reasoning in a separate field (future proof)
+	reasoning = msg.ReasoningContent
+	// Keep compatibility with providers that wrap both fields in content.
 	if r, ok := msg.Content.(map[string]interface{}); ok {
 		if c, ok := r["content"].(string); ok {
 			content = c

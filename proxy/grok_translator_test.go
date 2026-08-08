@@ -3,10 +3,56 @@ package proxy
 import (
 	"encoding/json"
 	"kiro-go/config"
+	"strings"
 	"testing"
 )
 
-// helper: marshal to map for easy field assertions.
+func TestClaudeToOpenAIReasoningEffort(t *testing.T) {
+	body, err := ClaudeToOpenAI(&ClaudeRequest{Model: "grok-4-high"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %v", body["reasoning_effort"])
+	}
+	if _, exists := body["reasoning"]; exists {
+		t.Fatal("chat completions request must not contain Responses API reasoning object")
+	}
+}
+
+func TestExtractTextFromOpenAIMessageReasoningContent(t *testing.T) {
+	content, reasoning := extractTextFromOpenAIMessage(OpenAIMessage{
+		Content:          "answer",
+		ReasoningContent: "thought",
+	})
+	if content != "answer" || reasoning != "thought" {
+		t.Fatalf("content=%q reasoning=%q", content, reasoning)
+	}
+}
+
+func TestOpenAIToOpenAIPreservesHostedToolsAndOptions(t *testing.T) {
+	parallel := true
+	req := &OpenAIRequest{
+		Model:             "grok-4",
+		Messages:          []OpenAIMessage{{Role: "user", Content: "search"}},
+		Tools:             []OpenAITool{{Type: "web_search"}},
+		ParallelToolCalls: &parallel,
+		ReasoningEffort:   "high",
+		StreamOptions:     map[string]interface{}{"include_usage": true},
+	}
+	body, err := OpenAIToOpenAI(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, ok := body["tools"].([]interface{})
+	if !ok || len(tools) != 1 || tools[0].(map[string]interface{})["type"] != "web_search" {
+		t.Fatalf("hosted tools = %#v", body["tools"])
+	}
+	if body["parallel_tool_calls"] != true || body["reasoning_effort"] != "high" {
+		t.Fatalf("options lost: %#v", body)
+	}
+}
+
 func toMsgs(t *testing.T, body map[string]interface{}) []map[string]interface{} {
 	t.Helper()
 	raw, ok := body["messages"]
@@ -117,6 +163,245 @@ func TestClaudeToOpenAI_ToolUseAndResult(t *testing.T) {
 	}
 }
 
+// TestClaudeToOpenAI_ToolResultPrecedesUserText covers the ordering bug that
+// broke the agentic loop: Claude Code packs tool_result blocks and ordinary text
+// (system-reminders) into the SAME user turn. OpenAI/xAI require role:"tool"
+// messages to sit immediately after the assistant turn that requested them, so
+// the tool message must come before the user text.
+func TestClaudeToOpenAI_ToolResultPrecedesUserText(t *testing.T) {
+	req := &ClaudeRequest{
+		Model: "grok-4",
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: "read the file"},
+			{Role: "assistant", Content: []interface{}{
+				map[string]interface{}{
+					"type":  "tool_use",
+					"id":    "toolu_1",
+					"name":  "read_file",
+					"input": map[string]interface{}{"path": "a.go"},
+				},
+			}},
+			// Claude Code shape: tool_result AND text in one user turn.
+			{Role: "user", Content: []interface{}{
+				map[string]interface{}{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_1",
+					"content":     "package main",
+				},
+				map[string]interface{}{
+					"type": "text",
+					"text": "<system-reminder>keep going</system-reminder>",
+				},
+			}},
+		},
+	}
+	body, err := ClaudeToOpenAI(req, false)
+	if err != nil {
+		t.Fatalf("ClaudeToOpenAI: %v", err)
+	}
+	msgs := toMsgs(t, body)
+	// user, assistant(tool_calls), tool, user(text)
+	if len(msgs) != 4 {
+		t.Fatalf("got %d messages, want 4: %+v", len(msgs), msgs)
+	}
+	if msgs[1]["role"] != "assistant" {
+		t.Fatalf("msgs[1] role = %v, want assistant", msgs[1]["role"])
+	}
+	if msgs[2]["role"] != "tool" {
+		t.Fatalf("msgs[2] role = %v, want tool immediately after assistant", msgs[2]["role"])
+	}
+	if msgs[2]["tool_call_id"] != "toolu_1" {
+		t.Errorf("tool_call_id = %v", msgs[2]["tool_call_id"])
+	}
+	if msgs[3]["role"] != "user" {
+		t.Fatalf("msgs[3] role = %v, want user text after the tool result", msgs[3]["role"])
+	}
+	if msgs[3]["content"] != "<system-reminder>keep going</system-reminder>" {
+		t.Errorf("user text = %v", msgs[3]["content"])
+	}
+}
+
+// TestClaudeToOpenAI_DropsOrphanToolResult covers history trimmed by the client:
+// a tool_result whose tool_use is gone would make xAI reject the whole request.
+func TestClaudeToOpenAI_DropsOrphanToolResult(t *testing.T) {
+	req := &ClaudeRequest{
+		Model: "grok-4",
+		Messages: []ClaudeMessage{
+			// No assistant tool_use anywhere — this result is an orphan.
+			{Role: "user", Content: []interface{}{
+				map[string]interface{}{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_gone",
+					"content":     "stale output",
+				},
+				map[string]interface{}{"type": "text", "text": "continue"},
+			}},
+		},
+	}
+	body, err := ClaudeToOpenAI(req, false)
+	if err != nil {
+		t.Fatalf("ClaudeToOpenAI: %v", err)
+	}
+	msgs := toMsgs(t, body)
+	for _, m := range msgs {
+		if m["role"] == "tool" {
+			t.Fatalf("orphan tool message survived: %+v", msgs)
+		}
+	}
+	if len(msgs) != 1 || msgs[0]["role"] != "user" || msgs[0]["content"] != "continue" {
+		t.Fatalf("want single user message, got %+v", msgs)
+	}
+}
+
+// A tool_result whose tool_use appeared in an earlier turn must be kept.
+func TestClaudeToOpenAI_KeepsToolResultAcrossTurns(t *testing.T) {
+	req := &ClaudeRequest{
+		Model: "grok-4",
+		Messages: []ClaudeMessage{
+			{Role: "assistant", Content: []interface{}{
+				map[string]interface{}{
+					"type": "tool_use", "id": "toolu_a", "name": "f",
+					"input": map[string]interface{}{},
+				},
+			}},
+			{Role: "user", Content: []interface{}{
+				map[string]interface{}{"type": "tool_result", "tool_use_id": "toolu_a", "content": "ok"},
+			}},
+			{Role: "assistant", Content: []interface{}{
+				map[string]interface{}{
+					"type": "tool_use", "id": "toolu_b", "name": "g",
+					"input": map[string]interface{}{},
+				},
+			}},
+			{Role: "user", Content: []interface{}{
+				map[string]interface{}{"type": "tool_result", "tool_use_id": "toolu_b", "content": "ok2"},
+				// Orphan mixed in with a valid one.
+				map[string]interface{}{"type": "tool_result", "tool_use_id": "toolu_ghost", "content": "??"},
+			}},
+		},
+	}
+	body, err := ClaudeToOpenAI(req, false)
+	if err != nil {
+		t.Fatalf("ClaudeToOpenAI: %v", err)
+	}
+	msgs := toMsgs(t, body)
+	var toolIDs []string
+	for _, m := range msgs {
+		if m["role"] == "tool" {
+			toolIDs = append(toolIDs, m["tool_call_id"].(string))
+		}
+	}
+	if len(toolIDs) != 2 || toolIDs[0] != "toolu_a" || toolIDs[1] != "toolu_b" {
+		t.Fatalf("tool ids = %v, want [toolu_a toolu_b]", toolIDs)
+	}
+}
+
+// tool_use blocks missing an id or name would produce a malformed tool_calls
+// entry that xAI rejects.
+func TestClaudeToOpenAI_SkipsIncompleteToolUse(t *testing.T) {
+	req := &ClaudeRequest{
+		Model: "grok-4",
+		Messages: []ClaudeMessage{
+			{Role: "assistant", Content: []interface{}{
+				map[string]interface{}{"type": "tool_use", "id": "", "name": "f"},
+				map[string]interface{}{"type": "tool_use", "id": "toolu_1", "name": ""},
+				map[string]interface{}{"type": "text", "text": "hi"},
+			}},
+		},
+	}
+	body, err := ClaudeToOpenAI(req, false)
+	if err != nil {
+		t.Fatalf("ClaudeToOpenAI: %v", err)
+	}
+	msgs := toMsgs(t, body)
+	if len(msgs) != 1 {
+		t.Fatalf("got %d msgs, want 1: %+v", len(msgs), msgs)
+	}
+	if _, has := msgs[0]["tool_calls"]; has {
+		t.Fatalf("incomplete tool_use produced tool_calls: %+v", msgs[0])
+	}
+	if msgs[0]["content"] != "hi" {
+		t.Errorf("content = %v", msgs[0]["content"])
+	}
+}
+
+// TestClaudeToolChoiceToOpenAI covers A3: Anthropic tool_choice objects must be
+// rewritten into the OpenAI shape, and anything unrecognized dropped rather than
+// forwarded verbatim (xAI 400s on the Claude form).
+func TestClaudeToolChoiceToOpenAI(t *testing.T) {
+	tools := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "get_weather"}},
+	}
+
+	cases := []struct {
+		name string
+		in   interface{}
+		want interface{}
+	}{
+		{"nil", nil, nil},
+		{"claude auto", map[string]interface{}{"type": "auto"}, "auto"},
+		{"claude any", map[string]interface{}{"type": "any"}, "required"},
+		{"claude none", map[string]interface{}{"type": "none"}, "none"},
+		{"string auto", "auto", "auto"},
+		{"string required", "required", "required"},
+		{"string any", "any", "required"},
+		{"unknown string", "banana", nil},
+		{"unknown type", map[string]interface{}{"type": "banana"}, nil},
+		{"forced unknown tool", map[string]interface{}{"type": "tool", "name": "nope"}, nil},
+		{"forced without name", map[string]interface{}{"type": "tool"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := claudeToolChoiceToOpenAI(c.in, tools)
+			if got != c.want {
+				t.Fatalf("got %#v, want %#v", got, c.want)
+			}
+		})
+	}
+
+	// Forced tool that IS declared → nested OpenAI shape.
+	got := claudeToolChoiceToOpenAI(
+		map[string]interface{}{"type": "tool", "name": "get_weather"}, tools)
+	m, ok := got.(map[string]interface{})
+	if !ok {
+		t.Fatalf("forced choice = %#v, want map", got)
+	}
+	if m["type"] != "function" {
+		t.Errorf("type = %v, want function", m["type"])
+	}
+	fn, ok := m["function"].(map[string]interface{})
+	if !ok || fn["name"] != "get_weather" {
+		t.Errorf("function = %#v", m["function"])
+	}
+
+	// OpenAI nested form passes through unchanged in meaning.
+	got = claudeToolChoiceToOpenAI(map[string]interface{}{
+		"type":     "function",
+		"function": map[string]interface{}{"name": "get_weather"},
+	}, tools)
+	m, ok = got.(map[string]interface{})
+	if !ok || m["function"].(map[string]interface{})["name"] != "get_weather" {
+		t.Errorf("nested form = %#v", got)
+	}
+}
+
+// A Claude tool_choice object must never reach the body as-is.
+func TestClaudeToOpenAI_RewritesToolChoice(t *testing.T) {
+	req := &ClaudeRequest{
+		Model:      "grok-4",
+		Messages:   []ClaudeMessage{{Role: "user", Content: "weather?"}},
+		Tools:      []ClaudeTool{{Name: "get_weather", InputSchema: map[string]interface{}{"type": "object"}}},
+		ToolChoice: map[string]interface{}{"type": "any"},
+	}
+	body, err := ClaudeToOpenAI(req, false)
+	if err != nil {
+		t.Fatalf("ClaudeToOpenAI: %v", err)
+	}
+	if body["tool_choice"] != "required" {
+		t.Fatalf("tool_choice = %#v, want \"required\"", body["tool_choice"])
+	}
+}
+
 func TestClaudeToOpenAI_ImageBlock(t *testing.T) {
 	req := &ClaudeRequest{
 		Model: "grok-4",
@@ -160,12 +445,69 @@ func TestClaudeToOpenAI_ImageBlock(t *testing.T) {
 	}
 }
 
-func TestResolveGrokModel(t *testing.T) {
-	if got := resolveGrokModel(""); got != "grok-4" {
-		t.Errorf("empty -> %q, want grok-4", got)
+func TestClaudeStopReasonFromFinish(t *testing.T) {
+	cases := map[string]string{
+		"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use",
+		"content_filter": "refusal", "unknown": "", "": "",
 	}
-	if got := resolveGrokModel("grok-3"); got != "grok-3" {
-		t.Errorf("grok-3 -> %q", got)
+	for in, want := range cases {
+		if got := claudeStopReasonFromFinish(in); got != want {
+			t.Errorf("claudeStopReasonFromFinish(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseGrokOpenAISSEReportsUsageAndFinishReason(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":17,"completion_tokens":3}}`,
+		`data: [DONE]`, "",
+	}, "\n\n")
+	var text, finish string
+	var inTok, outTok int
+	err := parseGrokOpenAISSE(strings.NewReader(stream), &KiroStreamCallback{
+		OnText:         func(s string, _ bool) { text += s },
+		OnComplete:     func(in, out int) { inTok, outTok = in, out },
+		OnFinishReason: func(reason string) { finish = reason },
+	}, "grok-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "hello" || finish != "length" || inTok != 17 || outTok != 3 {
+		t.Fatalf("text=%q finish=%q usage=%d/%d", text, finish, inTok, outTok)
+	}
+}
+
+func TestParseGrokOpenAISSEDoesNotFabricateUsage(t *testing.T) {
+	stream := "data: {\"choices\":[{\"delta\":{\"content\":\"12345678\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	var inTok, outTok int
+	err := parseGrokOpenAISSE(strings.NewReader(stream), &KiroStreamCallback{
+		OnComplete: func(in, out int) { inTok, outTok = in, out },
+	}, "grok-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inTok != 0 || outTok != 0 {
+		t.Fatalf("fabricated usage: %d/%d", inTok, outTok)
+	}
+}
+
+func TestResolveGrokModel(t *testing.T) {
+	cases := map[string]string{
+		"":                      "grok-4",
+		"grok-3":                "grok-3",
+		" grok-4.5-high ":       "grok-4.5",
+		"grok-4.5-medium":       "grok-4.5",
+		"grok-4.5-low":          "grok-4.5",
+		"grok-4.5-xhigh":        "grok-4.5",
+		"grok-4-thinking":       "grok-4",
+		"grok-4-fast-reasoning": "grok-4-fast-reasoning",
+		"grok-code-fast-1":      "grok-code-fast-1",
+	}
+	for in, want := range cases {
+		if got := resolveGrokModel(in); got != want {
+			t.Errorf("resolveGrokModel(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -327,6 +669,144 @@ func TestOpenAIToOpenAI_SanitizesNullSchemaFields(t *testing.T) {
 	}
 }
 
+// TestOpenAIToOpenAI_KeepsEmptyToolProperties guards the interaction between
+// sanitizeGrokToolParameters (which deliberately emits `properties: {}` because
+// xAI requires an object schema) and cleanEmptyOpenAIFields (which used to
+// recurse and delete it again, producing HTTP 400).
+func TestOpenAIToOpenAI_KeepsEmptyToolProperties(t *testing.T) {
+	req := &OpenAIRequest{
+		Model:    "grok-4",
+		Messages: []OpenAIMessage{{Role: "user", Content: "list files"}},
+		Tools:    []OpenAITool{{}},
+	}
+	rawTool := []byte(`{
+		"type":"function",
+		"function":{"name":"now","description":"current time","parameters":{"type":"object","properties":{}}}
+	}`)
+	if err := json.Unmarshal(rawTool, &req.Tools[0]); err != nil {
+		t.Fatalf("unmarshal tool: %v", err)
+	}
+
+	body, err := OpenAIToOpenAI(req)
+	if err != nil {
+		t.Fatalf("OpenAIToOpenAI: %v", err)
+	}
+
+	tools, ok := body["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", body["tools"])
+	}
+	fn := tools[0].(map[string]interface{})["function"].(map[string]interface{})
+	params, ok := fn["parameters"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("parameters = %#v", fn["parameters"])
+	}
+	if params["type"] != "object" {
+		t.Errorf("parameters.type = %#v, want object", params["type"])
+	}
+	props, ok := params["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("properties was stripped: %#v", params)
+	}
+	if len(props) != 0 {
+		t.Errorf("properties = %#v, want empty object", props)
+	}
+}
+
+// TestOpenAIToOpenAI_KeepsEmptyToolResultContent covers a tool that ran and
+// returned nothing. `content: ""` is a valid role:"tool" message; stripping it
+// leaves a message with no content field, which breaks the tool protocol.
+func TestOpenAIToOpenAI_KeepsEmptyToolResultContent(t *testing.T) {
+	req := &OpenAIRequest{
+		Model: "grok-4",
+		Messages: []OpenAIMessage{
+			{Role: "user", Content: "delete the temp file"},
+			{Role: "assistant", Content: nil, ToolCalls: []ToolCall{
+				func() ToolCall {
+					var tc ToolCall
+					tc.ID = "call_1"
+					tc.Type = "function"
+					tc.Function.Name = "rm"
+					tc.Function.Arguments = `{"path":"/tmp/x"}`
+					return tc
+				}(),
+			}},
+			{Role: "tool", ToolCallID: "call_1", Content: ""},
+		},
+	}
+
+	body, err := OpenAIToOpenAI(req)
+	if err != nil {
+		t.Fatalf("OpenAIToOpenAI: %v", err)
+	}
+	msgs, ok := body["messages"].([]interface{})
+	if !ok || len(msgs) != 3 {
+		t.Fatalf("messages = %#v", body["messages"])
+	}
+
+	toolMsg := msgs[2].(map[string]interface{})
+	if toolMsg["role"] != "tool" {
+		t.Fatalf("msgs[2] role = %v", toolMsg["role"])
+	}
+	if _, ok := toolMsg["content"]; !ok {
+		t.Errorf("tool message lost its content field: %#v", toolMsg)
+	}
+	if toolMsg["tool_call_id"] != "call_1" {
+		t.Errorf("tool_call_id = %v", toolMsg["tool_call_id"])
+	}
+
+	assistant := msgs[1].(map[string]interface{})
+	tcs, ok := assistant["tool_calls"].([]interface{})
+	if !ok || len(tcs) != 1 {
+		t.Fatalf("tool_calls = %#v", assistant["tool_calls"])
+	}
+	fn := tcs[0].(map[string]interface{})["function"].(map[string]interface{})
+	if fn["arguments"] != `{"path":"/tmp/x"}` {
+		t.Errorf("arguments = %#v", fn["arguments"])
+	}
+}
+
+// TestCleanEmptyOpenAIFieldsIsShallow pins the top-level-only contract.
+func TestCleanEmptyOpenAIFieldsIsShallow(t *testing.T) {
+	body := map[string]interface{}{
+		"model": "grok-4",
+		"user":  "",
+		"stop":  []interface{}{},
+		"tools": []interface{}{
+			map[string]interface{}{"function": map[string]interface{}{
+				"name":       "x",
+				"parameters": map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			}},
+		},
+		"messages": []interface{}{
+			map[string]interface{}{"role": "tool", "tool_call_id": "c1", "content": ""},
+		},
+		"metadata": map[string]interface{}{},
+	}
+	cleanEmptyOpenAIFields(body)
+
+	if _, still := body["user"]; still {
+		t.Error(`empty "user" should be dropped`)
+	}
+	if _, still := body["stop"]; still {
+		t.Error(`empty "stop" should be dropped`)
+	}
+	if _, still := body["metadata"]; still {
+		t.Error(`empty "metadata" should be dropped`)
+	}
+
+	tools := body["tools"].([]interface{})
+	params := tools[0].(map[string]interface{})["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	if _, ok := params["properties"]; !ok {
+		t.Error("must not recurse into tools: properties was stripped")
+	}
+
+	msgs := body["messages"].([]interface{})
+	if _, ok := msgs[0].(map[string]interface{})["content"]; !ok {
+		t.Error("must not recurse into messages: tool content was stripped")
+	}
+}
+
 func TestSanitizeGrokToolParameters_PreservesBoolAdditionalProperties(t *testing.T) {
 	in := map[string]interface{}{
 		"type":                 "object",
@@ -435,7 +915,6 @@ func TestEnhanceGrokFromOpenAIBody(t *testing.T) {
 		t.Fatalf("got %d", len(out))
 	}
 }
-
 
 func TestResolveGrokModelsFallsBackWithoutCreds(t *testing.T) {
 	got := resolveGrokModels(&config.Account{Email: "x@y.z", Provider: "grok"})

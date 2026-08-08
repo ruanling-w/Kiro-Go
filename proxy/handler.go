@@ -1446,6 +1446,7 @@ func (h *Handler) streamClaudeAttempt(ctx context.Context, account *config.Accou
 	var inputTokens, outputTokens int
 	var credits float64
 	var realInputTokens int
+	var upstreamFinishReason string
 	var toolUses []KiroToolUse
 	var nextContentIndex int
 	var rawContentBuilder strings.Builder
@@ -1758,6 +1759,9 @@ func (h *Handler) streamClaudeAttempt(ctx context.Context, account *config.Accou
 			inputTokens = inTok
 			outputTokens = outTok
 		},
+		OnFinishReason: func(reason string) {
+			upstreamFinishReason = reason
+		},
 		OnCredits: func(c float64) {
 			credits = c
 		},
@@ -1805,6 +1809,8 @@ func (h *Handler) streamClaudeAttempt(ctx context.Context, account *config.Accou
 	stopReason := "end_turn"
 	if len(toolUses) > 0 {
 		stopReason = "tool_use"
+	} else if mapped := claudeStopReasonFromFinish(upstreamFinishReason); mapped != "" {
+		stopReason = mapped
 	}
 	ensureMessageStart()
 	_ = sse.Send("message_delta", map[string]interface{}{"type": "message_delta", "delta": map[string]interface{}{"stop_reason": stopReason}, "usage": buildClaudeUsageMap(inputTokens, outputTokens, at.cacheUsage, at.cacheProfile != nil)})

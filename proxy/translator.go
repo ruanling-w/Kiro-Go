@@ -987,20 +987,34 @@ func KiroToClaudeResponse(content, thinkingContent string, includeEmptyThinkingB
 // ==================== OpenAI API 类型 ====================
 
 type OpenAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature,omitempty"`
-	TopP        float64         `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
+	Model             string          `json:"model"`
+	Messages          []OpenAIMessage `json:"messages"`
+	MaxTokens         int             `json:"max_tokens,omitempty"`
+	Temperature       float64         `json:"temperature,omitempty"`
+	TopP              float64         `json:"top_p,omitempty"`
+	Stream            bool            `json:"stream,omitempty"`
+	Tools             []OpenAITool    `json:"tools,omitempty"`
+	ToolChoice        interface{}     `json:"tool_choice,omitempty"`
+	Stop              []string        `json:"stop,omitempty"`
+	ResponseFormat    interface{}     `json:"response_format,omitempty"`
+	FrequencyPenalty  float64         `json:"frequency_penalty,omitempty"`
+	PresencePenalty   float64         `json:"presence_penalty,omitempty"`
+	Seed              interface{}     `json:"seed,omitempty"`
+	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string          `json:"reasoning_effort,omitempty"`
+	StreamOptions     interface{}     `json:"stream_options,omitempty"`
+	Logprobs          *bool           `json:"logprobs,omitempty"`
+	TopLogprobs       int             `json:"top_logprobs,omitempty"`
+	User              string          `json:"user,omitempty"`
+	N                 int             `json:"n,omitempty"`
 }
 
 type OpenAIMessage struct {
-	Role       string      `json:"role"`
-	Content    interface{} `json:"content"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
+	Role             string      `json:"role"`
+	Content          interface{} `json:"content"`
+	ReasoningContent string      `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID       string      `json:"tool_call_id,omitempty"`
 }
 
 type ToolCall struct {

@@ -37,11 +37,11 @@ import (
 )
 
 const (
-	grokChatURL     = "https://api.x.ai/v1/chat/completions"
-	grokModelsURL   = "https://api.x.ai/v1/models"
-	grokUserAgent   = "kiro-go/1.0"
-	grokMaxRetries  = 1 // simple for first implementation; pool handles failover
-	grokModelsTO    = 20 * time.Second
+	grokChatURL    = "https://api.x.ai/v1/chat/completions"
+	grokModelsURL  = "https://api.x.ai/v1/models"
+	grokUserAgent  = "kiro-go/1.0"
+	grokMaxRetries = 3 // backoff for 429/502/503; pool handles failover
+	grokModelsTO   = 20 * time.Second
 )
 
 // grokBearer returns the Bearer credential for an account (OAuth access token
@@ -168,7 +168,7 @@ func CallGrokAPI(ctx context.Context, account *config.Account, payload *KiroPayl
 			callback.OnImage(b64, mime, false)
 		}
 		if callback.OnComplete != nil {
-			callback.OnComplete(estimateTokens(prompt), 0)
+			callback.OnComplete(0, 0)
 		}
 		return nil
 	}
@@ -194,6 +194,17 @@ func CallGrokAPI(ctx context.Context, account *config.Account, payload *KiroPayl
 		reqBody["model"] = resolveGrokModel(model)
 	}
 	reqBody["stream"] = stream
+
+	// xAI only reports token usage in a streamed response when the request opts in
+	// via stream_options.include_usage. Without it the final chunk carries no
+	// `usage` object at all, which used to send this code down a fabricated
+	// estimate path (see parseGrokOpenAISSE) and made every Grok account's token
+	// accounting meaningless.
+	if stream {
+		reqBody["stream_options"] = map[string]interface{}{"include_usage": true}
+	} else {
+		delete(reqBody, "stream_options")
+	}
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -224,29 +235,9 @@ func CallGrokAPI(ctx context.Context, account *config.Account, payload *KiroPayl
 		req.Header.Set("Accept", "text/event-stream")
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("grok: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		return newUpstreamError("grok", resp.StatusCode, string(errBody), "")
-	}
-
-	// The streaming client has Timeout: 0 and ResponseHeaderTimeout only bounds
-	// the wait for the first header, so an upstream that sends headers then goes
-	// quiet would block this goroutine — and its client connection — forever.
-	// The idle reader cancels the request context after streamIdleTimeout with no
-	// bytes, which unblocks the read with a context error.
-	idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
-	defer idleReader.Stop()
-
-	if stream {
-		return parseGrokOpenAISSE(idleReader, callback, model)
-	}
-	return parseGrokOpenAIResponse(idleReader, callback, model)
+	// Retry transient 429/502/503 with exponential backoff (grokMaxRetries=3).
+	lastErr := doGrokCallWithRetry(ctx, client, req, cancel, stream, callback, model)
+	return lastErr
 }
 
 // resolvePayloadModelForGrok tries to extract the intended model.
@@ -427,17 +418,16 @@ func parseGrokOpenAISSE(body io.Reader, callback *KiroStreamCallback, model stri
 		}
 	}
 
-	// Finalize
+	// Finalize. With stream_options.include_usage the final chunk always carries
+	// usage; never fall back to estimateTokens.
 	if callback.OnComplete != nil {
-		if inputTokens == 0 && outputTokens == 0 {
-			// Rough estimate if upstream didn't send usage
-			inputTokens = estimateTokens(fullContent.String())
-			outputTokens = inputTokens
-		}
 		callback.OnComplete(inputTokens, outputTokens)
 	}
 
-	_ = lastFinish // currently unused but available for future finish reason mapping
+	if lastFinish != "" && callback.OnFinishReason != nil {
+		callback.OnFinishReason(lastFinish)
+	}
+
 	_ = model
 	return nil
 }
@@ -484,20 +474,22 @@ func parseGrokOpenAIResponse(body io.Reader, callback *KiroStreamCallback, model
 		callback.OnText(reasoning, true)
 	}
 
+	if len(resp.Choices) > 0 && callback.OnFinishReason != nil {
+		callback.OnFinishReason(resp.Choices[0].FinishReason)
+	}
+
 	if callback.OnComplete != nil {
-		inTok := resp.Usage.PromptTokens
-		outTok := resp.Usage.CompletionTokens
-		if inTok == 0 && outTok == 0 {
-			inTok = estimateTokens(content)
-			outTok = inTok
-		}
-		callback.OnComplete(inTok, outTok)
+		// Report upstream usage verbatim. Non-stream responses always carry a usage
+		// block, so a zero here means xAI really reported zero — do not substitute
+		// a guess (see parseGrokOpenAISSE for why).
+		callback.OnComplete(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 	}
 
 	return nil
 }
 
-// estimateTokens is a very rough fallback (4 chars ≈ 1 token).
+// estimateTokens is a very rough fallback (4 chars ≈ 1 token). Used only where no
+// upstream usage exists at all (the images endpoint returns no token counts).
 func estimateTokens(s string) int {
 	n := len(strings.TrimSpace(s))
 	if n == 0 {
@@ -518,3 +510,82 @@ func NewGrokRequestID() string {
 
 // GrokDefaultTimeout is the client timeout used for non-stream Grok calls.
 var GrokDefaultTimeout = 5 * time.Minute
+
+// isRetryableGrokStatus reports the explicit transient upstream statuses.
+func isRetryableGrokStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusBadGateway || status == http.StatusServiceUnavailable
+}
+
+func cloneGrokRequest(ctx context.Context, template *http.Request) (*http.Request, error) {
+	req := template.Clone(ctx)
+	if template.Body == nil {
+		return req, nil
+	}
+	if template.GetBody == nil {
+		return nil, fmt.Errorf("grok: request body cannot be replayed")
+	}
+	body, err := template.GetBody()
+	if err != nil {
+		return nil, fmt.Errorf("grok: recreate request body: %w", err)
+	}
+	req.Body = body
+	return req, nil
+}
+
+func waitForGrokRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// doGrokCallWithRetry makes at most grokMaxRetries total attempts. Parser
+// failures after a 200 response are never retried, avoiding duplicate output.
+func doGrokCallWithRetry(ctx context.Context, client *http.Client, template *http.Request, cancel context.CancelFunc, stream bool, callback *KiroStreamCallback, model string) error {
+	var lastErr error
+	backoff := 500 * time.Millisecond
+	for attempt := 0; attempt < grokMaxRetries; attempt++ {
+		req, err := cloneGrokRequest(ctx, template)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("grok: request failed: %w", err)
+		} else if resp.StatusCode == http.StatusOK {
+			idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+			var parseErr error
+			if stream {
+				parseErr = parseGrokOpenAISSE(idleReader, callback, model)
+			} else {
+				parseErr = parseGrokOpenAIResponse(idleReader, callback, model)
+			}
+			idleReader.Stop()
+			resp.Body.Close()
+			return parseErr
+		} else {
+			status := resp.StatusCode
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = newUpstreamError("grok", status, string(errBody), "")
+			if !isRetryableGrokStatus(status) {
+				return lastErr
+			}
+		}
+		if attempt == grokMaxRetries-1 {
+			break
+		}
+		if err := waitForGrokRetry(ctx, backoff); err != nil {
+			return fmt.Errorf("grok: retry canceled: %w", err)
+		}
+		backoff *= 2
+		if backoff > 10*time.Second {
+			backoff = 10 * time.Second
+		}
+	}
+	return lastErr
+}

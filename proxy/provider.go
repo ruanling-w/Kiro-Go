@@ -32,6 +32,9 @@ func CallProvider(ctx context.Context, account *config.Account, payload *KiroPay
 	if account != nil && isCodexAccount(account) {
 		return CallCodexAPI(ctx, account, payload, callback)
 	}
+	if account != nil && isGrokOAuthAccount(account) {
+		return CallGrokCLIAPI(ctx, account, payload, callback)
+	}
 	if account != nil && isGrokAccount(account) {
 		return CallGrokAPI(ctx, account, payload, callback)
 	}
@@ -76,9 +79,9 @@ func isAntigravityAccount(account *config.Account) bool {
 		strings.EqualFold(account.Provider, "Antigravity")
 }
 
-// isGrokAccount reports whether an account should be routed to Grok/xAI.
-// Both auth modes (official API key and Grok Build OAuth) share the same
-// upstream (https://api.x.ai) and dispatch through CallGrokAPI.
+// isGrokAccount reports whether an account belongs to Grok/xAI. Official API
+// keys use api.x.ai; CallProvider checks Grok Build OAuth first and routes it to
+// the distinct cli-chat-proxy transport.
 func isGrokAccount(account *config.Account) bool {
 	if account == nil {
 		return false

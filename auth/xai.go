@@ -4,7 +4,7 @@ package auth
 //
 // It mirrors the Antigravity Start/Poll/Cancel/Complete + transient loopback
 // listener pattern (auth/antigravity.go) but is simpler: xAI issues a normal
-// OAuth2 access_token that is sent as a Bearer token to https://api.x.ai, so
+// OAuth2 access_token accepted by the Grok Build CLI proxy, so
 // there is no project/bootstrap chain — the flow is just:
 //
 //   1. StartXaiLogin binds a loopback listener on 127.0.0.1:56121 /callback,

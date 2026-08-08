@@ -278,6 +278,10 @@ type codexResponsesItem struct {
 // shared callback. Text deltas, reasoning summaries, function calls, image
 // output, usage, and errors are all mapped.
 func parseCodexResponsesSSE(body io.Reader, callback *KiroStreamCallback, model string) error {
+	return parseResponsesSSE(body, callback, model, true)
+}
+
+func parseResponsesSSE(body io.Reader, callback *KiroStreamCallback, model string, estimateMissingUsage bool) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
@@ -427,8 +431,15 @@ func parseCodexResponsesSSE(body io.Reader, callback *KiroStreamCallback, model 
 		}
 	}
 
+	if callback.OnFinishReason != nil {
+		if len(toolOrder) > 0 {
+			callback.OnFinishReason("tool_calls")
+		} else {
+			callback.OnFinishReason("stop")
+		}
+	}
 	if callback.OnComplete != nil {
-		if inputTokens == 0 && outputTokens == 0 {
+		if estimateMissingUsage && inputTokens == 0 && outputTokens == 0 {
 			inputTokens = estimateTokens(fullContent.String())
 			outputTokens = inputTokens
 		}

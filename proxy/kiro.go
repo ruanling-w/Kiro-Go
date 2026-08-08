@@ -271,6 +271,31 @@ type KiroStreamCallback struct {
 	// progressive/preview frames and false for the final image. Only the Codex
 	// image pipeline drives this; other providers leave it nil.
 	OnImage func(b64 string, mimeType string, partial bool)
+	// OnFinishReason reports the mapped stop_reason (Claude vocabulary) from the
+	// upstream finish_reason via claudeStopReasonFromFinish. Used to distinguish
+	// a complete answer from a truncated one: without it a response cut off at the
+	// output-token ceiling is reported to the client as a clean end_turn, so the
+	// client treats a half-finished answer as final. Providers that expose no such
+	// signal leave this unset.
+	OnFinishReason func(reason string)
+}
+
+// claudeStopReasonFromFinish maps an OpenAI-style finish_reason onto the Claude
+// stop_reason vocabulary. Empty string means "no opinion" — the caller keeps
+// whatever it inferred from the content itself.
+func claudeStopReasonFromFinish(finish string) string {
+	switch strings.ToLower(strings.TrimSpace(finish)) {
+	case "length", "max_tokens", "max_output_tokens":
+		return "max_tokens"
+	case "tool_calls", "function_call":
+		return "tool_use"
+	case "content_filter":
+		return "refusal"
+	case "stop", "end_turn", "completed":
+		return "end_turn"
+	default:
+		return ""
+	}
 }
 
 // ==================== API Call ====================
