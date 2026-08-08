@@ -298,6 +298,29 @@ func claudeStopReasonFromFinish(finish string) string {
 	}
 }
 
+// kiroStopReasonToFinish normalizes a raw Kiro stopReason (from messageStopEvent
+// / metadataEvent) into the OpenAI-style finish_reason vocabulary that
+// claudeStopReasonFromFinish understands. Kiro emits values like "END_TURN",
+// "MAX_TOKENS", "TOOL_USE" (case/underscore varies), so we canonicalize before
+// mapping. Empty string means "no usable signal".
+func kiroStopReasonToFinish(raw string) string {
+	r := strings.ToLower(strings.TrimSpace(raw))
+	r = strings.ReplaceAll(r, "-", "_")
+	r = strings.ReplaceAll(r, " ", "_")
+	switch r {
+	case "end_turn", "endturn", "stop", "stop_sequence", "completed", "complete":
+		return "stop"
+	case "tool_use", "tooluse", "tool_calls", "function_call":
+		return "tool_calls"
+	case "max_tokens", "maxtokens", "max_output_tokens", "length":
+		return "length"
+	case "content_filtered", "content_filter", "refusal", "guardrail", "safety", "blocked":
+		return "content_filter"
+	default:
+		return ""
+	}
+}
+
 // ==================== API Call ====================
 
 func setPayloadProfileArnForAccount(payload *KiroPayload, account *config.Account) {
@@ -524,14 +547,52 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 	var lastAssistantContent string
 	var lastReasoningContent string
 
+	// finishReason is the mapped stop signal (OpenAI vocabulary) taken from Kiro's
+	// terminal frame (messageStopEvent / metadataEvent). Kiro DOES report why a
+	// turn ended — most importantly "max_tokens" when the answer is truncated at
+	// the output ceiling — but the parser used to drop those frames, so every turn
+	// was reported to clients as a clean end_turn and a cut-off answer looked
+	// final. We now surface it via OnFinishReason at the end of the stream.
+	finishReason := ""
+
+	// TEMP DEBUG INSTRUMENTATION: track how a Kiro turn ends so we can tell a
+	// clean completion apart from a truncated stream (client sees "cut mid-answer
+	// with no error"). Logs per-event-type counts, whether the terminal signals
+	// arrived, how much text was produced, and how the read loop terminated (clean
+	// EOF at a frame boundary vs mid-frame error). Remove once behavior is
+	// confirmed in production.
+	debug := logger.GetLevel() == logger.LevelDebug
+	streamDbgID := ""
+	eventCounts := map[string]int{}
+	var assistantChars, reasoningChars int
+	sawMetering := false
+	sawContextUsage := false
+	sawStop := false
+	if debug {
+		streamDbgID = uuid.New().String()[:8]
+		logger.Debugf("[KiroStreamDbg %s] stream open", streamDbgID)
+	}
+	logStreamSummary := func(ending string) {
+		if !debug {
+			return
+		}
+		logger.Debugf("[KiroStreamDbg %s] END(%s) events=%v assistantChars=%d reasoningChars=%d sawMetering=%v sawContextUsage=%v sawStop=%v finishReason=%q credits=%v inTok=%d outTok=%d",
+			streamDbgID, ending, eventCounts, assistantChars, reasoningChars, sawMetering, sawContextUsage, sawStop, finishReason, totalCredits, inputTokens, outputTokens)
+	}
+
 	for {
 		// Prelude: 12 bytes (total_len + headers_len + crc)
 		prelude := make([]byte, 12)
 		_, err := io.ReadFull(body, prelude)
 		if err == io.EOF {
+			// Clean EOF exactly at a frame boundary: this is the ambiguous case —
+			// indistinguishable between "turn finished" and "upstream/proxy cut the
+			// connection between frames".
+			logStreamSummary("clean-eof")
 			break
 		}
 		if err != nil {
+			logStreamSummary("read-error: " + err.Error())
 			return err
 		}
 
@@ -583,6 +644,7 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 				msg = "unknown upstream exception"
 			}
 			streamErr := fmt.Errorf("kiro stream exception: %s", msg)
+			logStreamSummary("exception: " + msg)
 			if callback.OnError != nil {
 				callback.OnError(streamErr)
 			}
@@ -600,11 +662,22 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 
 		inputTokens, outputTokens = updateTokensFromEvent(event, inputTokens, outputTokens)
 
+		if debug {
+			key := eventType
+			if key == "" {
+				key = "<empty>:" + messageType
+			}
+			eventCounts[key]++
+		}
+
 		// Dispatch by event type.
 		switch eventType {
 		case "assistantResponseEvent":
 			if content, ok := event["content"].(string); ok && content != "" {
 				normalized := normalizeChunk(content, &lastAssistantContent)
+				if debug {
+					assistantChars += len(normalized)
+				}
 				if normalized != "" && callback.OnText != nil {
 					callback.OnText(normalized, false)
 				}
@@ -612,13 +685,61 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 		case "reasoningContentEvent":
 			if text, ok := event["text"].(string); ok && text != "" {
 				normalized := normalizeChunk(text, &lastReasoningContent)
+				if debug {
+					reasoningChars += len(normalized)
+				}
 				if normalized != "" && callback.OnText != nil {
 					callback.OnText(normalized, true)
 				}
 			}
+		case "codeEvent":
+			// Some Kiro responses stream code payloads as codeEvent instead of
+			// assistantResponseEvent. Dropping them truncated code-heavy answers.
+			if content, ok := event["content"].(string); ok && content != "" {
+				normalized := normalizeChunk(content, &lastAssistantContent)
+				if debug {
+					assistantChars += len(normalized)
+				}
+				if normalized != "" && callback.OnText != nil {
+					callback.OnText(normalized, false)
+				}
+			}
 		case "toolUseEvent":
 			currentToolUse = handleToolUseEvent(event, currentToolUse, callback)
+		case "messageStopEvent", "metadataEvent", "MetadataEvent":
+			// Kiro's terminal frame carries the real stop reason (END_TURN,
+			// MAX_TOKENS, TOOL_USE, content-filter, ...). It may live at the top
+			// level or nested under a per-event key. We normalize it to the OpenAI
+			// finish_reason vocabulary; last non-empty wins (metadata can follow the
+			// stop event). This is the signal that lets a truncated (max_tokens)
+			// answer be reported as such instead of a clean end_turn.
+			sawStop = true
+			raw := firstStringField(event, "stopReason", "stop_reason", "reason")
+			if raw == "" {
+				for _, key := range []string{"messageStopEvent", "metadataEvent", "metadata"} {
+					if nested, ok := event[key].(map[string]interface{}); ok {
+						if raw = firstStringField(nested, "stopReason", "stop_reason", "reason"); raw != "" {
+							break
+						}
+					}
+				}
+			}
+			if mapped := kiroStopReasonToFinish(raw); mapped != "" {
+				finishReason = mapped
+			}
+		case "metricsEvent":
+			// Authoritative token counts, if present. updateTokensFromEvent already
+			// scans nested "usage" maps; this also handles a flat metricsEvent.
+			if nested, ok := event["metricsEvent"].(map[string]interface{}); ok {
+				if v, ok := readTokenNumber(nested, "inputTokens", "input_tokens", "promptTokens"); ok {
+					inputTokens = v
+				}
+				if v, ok := readTokenNumber(nested, "outputTokens", "output_tokens", "completionTokens"); ok {
+					outputTokens = v
+				}
+			}
 		case "meteringEvent":
+			sawMetering = true
 			// Kiro gửi usage TÍCH LŨY của cả lượt (snapshot), có thể nhiều frame/lượt.
 			// Dùng last-wins (ghi đè) chứ không cộng dồn, nếu không credit bị tính trùng.
 			// Verified với kiro-cli: giá trị cuối = credit thật của lượt.
@@ -630,10 +751,29 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 				}
 			}
 		case "contextUsageEvent":
+			sawContextUsage = true
 			if pct, ok := event["contextUsagePercentage"].(float64); ok {
 				if callback.OnContextUsage != nil {
 					callback.OnContextUsage(pct)
 				}
+			}
+		}
+
+		// TEMP DEBUG: dump the raw payload of any frame that is NOT one of the
+		// known streaming event types. Kiro's finish/stop signal — if it exists —
+		// would arrive as such an unrecognized frame, so this is how we discover it.
+		if debug {
+			switch eventType {
+			case "assistantResponseEvent", "reasoningContentEvent", "codeEvent",
+				"toolUseEvent", "messageStopEvent", "metadataEvent", "MetadataEvent",
+				"metricsEvent", "meteringEvent", "contextUsageEvent":
+			default:
+				raw := string(payloadBytes)
+				if len(raw) > 500 {
+					raw = raw[:500] + "...(truncated)"
+				}
+				logger.Debugf("[KiroStreamDbg %s] UNKNOWN frame eventType=%q messageType=%q payload=%s",
+					streamDbgID, eventType, messageType, raw)
 			}
 		}
 	}
@@ -644,6 +784,13 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 
 	if callback.OnCredits != nil && totalCredits > 0 {
 		callback.OnCredits(totalCredits)
+	}
+
+	// Surface the upstream stop reason so the handler can map a truncated
+	// (max_tokens) or filtered answer to the correct client stop_reason instead
+	// of a clean end_turn. Only fire when Kiro actually reported one.
+	if finishReason != "" && callback.OnFinishReason != nil {
+		callback.OnFinishReason(finishReason)
 	}
 
 	if callback.OnComplete != nil {

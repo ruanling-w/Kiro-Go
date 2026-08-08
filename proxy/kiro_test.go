@@ -166,6 +166,114 @@ func TestParseEventStreamMeteringNestedPayload(t *testing.T) {
 	}
 }
 
+func TestParseEventStreamMessageStopEmitsFinishReason(t *testing.T) {
+	// Kiro reports why a turn ended via a terminal messageStopEvent. When it is
+	// MAX_TOKENS the answer was truncated at the output ceiling; the parser must
+	// surface it through OnFinishReason so the handler maps it to max_tokens
+	// instead of a clean end_turn (the bug: truncated answers looked final).
+	cases := []struct {
+		name     string
+		eventTyp string
+		payload  map[string]interface{}
+		want     string
+	}{
+		{"max_tokens", "messageStopEvent", map[string]interface{}{"stopReason": "MAX_TOKENS"}, "length"},
+		{"end_turn", "messageStopEvent", map[string]interface{}{"stopReason": "END_TURN"}, "stop"},
+		{"tool_use", "messageStopEvent", map[string]interface{}{"stopReason": "TOOL_USE"}, "tool_calls"},
+		{"metadata_variant", "metadataEvent", map[string]interface{}{"stopReason": "max-tokens"}, "length"},
+		{"nested", "messageStopEvent", map[string]interface{}{"messageStopEvent": map[string]interface{}{"stopReason": "MAX_TOKENS"}}, "length"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := bytes.NewReader(bytes.Join([][]byte{
+				awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "partial"}),
+				awsEventStreamFrame(t, tc.eventTyp, tc.payload),
+			}, nil))
+
+			var gotFinish string
+			var finishCalls int
+			err := parseEventStream(stream, &KiroStreamCallback{
+				OnFinishReason: func(reason string) {
+					gotFinish = reason
+					finishCalls++
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected parse error: %v", err)
+			}
+			if finishCalls != 1 {
+				t.Fatalf("expected OnFinishReason to fire exactly once, got %d", finishCalls)
+			}
+			if gotFinish != tc.want {
+				t.Fatalf("expected finish reason %q, got %q", tc.want, gotFinish)
+			}
+		})
+	}
+}
+
+func TestParseEventStreamNoStopReasonLeavesFinishUnset(t *testing.T) {
+	// A turn with content but no terminal stop frame must NOT invent a finish
+	// reason — the handler then keeps its content-inferred stop_reason. Firing a
+	// bogus signal here would misreport normal short answers.
+	stream := bytes.NewReader(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "hi"}))
+
+	var finishCalls int
+	err := parseEventStream(stream, &KiroStreamCallback{
+		OnFinishReason: func(string) { finishCalls++ },
+	})
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if finishCalls != 0 {
+		t.Fatalf("expected OnFinishReason not to fire without a stop frame, got %d calls", finishCalls)
+	}
+}
+
+func TestParseEventStreamCodeEventDeliversContent(t *testing.T) {
+	// Some Kiro answers stream code payloads as codeEvent. Dropping them (the old
+	// behavior) truncated code-heavy responses mid-answer.
+	stream := bytes.NewReader(awsEventStreamFrame(t, "codeEvent", map[string]interface{}{"content": "print('hello')"}))
+
+	var got string
+	err := parseEventStream(stream, &KiroStreamCallback{
+		OnText: func(text string, isThinking bool) {
+			if !isThinking {
+				got += text
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if got != "print('hello')" {
+		t.Fatalf("expected codeEvent content delivered, got %q", got)
+	}
+}
+
+func TestKiroStopReasonToFinish(t *testing.T) {
+	cases := map[string]string{
+		"END_TURN":         "stop",
+		"end_turn":         "stop",
+		"endTurn":          "stop",
+		"stop":             "stop",
+		"MAX_TOKENS":       "length",
+		"max-tokens":       "length",
+		"length":           "length",
+		"TOOL_USE":         "tool_calls",
+		"tool_calls":       "tool_calls",
+		"content_filtered": "content_filter",
+		"guardrail":        "content_filter",
+		"":                 "",
+		"weird_unknown":    "",
+	}
+	for raw, want := range cases {
+		if got := kiroStopReasonToFinish(raw); got != want {
+			t.Errorf("kiroStopReasonToFinish(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestParseEventStreamNilCallbackIsNoOp(t *testing.T) {
 	stream := bytes.NewReader(bytes.Join([][]byte{
 		awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "hello"}),

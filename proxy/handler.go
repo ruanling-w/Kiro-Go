@@ -2680,6 +2680,7 @@ func (h *Handler) streamOpenAIAttempt(ctx context.Context, account *config.Accou
 	var inputTokens, outputTokens int
 	var credits float64
 	var realInputTokens int
+	var upstreamFinishReason string
 	var rawContentBuilder strings.Builder
 	var rawReasoningBuilder strings.Builder
 	var textBuffer string
@@ -2966,6 +2967,9 @@ func (h *Handler) streamOpenAIAttempt(ctx context.Context, account *config.Accou
 			inputTokens = inTok
 			outputTokens = outTok
 		},
+		OnFinishReason: func(reason string) {
+			upstreamFinishReason = reason
+		},
 		OnCredits: func(c float64) {
 			credits = c
 		},
@@ -3021,6 +3025,11 @@ func (h *Handler) streamOpenAIAttempt(ctx context.Context, account *config.Accou
 	finishReason := "stop"
 	if len(toolCalls) > 0 {
 		finishReason = "tool_calls"
+	} else if upstreamFinishReason != "" {
+		// Kiro reports "length" when the answer was truncated at the output ceiling
+		// (and content_filter on a refusal). Without this the client sees a clean
+		// "stop" and treats a cut-off answer as final.
+		finishReason = upstreamFinishReason
 	}
 	chunk := map[string]interface{}{
 		"id": chatID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
