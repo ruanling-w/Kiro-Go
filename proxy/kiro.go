@@ -259,11 +259,23 @@ type InferenceConfig struct {
 
 // ==================== Stream Callbacks ====================
 
+type tokenUsage struct {
+	Input         int
+	Output        int
+	CacheRead     int
+	CacheCreation int
+}
+
+func (u tokenUsage) logTokens(cached bool) logTokens {
+	return logTokens{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheCreation: u.CacheCreation, Cached: cached}
+}
+
 // KiroStreamCallback stream response callbacks
 type KiroStreamCallback struct {
 	OnText         func(text string, isThinking bool)
 	OnToolUse      func(toolUse KiroToolUse)
 	OnComplete     func(inputTokens, outputTokens int)
+	OnUsage        func(usage tokenUsage)
 	OnError        func(err error)
 	OnCredits      func(credits float64)
 	OnContextUsage func(percentage float64)
@@ -541,6 +553,7 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 	}
 
 	// Read directly without bufio to avoid buffering latency in streaming responses.
+	var usage tokenUsage
 	var inputTokens, outputTokens int
 	var totalCredits float64
 	var currentToolUse *toolUseState
@@ -660,7 +673,8 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 			continue
 		}
 
-		inputTokens, outputTokens = updateTokensFromEvent(event, inputTokens, outputTokens)
+		usage = updateTokenUsageFromEvent(event, usage)
+		inputTokens, outputTokens = usage.Input, usage.Output
 
 		if debug {
 			key := eventType
@@ -793,10 +807,44 @@ func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
 		callback.OnFinishReason(finishReason)
 	}
 
+	if callback.OnUsage != nil {
+		usage.Input, usage.Output = inputTokens, outputTokens
+		callback.OnUsage(usage)
+	}
 	if callback.OnComplete != nil {
 		callback.OnComplete(inputTokens, outputTokens)
 	}
 	return nil
+}
+
+func updateTokenUsageFromEvent(event map[string]interface{}, current tokenUsage) tokenUsage {
+	candidates := []map[string]interface{}{event}
+	collectUsageMaps(event, &candidates)
+
+	usage := current
+	for _, values := range candidates {
+		if values == nil {
+			continue
+		}
+		if v, ok := readTokenNumber(values, "cacheReadInputTokens", "cache_read_input_tokens", "cachedTokens", "cached_tokens"); ok {
+			usage.CacheRead = v
+		}
+		if details, ok := values["input_tokens_details"].(map[string]interface{}); ok {
+			if v, found := readTokenNumber(details, "cached_tokens", "cachedTokens"); found {
+				usage.CacheRead = v
+			}
+		}
+		if details, ok := values["prompt_tokens_details"].(map[string]interface{}); ok {
+			if v, found := readTokenNumber(details, "cached_tokens", "cachedTokens"); found {
+				usage.CacheRead = v
+			}
+		}
+		if v, ok := readTokenNumber(values, "cacheWriteInputTokens", "cache_write_input_tokens", "cacheCreationInputTokens", "cache_creation_input_tokens"); ok {
+			usage.CacheCreation = v
+		}
+	}
+	usage.Input, usage.Output = updateTokensFromEvent(event, usage.Input, usage.Output)
+	return usage
 }
 
 func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, currentOutputTokens int) (int, int) {

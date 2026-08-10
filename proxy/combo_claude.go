@@ -17,6 +17,7 @@ type claudeComboResult struct {
 	toolUses     []KiroToolUse
 	inputTokens  int
 	outputTokens int
+	cacheUsage   promptCacheUsage
 	credits      float64
 }
 
@@ -42,6 +43,7 @@ func (h *Handler) handleClaudeComboNonStream(ctx context.Context, w http.Respons
 				h.handleAccountFailure(account, err)
 				continue
 			}
+			cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
 			result, err := h.executeClaudeComboAttempt(ctx, account, payload, candidate.Model, thinking, estimatedInput)
 			if err != nil {
 				lastErr = err
@@ -49,11 +51,12 @@ func (h *Handler) handleClaudeComboNonStream(ctx context.Context, w http.Respons
 				h.handleAccountFailure(account, err)
 				continue
 			}
+			result.cacheUsage = cacheUsage
 			h.recordSuccessForApiKey(apiKeyID, result.inputTokens, result.outputTokens, result.credits)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
 			h.promptCache.Update(account.ID, cacheProfile)
-			h.recordSuccessLogMeta("claude", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, providerLabel(account))
+			h.recordSuccessLogMeta("claude", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens, CacheRead: result.cacheUsage.CacheReadInputTokens, CacheCreation: result.cacheUsage.CacheCreationInputTokens}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, providerLabel(account))
 			responseThinking := result.thinking
 			includeEmpty := thinking && thinkingOpts.OmitDisplay && responseThinking != ""
 			if includeEmpty {
@@ -163,7 +166,7 @@ func (h *Handler) handleClaudeComboStream(ctx context.Context, w http.ResponseWr
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
 			h.promptCache.Update(account.ID, cacheProfile)
-			h.recordSuccessLogMeta("claude", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, provider)
+			h.recordSuccessLogMeta("claude", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens, CacheRead: cacheUsage.CacheReadInputTokens, CacheCreation: cacheUsage.CacheCreationInputTokens}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, provider)
 			return
 		}
 	}

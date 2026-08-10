@@ -103,15 +103,24 @@ export default function DashboardPage() {
             </StatCard>
           </StaggerItem>
 
-          {/* 4 — Cached Tokens */}
+          {/* 4 — Provider prompt cache usage */}
           <StaggerItem className="h-full min-h-0">
             <StatCard
               className="h-full"
               icon={Database}
-              label={t('stats.cachedTokens')}
-              count={s?.totalCacheTokens ?? 0}
+              label={t('stats.cacheReadTokens')}
+              count={s?.totalCacheReadTokens ?? s?.totalCacheTokens ?? 0}
               format={formatCompact}
-            />
+            >
+              <div className="mt-1 space-y-1 text-xs text-muted-foreground">
+                <div>
+                  {formatCompact(s?.totalCacheCreationTokens ?? 0)} {t('stats.cacheWriteTokens')}
+                </div>
+                <div>
+                  {formatCompact(s?.totalResponseCacheHits ?? 0)} {t('stats.responseCacheHits')}
+                </div>
+              </div>
+            </StatCard>
           </StaggerItem>
 
           {/* 5 — Credits */}

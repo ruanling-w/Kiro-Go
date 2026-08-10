@@ -177,6 +177,42 @@ LIMIT ?`, apiKeyID, limit)
 	return out, nil
 }
 
+// RequestLogAggregates contains detailed usage recoverable from persisted logs.
+type RequestLogAggregates struct {
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	ResponseCacheHits   int64
+}
+
+// AggregateRequestLogUsage sums successful public request logs. Combo attempts are
+// excluded because their usage is already represented by the client-visible log.
+func (s *Store) AggregateRequestLogUsage() (RequestLogAggregates, error) {
+	var out RequestLogAggregates
+	if s == nil || s.db == nil {
+		return out, nil
+	}
+	err := s.db.QueryRow(`
+SELECT COALESCE(SUM(input_tokens), 0),
+       COALESCE(SUM(output_tokens), 0),
+       COALESCE(SUM(cache_read_tokens), 0),
+       COALESCE(SUM(cache_creation_tokens), 0),
+       COALESCE(SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END), 0)
+FROM request_logs
+WHERE status = 'success' AND endpoint <> 'combo_attempt'`).Scan(
+		&out.InputTokens,
+		&out.OutputTokens,
+		&out.CacheReadTokens,
+		&out.CacheCreationTokens,
+		&out.ResponseCacheHits,
+	)
+	if err != nil && err != sql.ErrNoRows {
+		return RequestLogAggregates{}, fmt.Errorf("store: aggregate request log usage: %w", err)
+	}
+	return out, nil
+}
+
 // ClearRequestLogs deletes all persisted request logs.
 func (s *Store) ClearRequestLogs() error {
 	if s == nil || s.db == nil {

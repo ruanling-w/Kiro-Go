@@ -26,27 +26,27 @@ const tokenRefreshSkewSeconds int64 = 120
 
 // RequestLog stores details about a single API request (success or failure).
 type RequestLog struct {
-	Time      int64   `json:"time"`               // Unix timestamp
-	Endpoint  string  `json:"endpoint"`           // claude/openai/responses
-	Model     string  `json:"model"`              // Requested model
-	AccountID string  `json:"accountId"`          // Account used
-	Status    string  `json:"status"`             // "success" or "error"
-	Error     string  `json:"error"`              // Error message (empty on success)
-	ErrorType string  `json:"errorType"`          // Error category (empty on success)
-	Tokens    int     `json:"tokens"`             // Total tokens (input+output, 0 on failure)
-	Credits   float64 `json:"credits"`            // Credits consumed (0 on failure)
+	Time      int64   `json:"time"`      // Unix timestamp
+	Endpoint  string  `json:"endpoint"`  // claude/openai/responses
+	Model     string  `json:"model"`     // Requested model
+	AccountID string  `json:"accountId"` // Account used
+	Status    string  `json:"status"`    // "success" or "error"
+	Error     string  `json:"error"`     // Error message (empty on success)
+	ErrorType string  `json:"errorType"` // Error category (empty on success)
+	Tokens    int     `json:"tokens"`    // Total tokens (input+output, 0 on failure)
+	Credits   float64 `json:"credits"`   // Credits consumed (0 on failure)
 	// Token breakdown. Tokens above stays the input+output total for backward
 	// compatibility (check-key view, UsageTable); these expose the split plus the
 	// Anthropic prompt-cache accounting. Cached marks a response-cache hit
 	// (served without an upstream call, so Credits is 0).
-	InputTokens         int  `json:"inputTokens,omitempty"`
-	OutputTokens        int  `json:"outputTokens,omitempty"`
-	CacheReadTokens     int  `json:"cacheReadTokens,omitempty"`
-	CacheCreationTokens int  `json:"cacheCreationTokens,omitempty"`
-	Cached              bool `json:"cached,omitempty"`
-	Duration  int64   `json:"duration"`           // Request duration in ms
-	ClientIP  string  `json:"clientIp,omitempty"` // Client IP (proxy-aware when trusted)
-	ApiKeyID  string  `json:"apiKeyId,omitempty"` // Matched multi-key id when auth required
+	InputTokens         int    `json:"inputTokens,omitempty"`
+	OutputTokens        int    `json:"outputTokens,omitempty"`
+	CacheReadTokens     int    `json:"cacheReadTokens,omitempty"`
+	CacheCreationTokens int    `json:"cacheCreationTokens,omitempty"`
+	Cached              bool   `json:"cached,omitempty"`
+	Duration            int64  `json:"duration"`           // Request duration in ms
+	ClientIP            string `json:"clientIp,omitempty"` // Client IP (proxy-aware when trusted)
+	ApiKeyID            string `json:"apiKeyId,omitempty"` // Matched multi-key id when auth required
 	// Provider is the real upstream that answered the request (kiro/grok/codex/...).
 	// Admin logs only — never included in the public check-key view.
 	Provider string `json:"provider,omitempty"`
@@ -75,22 +75,24 @@ const requestLogsPendingMax = 2000
 type Handler struct {
 	pool *pool.AccountPool
 	// 运行时统计 (使用原子操作)
-	totalRequests    int64
-	successRequests  int64
-	failedRequests   int64
-	totalTokens      int64
-	totalInputTokens int64
-	totalOutputTokens int64
-	totalCacheTokens int64
-	totalCredits    float64 // float64 需要用锁保护
-	creditsMu       sync.RWMutex
-	startTime       int64
-	stopRefresh     chan struct{}
-	stopStatsSaver  chan struct{}
-	stopRuntime     chan struct{}
-	closeOnce       sync.Once
-	closeErr        error
-	runtimeWG       sync.WaitGroup
+	totalRequests            int64
+	successRequests          int64
+	failedRequests           int64
+	totalTokens              int64
+	totalInputTokens         int64
+	totalOutputTokens        int64
+	totalCacheReadTokens     int64
+	totalCacheCreationTokens int64
+	totalResponseCacheHits   int64
+	totalCredits             float64 // float64 需要用锁保护
+	creditsMu                sync.RWMutex
+	startTime                int64
+	stopRefresh              chan struct{}
+	stopStatsSaver           chan struct{}
+	stopRuntime              chan struct{}
+	closeOnce                sync.Once
+	closeErr                 error
+	runtimeWG                sync.WaitGroup
 	// 模型缓存
 	cachedModels    []ModelInfo
 	modelsCacheMu   sync.RWMutex
@@ -452,6 +454,15 @@ func (h *Handler) hydrateFromStore() {
 		}
 		h.requestLogsMu.Unlock()
 	}
+	if usage, err := h.runtimeStore.AggregateRequestLogUsage(); err != nil {
+		logger.Warnf("aggregate request log usage: %v", err)
+	} else {
+		atomic.StoreInt64(&h.totalInputTokens, usage.InputTokens)
+		atomic.StoreInt64(&h.totalOutputTokens, usage.OutputTokens)
+		atomic.StoreInt64(&h.totalCacheReadTokens, usage.CacheReadTokens)
+		atomic.StoreInt64(&h.totalCacheCreationTokens, usage.CacheCreationTokens)
+		atomic.StoreInt64(&h.totalResponseCacheHits, usage.ResponseCacheHits)
+	}
 	if ipMap, err := h.runtimeStore.LoadKeyIPStats(); err != nil {
 		logger.Warnf("load key IP stats: %v", err)
 	} else if h.ipTrack != nil {
@@ -461,13 +472,13 @@ func (h *Handler) hydrateFromStore() {
 
 func requestLogFromRow(r store.RequestLogRow) RequestLog {
 	return RequestLog{
-		Time:            r.Time,
-		Endpoint:        r.Endpoint,
-		Model:           r.Model,
-		AccountID:       r.AccountID,
-		Status:          r.Status,
-		Error:           r.Error,
-		ErrorType:       r.ErrorType,
+		Time:                r.Time,
+		Endpoint:            r.Endpoint,
+		Model:               r.Model,
+		AccountID:           r.AccountID,
+		Status:              r.Status,
+		Error:               r.Error,
+		ErrorType:           r.ErrorType,
 		Tokens:              r.Tokens,
 		InputTokens:         r.InputTokens,
 		OutputTokens:        r.OutputTokens,
@@ -480,29 +491,29 @@ func requestLogFromRow(r store.RequestLogRow) RequestLog {
 		ApiKeyID:            r.ApiKeyID,
 		Provider:            r.Provider,
 		RequestID:           r.RequestID,
-		ComboID:         r.ComboID,
-		ComboRevision:   r.ComboRevision,
-		ComboStrategy:   r.ComboStrategy,
-		CandidateModel:  r.CandidateModel,
-		EffectiveModel:  r.EffectiveModel,
-		AttemptIndex:    r.AttemptIndex,
-		FusionRole:      r.FusionRole,
-		FailureClass:    r.FailureClass,
-		BeforeFirstByte: r.BeforeFirstByte,
-		SelectedModel:   r.SelectedModel,
-		Billable:        r.Billable,
+		ComboID:             r.ComboID,
+		ComboRevision:       r.ComboRevision,
+		ComboStrategy:       r.ComboStrategy,
+		CandidateModel:      r.CandidateModel,
+		EffectiveModel:      r.EffectiveModel,
+		AttemptIndex:        r.AttemptIndex,
+		FusionRole:          r.FusionRole,
+		FailureClass:        r.FailureClass,
+		BeforeFirstByte:     r.BeforeFirstByte,
+		SelectedModel:       r.SelectedModel,
+		Billable:            r.Billable,
 	}
 }
 
 func requestLogToRow(e RequestLog) store.RequestLogRow {
 	return store.RequestLogRow{
-		Time:            e.Time,
-		Endpoint:        e.Endpoint,
-		Model:           e.Model,
-		AccountID:       e.AccountID,
-		Status:          e.Status,
-		Error:           e.Error,
-		ErrorType:       e.ErrorType,
+		Time:                e.Time,
+		Endpoint:            e.Endpoint,
+		Model:               e.Model,
+		AccountID:           e.AccountID,
+		Status:              e.Status,
+		Error:               e.Error,
+		ErrorType:           e.ErrorType,
 		Tokens:              e.Tokens,
 		InputTokens:         e.InputTokens,
 		OutputTokens:        e.OutputTokens,
@@ -515,17 +526,17 @@ func requestLogToRow(e RequestLog) store.RequestLogRow {
 		ApiKeyID:            e.ApiKeyID,
 		Provider:            e.Provider,
 		RequestID:           e.RequestID,
-		ComboID:         e.ComboID,
-		ComboRevision:   e.ComboRevision,
-		ComboStrategy:   e.ComboStrategy,
-		CandidateModel:  e.CandidateModel,
-		EffectiveModel:  e.EffectiveModel,
-		AttemptIndex:    e.AttemptIndex,
-		FusionRole:      e.FusionRole,
-		FailureClass:    e.FailureClass,
-		BeforeFirstByte: e.BeforeFirstByte,
-		SelectedModel:   e.SelectedModel,
-		Billable:        e.Billable,
+		ComboID:             e.ComboID,
+		ComboRevision:       e.ComboRevision,
+		ComboStrategy:       e.ComboStrategy,
+		CandidateModel:      e.CandidateModel,
+		EffectiveModel:      e.EffectiveModel,
+		AttemptIndex:        e.AttemptIndex,
+		FusionRole:          e.FusionRole,
+		FailureClass:        e.FailureClass,
+		BeforeFirstByte:     e.BeforeFirstByte,
+		SelectedModel:       e.SelectedModel,
+		Billable:            e.Billable,
 	}
 }
 
@@ -817,19 +828,22 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":            "ok",
-		"version":           config.Version,
-		"accounts":          h.pool.Count(),
-		"available":         h.pool.AvailableCount(),
-		"totalRequests":     atomic.LoadInt64(&h.totalRequests),
-		"successRequests":   atomic.LoadInt64(&h.successRequests),
-		"failedRequests":    atomic.LoadInt64(&h.failedRequests),
-		"totalTokens":       atomic.LoadInt64(&h.totalTokens),
-		"totalInputTokens":  atomic.LoadInt64(&h.totalInputTokens),
-		"totalOutputTokens": atomic.LoadInt64(&h.totalOutputTokens),
-		"totalCacheTokens":  atomic.LoadInt64(&h.totalCacheTokens),
-		"totalCredits":      h.getCredits(),
-		"uptime":            time.Now().Unix() - h.startTime,
+		"status":                   "ok",
+		"version":                  config.Version,
+		"accounts":                 h.pool.Count(),
+		"available":                h.pool.AvailableCount(),
+		"totalRequests":            atomic.LoadInt64(&h.totalRequests),
+		"successRequests":          atomic.LoadInt64(&h.successRequests),
+		"failedRequests":           atomic.LoadInt64(&h.failedRequests),
+		"totalTokens":              atomic.LoadInt64(&h.totalTokens),
+		"totalInputTokens":         atomic.LoadInt64(&h.totalInputTokens),
+		"totalOutputTokens":        atomic.LoadInt64(&h.totalOutputTokens),
+		"totalCacheTokens":         atomic.LoadInt64(&h.totalCacheReadTokens),
+		"totalCacheReadTokens":     atomic.LoadInt64(&h.totalCacheReadTokens),
+		"totalCacheCreationTokens": atomic.LoadInt64(&h.totalCacheCreationTokens),
+		"totalResponseCacheHits":   atomic.LoadInt64(&h.totalResponseCacheHits),
+		"totalCredits":             h.getCredits(),
+		"uptime":                   time.Now().Unix() - h.startTime,
 	})
 }
 
@@ -2192,7 +2206,11 @@ func (h *Handler) recordSuccessLogMeta(endpoint, model, accountID string, tok lo
 		Provider:            provider,
 	}
 
-	atomic.AddInt64(&h.totalCacheTokens, int64(tok.CacheRead+tok.CacheCreation))
+	atomic.AddInt64(&h.totalCacheReadTokens, int64(tok.CacheRead))
+	atomic.AddInt64(&h.totalCacheCreationTokens, int64(tok.CacheCreation))
+	if tok.Cached {
+		atomic.AddInt64(&h.totalResponseCacheHits, 1)
+	}
 	h.appendRequestLog(entry)
 }
 
@@ -2689,6 +2707,7 @@ type openAIStreamAttemptResult struct {
 	finished     bool
 	inputTokens  int
 	outputTokens int
+	usage        tokenUsage
 	credits      float64
 	upstreamErr  error
 	writeErr     error
@@ -2777,7 +2796,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		h.recordSuccessForApiKey(apiKeyID, result.inputTokens, result.outputTokens, result.credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
-		h.recordSuccessLogMeta("openai", model, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens}, result.credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("openai", model, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens, CacheRead: result.usage.CacheRead, CacheCreation: result.usage.CacheCreation}, result.credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 		// Store for replay. streamOpenAIAttempt leaves content empty when the turn
 		// produced tool calls, and store() drops "length" (truncated) turns.
 		if result.content != "" || result.thinking != "" {
@@ -3220,6 +3239,9 @@ func (h *Handler) streamOpenAIAttempt(ctx context.Context, account *config.Accou
 			inputTokens = inTok
 			outputTokens = outTok
 		},
+		OnUsage: func(usage tokenUsage) {
+			result.usage = usage
+		},
 		OnFinishReason: func(reason string) {
 			upstreamFinishReason = reason
 		},
@@ -3347,6 +3369,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		var reasoningContent string
 		var toolUses []KiroToolUse
 		var inputTokens, outputTokens int
+		var usage tokenUsage
 		var credits float64
 		var realInputTokens int
 
@@ -3366,6 +3389,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 				content += imageMarkdownDataURI(b64, mime)
 			},
 			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
+			OnUsage:    func(u tokenUsage) { usage = u },
 			OnCredits:  func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
@@ -3397,7 +3421,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLogMeta("openai", model, account.ID, logTokens{Input: inputTokens, Output: outputTokens}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("openai", model, account.ID, logTokens{Input: inputTokens, Output: outputTokens, CacheRead: usage.CacheRead, CacheCreation: usage.CacheCreation}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 
 		// Store the completed answer for replay. Tool responses never reach here
 		// (cacheIntent is nil when tools are present), so toolUses is empty for a
@@ -5698,12 +5722,18 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) apiGetStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"totalRequests":   atomic.LoadInt64(&h.totalRequests),
-		"successRequests": atomic.LoadInt64(&h.successRequests),
-		"failedRequests":  atomic.LoadInt64(&h.failedRequests),
-		"totalTokens":     atomic.LoadInt64(&h.totalTokens),
-		"totalCredits":    h.getCredits(),
-		"uptime":          time.Now().Unix() - h.startTime,
+		"totalRequests":            atomic.LoadInt64(&h.totalRequests),
+		"successRequests":          atomic.LoadInt64(&h.successRequests),
+		"failedRequests":           atomic.LoadInt64(&h.failedRequests),
+		"totalTokens":              atomic.LoadInt64(&h.totalTokens),
+		"totalInputTokens":         atomic.LoadInt64(&h.totalInputTokens),
+		"totalOutputTokens":        atomic.LoadInt64(&h.totalOutputTokens),
+		"totalCacheTokens":         atomic.LoadInt64(&h.totalCacheReadTokens),
+		"totalCacheReadTokens":     atomic.LoadInt64(&h.totalCacheReadTokens),
+		"totalCacheCreationTokens": atomic.LoadInt64(&h.totalCacheCreationTokens),
+		"totalResponseCacheHits":   atomic.LoadInt64(&h.totalResponseCacheHits),
+		"totalCredits":             h.getCredits(),
+		"uptime":                   time.Now().Unix() - h.startTime,
 	})
 }
 
@@ -5712,6 +5742,11 @@ func (h *Handler) apiResetStats(w http.ResponseWriter, r *http.Request) {
 	atomic.StoreInt64(&h.successRequests, 0)
 	atomic.StoreInt64(&h.failedRequests, 0)
 	atomic.StoreInt64(&h.totalTokens, 0)
+	atomic.StoreInt64(&h.totalInputTokens, 0)
+	atomic.StoreInt64(&h.totalOutputTokens, 0)
+	atomic.StoreInt64(&h.totalCacheReadTokens, 0)
+	atomic.StoreInt64(&h.totalCacheCreationTokens, 0)
+	atomic.StoreInt64(&h.totalResponseCacheHits, 0)
 	h.creditsMu.Lock()
 	h.totalCredits = 0
 	h.creditsMu.Unlock()
@@ -5739,6 +5774,11 @@ func (h *Handler) apiClearLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	atomic.StoreInt64(&h.totalInputTokens, 0)
+	atomic.StoreInt64(&h.totalOutputTokens, 0)
+	atomic.StoreInt64(&h.totalCacheReadTokens, 0)
+	atomic.StoreInt64(&h.totalCacheCreationTokens, 0)
+	atomic.StoreInt64(&h.totalResponseCacheHits, 0)
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 

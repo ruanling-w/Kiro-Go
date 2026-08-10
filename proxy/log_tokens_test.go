@@ -1,6 +1,9 @@
 package proxy
 
-import "testing"
+import (
+	"sync/atomic"
+	"testing"
+)
 
 // TestRecordSuccessLogMetaTokenBreakdown verifies the success log records the
 // input/output split plus prompt-cache counts, and keeps Tokens as the in+out
@@ -33,6 +36,22 @@ func TestRecordSuccessLogMetaTokenBreakdown(t *testing.T) {
 	}
 	if e.Status != "success" || e.Credits != 1.5 || e.Provider != "kiro" {
 		t.Fatalf("meta mismatch: %+v", e)
+	}
+}
+
+func TestCacheMetricsHaveSeparateSemantics(t *testing.T) {
+	h := &Handler{}
+	h.recordSuccessLogMeta("openai", "gpt", "acct", logTokens{CacheRead: 100, CacheCreation: 20}, 0, 0, "", "", "codex")
+	h.recordSuccessLogMeta("openai", "gpt", "", logTokens{Cached: true}, 0, 0, "", "", "cache")
+
+	if got := atomic.LoadInt64(&h.totalCacheReadTokens); got != 100 {
+		t.Fatalf("cache reads = %d, want 100", got)
+	}
+	if got := atomic.LoadInt64(&h.totalCacheCreationTokens); got != 20 {
+		t.Fatalf("cache creation = %d, want 20", got)
+	}
+	if got := atomic.LoadInt64(&h.totalResponseCacheHits); got != 1 {
+		t.Fatalf("response cache hits = %d, want 1", got)
 	}
 }
 
