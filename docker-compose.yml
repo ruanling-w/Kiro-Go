@@ -1,9 +1,9 @@
 services:
   kiro-go:
     build: .
-    expose:
-      - "8080"
+    container_name: kiro-go
     ports:
+      - "127.0.0.1:8080:8080"    # chỉ bind localhost, Caddy systemd sẽ proxy vào
       - "127.0.0.1:3128:3128"
       - "127.0.0.1:3129:3129"
       - "127.0.0.1:56121:56121"
@@ -16,13 +16,3 @@ services:
       - XAI_CALLBACK_BIND=0.0.0.0
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
     restart: unless-stopped
-
-  nginx:
-    build: ./nginx
-    depends_on:
-      - kiro-go
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
