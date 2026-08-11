@@ -254,6 +254,10 @@ func scanChatMessage(row interface{ Scan(...any) error }) (ChatMessage, error) {
 const chatMessageColumns = `id,conversation_id,COALESCE(parent_message_id,''),client_request_id,request_hash,role,content,provider,model,status,error_code,error_message,provider_response_id,request_id,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,created_at,updated_at`
 
 func (s *Store) CreateChatTurn(conversationID, clientRequestID string, user, assistant ChatMessage) (ChatTurn, error) {
+	return s.CreateChatTurnWithAttachments(conversationID, clientRequestID, user, assistant, nil)
+}
+
+func (s *Store) CreateChatTurnWithAttachments(conversationID, clientRequestID string, user, assistant ChatMessage, attachmentIDs []string) (ChatTurn, error) {
 	if s == nil {
 		return ChatTurn{}, ErrStorageUnavailable
 	}
@@ -302,6 +306,24 @@ func (s *Store) CreateChatTurn(conversationID, clientRequestID string, user, ass
 	_, err = tx.Exec(`INSERT INTO chat_messages(id,conversation_id,parent_message_id,client_request_id,request_hash,role,content,provider,model,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, user.ID, conversationID, nil, clientRequestID, user.RequestHash, user.Role, user.Content, user.Provider, user.Model, user.Status, now, now)
 	if err != nil {
 		return ChatTurn{}, fmt.Errorf("store: create chat user message: %w", err)
+	}
+	for _, attachmentID := range attachmentIDs {
+		var attachmentConversation string
+		var messageID sql.NullString
+		if bindErr := tx.QueryRow(`SELECT conversation_id,message_id FROM chat_attachments WHERE id=?`, attachmentID).Scan(&attachmentConversation, &messageID); bindErr == sql.ErrNoRows || attachmentConversation != conversationID {
+			return ChatTurn{}, ErrChatAttachmentNotFound
+		} else if bindErr != nil {
+			return ChatTurn{}, bindErr
+		} else if messageID.Valid {
+			return ChatTurn{}, ErrChatConflict
+		}
+		result, bindErr := tx.Exec(`UPDATE chat_attachments SET message_id=? WHERE id=? AND conversation_id=? AND message_id IS NULL AND kind='image_input'`, user.ID, attachmentID, conversationID)
+		if bindErr != nil {
+			return ChatTurn{}, bindErr
+		}
+		if n, _ := result.RowsAffected(); n != 1 {
+			return ChatTurn{}, ErrChatConflict
+		}
 	}
 	assistant.ConversationID = conversationID
 	assistant.ParentMessageID = user.ID

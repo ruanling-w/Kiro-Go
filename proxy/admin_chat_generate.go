@@ -202,12 +202,21 @@ func (h *Handler) apiGenerateChatConversation(w http.ResponseWriter, r *http.Req
 		writeChatStoreError(w, err)
 		return
 	}
-	turn, err := st.CreateChatTurn(conversationID, req.ClientRequestID,
+	turn, err := st.CreateChatTurnWithAttachments(conversationID, req.ClientRequestID,
 		store.ChatMessage{ID: uuid.NewString(), Content: req.Content, Provider: req.Provider, Model: req.Model, RequestHash: chatRequestHash(req.Content, req.Provider, req.Model, req.AttachmentIDs...)},
-		store.ChatMessage{ID: uuid.NewString(), Provider: req.Provider, Model: req.Model})
+		store.ChatMessage{ID: uuid.NewString(), Provider: req.Provider, Model: req.Model}, req.AttachmentIDs)
 	var attachments []store.ChatAttachment
 	if err == nil && turn.Created && len(req.AttachmentIDs) > 0 {
-		attachments, err = st.BindChatAttachments(conversationID, turn.User.ID, req.AttachmentIDs)
+		allAttachments, listErr := st.ListChatAttachments(conversationID)
+		if listErr != nil {
+			err = listErr
+		} else {
+			for _, attachment := range allAttachments {
+				if attachment.MessageID == turn.User.ID {
+					attachments = append(attachments, attachment)
+				}
+			}
+		}
 	}
 	unlock()
 	if err != nil {
