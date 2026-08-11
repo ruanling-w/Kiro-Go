@@ -3594,6 +3594,7 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case h.handleAdminChatRoute(w, r, path):
 	case path == "/combos" && r.Method == "GET":
 		h.apiListCombos(w, r)
 	case path == "/combos" && r.Method == "POST":
