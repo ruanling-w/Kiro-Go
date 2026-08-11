@@ -192,6 +192,14 @@ func (h *Handler) apiGenerateChatImage(w http.ResponseWriter, r *http.Request, c
 
 	result, execErr := h.executeChatImage(r.Context(), chatImageExecutionRequest{Provider: req.Provider, Model: req.Model, Prompt: req.Prompt, Size: req.Size, Quality: req.Quality})
 	if execErr != nil {
+		if errors.Is(execErr, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
+			turn.Assistant.Status, turn.Assistant.ErrorCode, turn.Assistant.ErrorMessage = "stopped", "generation_cancelled", "image generation stopped"
+			if st, release, available := h.chatStore(w); available {
+				turn.Assistant, _ = st.FinalizeChatMessage(turn.Assistant)
+				release()
+			}
+			return
+		}
 		turn.Assistant.Status, turn.Assistant.ErrorCode, turn.Assistant.ErrorMessage = "error", "image_generation_failed", "image generation failed"
 		st, release, available := h.chatStore(w)
 		if available {

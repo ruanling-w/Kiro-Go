@@ -52,6 +52,45 @@ func TestAdminChatImageGeneratePersistsAndReplays(t *testing.T) {
 	}
 }
 
+func TestAdminChatImageGenerateCancellationPersistsStopped(t *testing.T) {
+	mustInitConfig(t)
+	setAdminPassword(t, "pw")
+	h := newAdminChatTestHandler(t)
+	h.chatAssetRoot = filepath.Join(t.TempDir(), "assets")
+	conversation := createGenerateTestConversation(t, h, "codex", "gpt-5.5-image")
+	h.chatImageExecutor = func(ctx context.Context, _ chatImageExecutionRequest) (chatImageExecutionResult, error) {
+		<-ctx.Done()
+		return chatImageExecutionResult{}, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := chatAdminRequest(http.MethodPost, "/admin/api/chat/conversations/"+conversation.ID+"/images/generate", `{"clientRequestId":"cancelled","prompt":"draw"}`, "pw").WithContext(ctx)
+	w := httptest.NewRecorder()
+	h.handleAdminAPI(w, req)
+
+	st, release, ok := h.chatStore(w)
+	if !ok {
+		t.Fatal("chat store unavailable")
+	}
+	messages, err := st.ListChatMessages(conversation.ID, "", 10)
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages.Items) != 2 {
+		t.Fatalf("messages=%+v", messages.Items)
+	}
+	var stopped bool
+	for _, message := range messages.Items {
+		if message.Role == "assistant" && message.Status == "stopped" && message.ErrorCode == "generation_cancelled" {
+			stopped = true
+		}
+	}
+	if !stopped {
+		t.Fatalf("messages=%+v", messages.Items)
+	}
+}
+
 func TestAdminChatImageGenerateRejectsCapabilityMismatch(t *testing.T) {
 	mustInitConfig(t)
 	setAdminPassword(t, "pw")
