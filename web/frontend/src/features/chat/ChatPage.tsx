@@ -31,6 +31,8 @@ export default function ChatPage() {
   const [reasoning, setReasoning] = useState('')
   const [pendingImages, setPendingImages] = useState<File[]>([])
   const [imageMode, setImageMode] = useState(false)
+  const [imageSize, setImageSize] = useState('auto')
+  const [imageQuality, setImageQuality] = useState('auto')
   const [uploading, setUploading] = useState(false)
   const controller = useRef<AbortController | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
@@ -98,10 +100,11 @@ export default function ChatPage() {
       try {
         await chatService.generateImage(conversationId, {
           clientRequestId: requestId(), prompt: content, provider: model?.provider, model: model?.model,
+          size: imageSize, quality: imageQuality,
         }, abort.signal)
       } catch (error) {
         setDraft(content)
-        toast.error(error instanceof Error ? error.message : 'Image generation failed')
+        if (!abort.signal.aborted) toast.error(error instanceof Error ? error.message : 'Image generation failed')
       } finally {
         controller.current = null
         setUploading(false)
@@ -201,6 +204,10 @@ export default function ChatPage() {
                 }
               }}
             ><ImagePlus className="size-4" />{imageMode ? 'Create image' : 'Chat'}</Button>
+            {imageMode && <>
+              <Select value={imageSize} onValueChange={setImageSize}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="auto">Auto size</SelectItem><SelectItem value="1024x1024">Square</SelectItem><SelectItem value="1536x1024">Landscape</SelectItem><SelectItem value="1024x1536">Portrait</SelectItem></SelectContent></Select>
+              <Select value={imageQuality} onValueChange={setImageQuality}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="auto">Auto quality</SelectItem><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem></SelectContent></Select>
+            </>}
             <Select value={selectedModel} onValueChange={setSelectedModel}>
               <SelectTrigger className="w-[min(22rem,60vw)]"><SelectValue placeholder="Select provider and model" /></SelectTrigger>
               <SelectContent>{(models.data ?? []).filter((model) => !imageMode || model.capabilities.imageGeneration).map((model) => <SelectItem key={model.id} value={model.id}>{model.provider} · {model.displayName}</SelectItem>)}</SelectContent>
