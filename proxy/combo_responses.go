@@ -36,7 +36,7 @@ func (h *Handler) handleResponsesComboNonStream(ctx context.Context, w http.Resp
 			h.recordSuccessForApiKey(apiKeyID, result.inputTokens, result.outputTokens, result.credits)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, result.inputTokens+result.outputTokens, result.credits)
-			h.recordSuccessLogMeta("responses", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, providerLabel(account))
+			h.recordSuccessLogMeta("responses", route.RequestedModel, account.ID, logTokens{Input: result.inputTokens, Output: result.outputTokens, CacheRead: result.usage.CacheRead, CacheCreation: result.usage.CacheCreation}, result.credits, time.Since(start).Milliseconds(), clientIP, apiKeyID, providerLabel(account))
 			respObj := buildResponsesObject(respID, route.RequestedModel, result.content, result.toolUses, result.inputTokens, result.outputTokens, req)
 			respObj.StoredInput = storedInput
 			respObj.Instructions = req.Instructions

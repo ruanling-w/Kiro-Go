@@ -98,6 +98,15 @@ export default function DashboardPage() {
                     {formatCompact(s?.totalOutputTokens ?? 0)}{' '}
                     <span className="font-normal text-muted-foreground">out</span>
                   </span>
+                  {(s?.totalLegacyTokens ?? 0) > 0 && (
+                    <span
+                      className="tabular-nums font-medium text-amber-600 dark:text-amber-400"
+                      title="Historical tokens recorded before input/output breakdown was available"
+                    >
+                      {formatCompact(s?.totalLegacyTokens ?? 0)}{' '}
+                      <span className="font-normal text-muted-foreground">legacy</span>
+                    </span>
+                  )}
                 </div>
               </div>
             </StatCard>

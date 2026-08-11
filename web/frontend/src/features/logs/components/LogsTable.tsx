@@ -70,20 +70,31 @@ function EndpointChip({ endpoint }: { endpoint?: string }) {
 function TokensCell({ log }: { log: LiveLog }) {
   const { t } = useTranslation()
   const hasBreakdown =
-    (log.inputTokens ?? 0) > 0 || (log.outputTokens ?? 0) > 0
+    (log.inputTokens ?? 0) > 0 ||
+    (log.outputTokens ?? 0) > 0 ||
+    (log.cacheReadTokens ?? 0) > 0 ||
+    (log.cacheCreationTokens ?? 0) > 0
+  const input = log.inputTokens ?? 0
+  const output = log.outputTokens ?? 0
   const cacheRead = log.cacheReadTokens ?? 0
   const cacheCreation = log.cacheCreationTokens ?? 0
+  const total = log.tokens ?? input + output
 
   const titleParts: string[] = []
   if (hasBreakdown) {
-    titleParts.push(`${t('logs.tokIn')}: ${formatNumber(log.inputTokens ?? 0)}`)
-    titleParts.push(`${t('logs.tokOut')}: ${formatNumber(log.outputTokens ?? 0)}`)
+    titleParts.push(`${t('logs.tokIn')}: ${formatNumber(input)}`)
+    titleParts.push(`${t('logs.cacheRead')}: ${formatNumber(cacheRead)}`)
+    titleParts.push(`${t('logs.cacheCreation')}: ${formatNumber(cacheCreation)}`)
+    titleParts.push(`${t('logs.tokOut')}: ${formatNumber(output)}`)
+    titleParts.push(`${t('logs.tokens')}: ${formatNumber(total)}`)
   }
-  if (cacheRead > 0) titleParts.push(`${t('logs.cacheRead')}: ${formatNumber(cacheRead)}`)
-  if (cacheCreation > 0) titleParts.push(`${t('logs.cacheCreation')}: ${formatNumber(cacheCreation)}`)
 
   if (!hasBreakdown) {
-    return <span>{log.tokens ? formatNumber(log.tokens) : '—'}</span>
+    return (
+      <span title={log.tokens ? 'Legacy total — breakdown unavailable' : undefined}>
+        {log.tokens ? `${formatNumber(log.tokens)} total` : '—'}
+      </span>
+    )
   }
 
   return (
@@ -93,16 +104,13 @@ function TokensCell({ log }: { log: LiveLog }) {
           {t('logs.cacheHit')}
         </span>
       )}
-      <span>
-        {formatNumber(log.inputTokens ?? 0)}
-        <span className="text-muted-foreground">/</span>
-        {formatNumber(log.outputTokens ?? 0)}
+      <span className="inline-flex flex-wrap items-center justify-end gap-x-1 text-[10px]">
+        <span className="text-sky-600 dark:text-sky-400">in {formatNumber(input)}</span>
+        <span className="text-emerald-600 dark:text-emerald-400">cache-r {formatNumber(cacheRead)}</span>
+        <span className="text-amber-600 dark:text-amber-400">cache-w {formatNumber(cacheCreation)}</span>
+        <span>out {formatNumber(output)}</span>
+        <span className="font-semibold">total {formatNumber(total)}</span>
       </span>
-      {(cacheRead > 0 || cacheCreation > 0) && (
-        <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
-          ⚡{formatNumber(cacheRead + cacheCreation)}
-        </span>
-      )}
     </span>
   )
 }

@@ -9,6 +9,39 @@ import (
 	"testing"
 )
 
+func TestParseResponsesSSEReportsNestedCachedTokens(t *testing.T) {
+	stream := strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":120,\"output_tokens\":30,\"input_tokens_details\":{\"cached_tokens\":80}}}}\n\ndata: [DONE]\n\n")
+	var got tokenUsage
+	var completedInput, completedOutput int
+	callback := &KiroStreamCallback{
+		OnUsage:    func(usage tokenUsage) { got = usage },
+		OnComplete: func(input, output int) { completedInput, completedOutput = input, output },
+	}
+
+	if err := parseResponsesSSE(stream, callback, "gpt-test", false); err != nil {
+		t.Fatal(err)
+	}
+	if got.Input != 120 || got.Output != 30 || got.CacheRead != 80 {
+		t.Fatalf("usage=%+v", got)
+	}
+	if completedInput != 120 || completedOutput != 30 {
+		t.Fatalf("complete=%d/%d", completedInput, completedOutput)
+	}
+}
+
+func TestParseResponsesSSEUsesLatestUsageSnapshot(t *testing.T) {
+	stream := strings.NewReader("data: {\"type\":\"response.in_progress\",\"usage\":{\"input_tokens\":100,\"output_tokens\":10,\"input_tokens_details\":{\"cached_tokens\":70}}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":120,\"output_tokens\":30,\"input_tokens_details\":{\"cached_tokens\":80}}}}\n\ndata: [DONE]\n\n")
+	var got tokenUsage
+	callback := &KiroStreamCallback{OnUsage: func(usage tokenUsage) { got = usage }}
+
+	if err := parseResponsesSSE(stream, callback, "gpt-test", false); err != nil {
+		t.Fatal(err)
+	}
+	if got.Input != 120 || got.Output != 30 || got.CacheRead != 80 {
+		t.Fatalf("snapshots were added or stale: %+v", got)
+	}
+}
+
 func TestParseCodexWhamUsage_BasicWindows(t *testing.T) {
 	body := []byte(`{
 		"plan_type": "plus",

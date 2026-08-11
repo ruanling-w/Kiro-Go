@@ -236,22 +236,24 @@ func codexSessionID(account *config.Account, payload *KiroPayload) string {
 // ==================== Responses SSE parsing ====================
 
 // codexSSEEvent is one parsed SSE event (event name + JSON data payload).
+type codexUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	InputDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
+}
+
 type codexResponsesData struct {
 	Type  string          `json:"type"`
 	Delta string          `json:"delta"`
 	Item  json.RawMessage `json:"item"`
 	// response.completed / response.done carry usage inside a "response" object.
 	Response struct {
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		Usage codexUsage         `json:"usage"`
 		Error *codexErrorPayload `json:"error"`
 	} `json:"response"`
-	Usage *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage *codexUsage        `json:"usage"`
 	Error *codexErrorPayload `json:"error"`
 	// image partials
 	PartialImageB64 string `json:"partial_image_b64"`
@@ -286,7 +288,7 @@ func parseResponsesSSE(body io.Reader, callback *KiroStreamCallback, model strin
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
 	var fullContent strings.Builder
-	var inputTokens, outputTokens int
+	var usage tokenUsage
 
 	// Accumulate streamed function-call arguments by call id.
 	type toolAccum struct {
@@ -382,9 +384,10 @@ func parseResponsesSSE(body io.Reader, callback *KiroStreamCallback, model strin
 				acc.args.WriteString(d.Delta)
 			}
 		case "response.completed", "response.done":
-			if ev.Response.Usage.InputTokens > 0 || ev.Response.Usage.OutputTokens > 0 {
-				inputTokens = ev.Response.Usage.InputTokens
-				outputTokens = ev.Response.Usage.OutputTokens
+			if ev.Response.Usage.InputTokens > 0 || ev.Response.Usage.OutputTokens > 0 || ev.Response.Usage.InputDetails.CachedTokens > 0 {
+				usage.Input = ev.Response.Usage.InputTokens
+				usage.Output = ev.Response.Usage.OutputTokens
+				usage.CacheRead = ev.Response.Usage.InputDetails.CachedTokens
 			}
 		case "error", "response.failed":
 			msg := "codex: upstream stream error"
@@ -400,9 +403,10 @@ func parseResponsesSSE(body io.Reader, callback *KiroStreamCallback, model strin
 			return err
 		}
 
-		if ev.Usage != nil && (ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0) {
-			inputTokens = ev.Usage.InputTokens
-			outputTokens = ev.Usage.OutputTokens
+		if ev.Usage != nil && (ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 || ev.Usage.InputDetails.CachedTokens > 0) {
+			usage.Input = ev.Usage.InputTokens
+			usage.Output = ev.Usage.OutputTokens
+			usage.CacheRead = ev.Usage.InputDetails.CachedTokens
 		}
 	}
 
@@ -438,12 +442,15 @@ func parseResponsesSSE(body io.Reader, callback *KiroStreamCallback, model strin
 			callback.OnFinishReason("stop")
 		}
 	}
+	if estimateMissingUsage && usage.Input == 0 && usage.Output == 0 {
+		usage.Input = estimateTokens(fullContent.String())
+		usage.Output = usage.Input
+	}
+	if callback.OnUsage != nil {
+		callback.OnUsage(usage)
+	}
 	if callback.OnComplete != nil {
-		if estimateMissingUsage && inputTokens == 0 && outputTokens == 0 {
-			inputTokens = estimateTokens(fullContent.String())
-			outputTokens = inputTokens
-		}
-		callback.OnComplete(inputTokens, outputTokens)
+		callback.OnComplete(usage.Input, usage.Output)
 	}
 
 	_ = model

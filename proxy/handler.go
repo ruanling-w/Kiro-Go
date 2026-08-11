@@ -84,6 +84,9 @@ type Handler struct {
 	totalCacheReadTokens     int64
 	totalCacheCreationTokens int64
 	totalResponseCacheHits   int64
+	totalLegacyTokens        int64
+	totalDetailedTokenRows   int64
+	totalLegacyTokenRows     int64
 	totalCredits             float64 // float64 需要用锁保护
 	creditsMu                sync.RWMutex
 	startTime                int64
@@ -462,6 +465,9 @@ func (h *Handler) hydrateFromStore() {
 		atomic.StoreInt64(&h.totalCacheReadTokens, usage.CacheReadTokens)
 		atomic.StoreInt64(&h.totalCacheCreationTokens, usage.CacheCreationTokens)
 		atomic.StoreInt64(&h.totalResponseCacheHits, usage.ResponseCacheHits)
+		atomic.StoreInt64(&h.totalLegacyTokens, usage.LegacyTokens)
+		atomic.StoreInt64(&h.totalDetailedTokenRows, usage.DetailedRows)
+		atomic.StoreInt64(&h.totalLegacyTokenRows, usage.LegacyRows)
 	}
 	if ipMap, err := h.runtimeStore.LoadKeyIPStats(); err != nil {
 		logger.Warnf("load key IP stats: %v", err)
@@ -842,6 +848,9 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 		"totalCacheReadTokens":     atomic.LoadInt64(&h.totalCacheReadTokens),
 		"totalCacheCreationTokens": atomic.LoadInt64(&h.totalCacheCreationTokens),
 		"totalResponseCacheHits":   atomic.LoadInt64(&h.totalResponseCacheHits),
+		"totalLegacyTokens":        atomic.LoadInt64(&h.totalLegacyTokens),
+		"totalDetailedTokenRows":   atomic.LoadInt64(&h.totalDetailedTokenRows),
+		"totalLegacyTokenRows":     atomic.LoadInt64(&h.totalLegacyTokenRows),
 		"totalCredits":             h.getCredits(),
 		"uptime":                   time.Now().Unix() - h.startTime,
 	})
@@ -5732,6 +5741,9 @@ func (h *Handler) apiGetStats(w http.ResponseWriter, r *http.Request) {
 		"totalCacheReadTokens":     atomic.LoadInt64(&h.totalCacheReadTokens),
 		"totalCacheCreationTokens": atomic.LoadInt64(&h.totalCacheCreationTokens),
 		"totalResponseCacheHits":   atomic.LoadInt64(&h.totalResponseCacheHits),
+		"totalLegacyTokens":        atomic.LoadInt64(&h.totalLegacyTokens),
+		"totalDetailedTokenRows":   atomic.LoadInt64(&h.totalDetailedTokenRows),
+		"totalLegacyTokenRows":     atomic.LoadInt64(&h.totalLegacyTokenRows),
 		"totalCredits":             h.getCredits(),
 		"uptime":                   time.Now().Unix() - h.startTime,
 	})

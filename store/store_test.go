@@ -93,6 +93,35 @@ func TestOpenMigrateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAggregateRequestLogUsageSeparatesLegacyTokens(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	rows := []RequestLogRow{
+		{Time: 1, Endpoint: "openai", Status: "success", Tokens: 150, InputTokens: 120, OutputTokens: 30, CacheReadTokens: 80, CacheCreationTokens: 10},
+		{Time: 2, Endpoint: "claude", Status: "success", Tokens: 75},
+		{Time: 3, Endpoint: "openai", Status: "error", Tokens: 25},
+		{Time: 4, Endpoint: "combo_attempt", Status: "success", Tokens: 50, InputTokens: 40, OutputTokens: 10},
+	}
+	if err := s.InsertRequestLogs(rows); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.AggregateRequestLogUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.InputTokens != 120 || got.OutputTokens != 30 || got.CacheReadTokens != 80 || got.CacheCreationTokens != 10 {
+		t.Fatalf("breakdown=%+v", got)
+	}
+	if got.LegacyTokens != 75 || got.DetailedRows != 1 || got.LegacyRows != 1 {
+		t.Fatalf("coverage=%+v", got)
+	}
+}
+
 func TestPruneAndClearLogs(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {

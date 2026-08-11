@@ -192,6 +192,7 @@ func (h *Handler) handleResponsesNonStream(
 		var content, reasoningContent string
 		var toolUses []KiroToolUse
 		var inputTokens, outputTokens int
+		var usage tokenUsage
 		var credits float64
 		var realInputTokens int
 
@@ -205,6 +206,7 @@ func (h *Handler) handleResponsesNonStream(
 			},
 			OnToolUse:  func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
 			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
+			OnUsage:    func(u tokenUsage) { usage = u },
 			OnCredits:  func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
@@ -234,7 +236,7 @@ func (h *Handler) handleResponsesNonStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLogMeta("responses", model, account.ID, logTokens{Input: inputTokens, Output: outputTokens}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("responses", model, account.ID, logTokens{Input: inputTokens, Output: outputTokens, CacheRead: usage.CacheRead, CacheCreation: usage.CacheCreation}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.StoredInput = storedInput
@@ -400,6 +402,7 @@ func (h *Handler) handleResponsesStreamModels(
 			toolUses        []KiroToolUse
 			inputTokens     int
 			outputTokens    int
+			usage           tokenUsage
 			credits         float64
 			realInputTokens int
 		)
@@ -524,6 +527,7 @@ func (h *Handler) handleResponsesStreamModels(
 				responseStarted = true
 			},
 			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
+			OnUsage:    func(u tokenUsage) { usage = u },
 			OnCredits:  func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(effectiveModel)) / 100.0)
@@ -596,7 +600,7 @@ func (h *Handler) handleResponsesStreamModels(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLogMeta("responses", publicModel, account.ID, logTokens{Input: inputTokens, Output: outputTokens}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
+		h.recordSuccessLogMeta("responses", publicModel, account.ID, logTokens{Input: inputTokens, Output: outputTokens, CacheRead: usage.CacheRead, CacheCreation: usage.CacheCreation}, credits, time.Since(reqStart).Milliseconds(), clientIP, apiKeyID, usedProvider)
 
 		respObj := buildResponsesObject(respID, publicModel, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt

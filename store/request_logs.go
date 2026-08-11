@@ -184,6 +184,9 @@ type RequestLogAggregates struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	ResponseCacheHits   int64
+	LegacyTokens        int64
+	DetailedRows        int64
+	LegacyRows          int64
 }
 
 // AggregateRequestLogUsage sums successful public request logs. Combo attempts are
@@ -194,18 +197,34 @@ func (s *Store) AggregateRequestLogUsage() (RequestLogAggregates, error) {
 		return out, nil
 	}
 	err := s.db.QueryRow(`
-SELECT COALESCE(SUM(input_tokens), 0),
-       COALESCE(SUM(output_tokens), 0),
-       COALESCE(SUM(cache_read_tokens), 0),
-       COALESCE(SUM(cache_creation_tokens), 0),
-       COALESCE(SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END), 0)
-FROM request_logs
-WHERE status = 'success' AND endpoint <> 'combo_attempt'`).Scan(
+	SELECT COALESCE(SUM(input_tokens), 0),
+	       COALESCE(SUM(output_tokens), 0),
+	       COALESCE(SUM(cache_read_tokens), 0),
+	       COALESCE(SUM(cache_creation_tokens), 0),
+	       COALESCE(SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END), 0),
+	       COALESCE(SUM(CASE
+	         WHEN input_tokens = 0 AND output_tokens = 0
+	          AND cache_read_tokens = 0 AND cache_creation_tokens = 0
+	         THEN tokens ELSE 0 END), 0),
+	       COALESCE(SUM(CASE
+	         WHEN input_tokens <> 0 OR output_tokens <> 0
+	          OR cache_read_tokens <> 0 OR cache_creation_tokens <> 0
+	         THEN 1 ELSE 0 END), 0),
+	       COALESCE(SUM(CASE
+	         WHEN input_tokens = 0 AND output_tokens = 0
+	          AND cache_read_tokens = 0 AND cache_creation_tokens = 0
+	          AND tokens > 0
+	         THEN 1 ELSE 0 END), 0)
+	FROM request_logs
+	WHERE status = 'success' AND endpoint <> 'combo_attempt'`).Scan(
 		&out.InputTokens,
 		&out.OutputTokens,
 		&out.CacheReadTokens,
 		&out.CacheCreationTokens,
 		&out.ResponseCacheHits,
+		&out.LegacyTokens,
+		&out.DetailedRows,
+		&out.LegacyRows,
 	)
 	if err != nil && err != sql.ErrNoRows {
 		return RequestLogAggregates{}, fmt.Errorf("store: aggregate request log usage: %w", err)
