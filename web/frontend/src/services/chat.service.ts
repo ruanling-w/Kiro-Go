@@ -1,5 +1,5 @@
 import { http } from './httpClient'
-import type { ChatAttachment, ChatConversation, ChatMessage, ChatModel, ChatPage, ChatStreamEvent } from '@/types/chat'
+import type { ChatAttachment, ChatConversation, ChatImageGenerateResponse, ChatMessage, ChatModel, ChatPage, ChatStreamEvent } from '@/types/chat'
 
 interface ConversationInput {
   title?: string
@@ -73,6 +73,8 @@ export const chatService = {
     return (await response.json() as { data: ChatAttachment[] }).data
   },
   deleteAttachment: (conversationId: string, attachmentId: string) => http.delete<void>(`/chat/conversations/${conversationId}/attachments/${attachmentId}`),
+  generateImage: (conversationId: string, input: { clientRequestId: string; prompt: string; provider?: string; model?: string; size?: string; quality?: string }) =>
+    http.post<ChatImageGenerateResponse>(`/chat/conversations/${conversationId}/images/generate`, input),
   generate: async (
     conversationId: string,
     input: { clientRequestId: string; content: string; attachmentIds?: string[] },

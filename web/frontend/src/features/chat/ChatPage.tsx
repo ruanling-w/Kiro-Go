@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bot, ImagePlus, MessageSquarePlus, Send, Square, Trash2, X } from 'lucide-react'
+import { Bot, Download, ImagePlus, MessageSquarePlus, Send, Square, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { useChatConversations, useChatMessages, useChatModels } from '@/hooks/queries/useChat'
 import { chatService } from '@/services/chat.service'
@@ -25,6 +25,7 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState<ChatMessage | null>(null)
   const [reasoning, setReasoning] = useState('')
   const [pendingImages, setPendingImages] = useState<File[]>([])
+  const [imageMode, setImageMode] = useState(false)
   const [uploading, setUploading] = useState(false)
   const controller = useRef<AbortController | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
@@ -79,6 +80,26 @@ export default function ChatPage() {
 
     const abort = new AbortController()
     controller.current = abort
+    if (imageMode) {
+      setUploading(true)
+      setDraft('')
+      try {
+        await chatService.generateImage(conversationId, {
+          clientRequestId: requestId(), prompt: content, provider: model?.provider, model: model?.model,
+        })
+      } catch (error) {
+        setDraft(content)
+        toast.error(error instanceof Error ? error.message : 'Image generation failed')
+      } finally {
+        controller.current = null
+        setUploading(false)
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: qk.chatMessages(conversationId) }),
+          queryClient.invalidateQueries({ queryKey: qk.chatConversations }),
+        ])
+      }
+      return
+    }
     setUploading(Boolean(pendingImages.length))
     let attachmentIds: string[] = []
     try {
@@ -141,10 +162,27 @@ export default function ChatPage() {
       <section className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
           <div className="flex items-center gap-2 font-medium"><Bot className="size-5" />AI Chat</div>
-          <Select value={selectedModel} onValueChange={setSelectedModel}>
-            <SelectTrigger className="w-[min(22rem,60vw)]"><SelectValue placeholder="Select provider and model" /></SelectTrigger>
-            <SelectContent>{(models.data ?? []).map((model) => <SelectItem key={model.id} value={model.id}>{model.provider} · {model.displayName}</SelectItem>)}</SelectContent>
-          </Select>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant={imageMode ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => {
+                const next = !imageMode
+                setImageMode(next)
+                setPendingImages([])
+                if (next) {
+                  const imageModel = models.data?.find((item) => item.capabilities.imageGeneration)
+                  if (imageModel) setSelectedModel(imageModel.id)
+                  else toast.error('No image generation model is available')
+                }
+              }}
+            ><ImagePlus className="size-4" />{imageMode ? 'Create image' : 'Chat'}</Button>
+            <Select value={selectedModel} onValueChange={setSelectedModel}>
+              <SelectTrigger className="w-[min(22rem,60vw)]"><SelectValue placeholder="Select provider and model" /></SelectTrigger>
+              <SelectContent>{(models.data ?? []).filter((model) => !imageMode || model.capabilities.imageGeneration).map((model) => <SelectItem key={model.id} value={model.id}>{model.provider} · {model.displayName}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
         </header>
 
         <div className="flex-1 overflow-y-auto px-4 py-6">
@@ -167,8 +205,8 @@ export default function ChatPage() {
               onDrop={(event) => { event.preventDefault(); addImages(Array.from(event.dataTransfer.files)) }}
             >
               <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" multiple className="hidden" onChange={(event) => { addImages(Array.from(event.target.files ?? [])); event.target.value = '' }} />
-              <Button type="button" size="icon" variant="ghost" onClick={() => fileInput.current?.click()} disabled={Boolean(controller.current) || pendingImages.length >= 4} aria-label="Attach images"><ImagePlus className="size-4" /></Button>
-              <textarea className="max-h-48 min-h-11 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none" rows={1} placeholder="Message AI…" value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { const files = Array.from(event.clipboardData.files); if (files.length) addImages(files) }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send() } }} disabled={Boolean(controller.current)} />
+              {!imageMode && <Button type="button" size="icon" variant="ghost" onClick={() => fileInput.current?.click()} disabled={Boolean(controller.current) || pendingImages.length >= 4} aria-label="Attach images"><ImagePlus className="size-4" /></Button>}
+              <textarea className="max-h-48 min-h-11 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none" rows={1} placeholder={imageMode ? 'Describe the image to create…' : 'Message AI…'} value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { if (!imageMode) { const files = Array.from(event.clipboardData.files); if (files.length) addImages(files) } }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send() } }} disabled={Boolean(controller.current)} />
               {controller.current ? <Button size="icon" variant="destructive" onClick={() => controller.current?.abort()}><Square className="size-4" /></Button> : <Button size="icon" onClick={send} disabled={(!draft.trim() && !pendingImages.length) || uploading}><Send className="size-4" /></Button>}
             </div>
           </div>
@@ -194,7 +232,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   return (
     <div className={`flex ${assistant ? 'justify-start' : 'justify-end'}`}>
       <div className={`min-w-0 max-w-[85%] rounded-2xl px-4 py-3 ${assistant ? 'bg-muted' : 'bg-primary text-primary-foreground'}`}>
-        {message.attachments?.length ? <div className="mb-3 grid grid-cols-2 gap-2">{message.attachments.map((attachment) => <img key={attachment.id} src={attachment.contentUrl} alt={attachment.name} className="max-h-64 w-full rounded-lg object-cover" loading="lazy" />)}</div> : null}
+        {message.attachments?.length ? <div className="mb-3 grid grid-cols-2 gap-2">{message.attachments.map((attachment) => <div key={attachment.id} className="group/image relative"><img src={attachment.contentUrl} alt={attachment.name} className="max-h-96 w-full rounded-lg object-contain" loading="lazy" />{attachment.kind === 'image_output' && <a href={attachment.contentUrl} download={attachment.name} className="absolute right-2 top-2 grid size-8 place-items-center rounded-md bg-background/90 text-foreground opacity-0 shadow-sm transition-opacity group-hover/image:opacity-100" aria-label={`Download ${attachment.name}`}><Download className="size-4" /></a>}</div>)}</div> : null}
         {assistant ? <SafeMarkdown>{content}</SafeMarkdown> : <div className="whitespace-pre-wrap text-sm">{content}</div>}
         {assistant && message.status === 'error' && <div className="mt-2 text-xs text-destructive">{message.errorMessage}</div>}
       </div>

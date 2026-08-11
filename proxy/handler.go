@@ -130,6 +130,7 @@ type Handler struct {
 	combosLoaded           bool
 	chatTextExecutor       func(context.Context, chatTextExecutionRequest) (chatTextExecutionResult, error)
 	chatTextStreamExecutor func(context.Context, chatTextExecutionRequest, chatTextStreamCallbacks) (chatTextExecutionResult, error)
+	chatImageExecutor      func(context.Context, chatImageExecutionRequest) (chatImageExecutionResult, error)
 }
 
 type thinkingStreamSource int

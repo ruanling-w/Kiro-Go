@@ -218,6 +218,10 @@ func (h *Handler) handleAdminChatRoute(w http.ResponseWriter, r *http.Request, p
 			return true
 		}
 	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "images" && parts[2] == "generate" && r.Method == http.MethodPost {
+		h.apiGenerateChatImage(w, r, parts[0])
+		return true
+	}
 	if len(parts) == 3 && parts[0] != "" && parts[1] == "attachments" && parts[2] != "" && r.Method == http.MethodDelete {
 		h.apiDeleteChatAttachment(w, parts[0], parts[2])
 		return true

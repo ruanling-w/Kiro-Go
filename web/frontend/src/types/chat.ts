@@ -48,6 +48,13 @@ export interface ChatAttachment {
   contentUrl: string
 }
 
+export interface ChatImageGenerateResponse {
+  userMessage: ChatMessage
+  assistantMessage: ChatMessage
+  attachments: ChatAttachment[]
+  replayed: boolean
+}
+
 export interface ChatModel {
   id: string
   provider: string
