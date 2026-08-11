@@ -308,6 +308,30 @@ func (s *Store) CreateChatTurn(conversationID, clientRequestID string, user, ass
 	return ChatTurn{User: user, Assistant: assistant, Created: true}, nil
 }
 
+func (s *Store) AbortChatTurn(userMessageID string) error {
+	if s == nil {
+		return ErrStorageUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.chatDBLocked()
+	if err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE chat_attachments SET message_id=NULL WHERE message_id=?`, userMessageID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM chat_messages WHERE id=? AND role='user'`, userMessageID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) FinalizeChatMessage(m ChatMessage) (ChatMessage, error) {
 	if m.Status != "complete" && m.Status != "stopped" && m.Status != "error" {
 		return ChatMessage{}, ErrChatConflict
@@ -448,6 +472,14 @@ func (s *Store) ListChatMessages(conversationID, cursor string, limit int) (Chat
 	return p, nil
 }
 
+func scanChatAttachment(row interface{ Scan(...any) error }) (ChatAttachment, error) {
+	var a ChatAttachment
+	err := row.Scan(&a.ID, &a.ConversationID, &a.MessageID, &a.Kind, &a.Name, &a.MIMEType, &a.SizeBytes, &a.StorageKey, &a.Width, &a.Height, &a.CreatedAt)
+	return a, err
+}
+
+const chatAttachmentColumns = `id,conversation_id,COALESCE(message_id,''),kind,name,mime_type,size_bytes,storage_key,width,height,created_at`
+
 func (s *Store) CreateChatAttachment(a ChatAttachment) (ChatAttachment, error) {
 	if s == nil {
 		return ChatAttachment{}, ErrStorageUnavailable
@@ -471,6 +503,26 @@ func (s *Store) CreateChatAttachment(a ChatAttachment) (ChatAttachment, error) {
 	}
 	return a, nil
 }
+func (s *Store) GetChatAttachment(conversationID, id string) (ChatAttachment, error) {
+	if s == nil {
+		return ChatAttachment{}, ErrStorageUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.chatDBLocked()
+	if err != nil {
+		return ChatAttachment{}, err
+	}
+	a, err := scanChatAttachment(db.QueryRow(`SELECT `+chatAttachmentColumns+` FROM chat_attachments WHERE conversation_id=? AND id=?`, conversationID, id))
+	if err == sql.ErrNoRows {
+		return ChatAttachment{}, ErrChatAttachmentNotFound
+	}
+	if err != nil {
+		return ChatAttachment{}, fmt.Errorf("store: get chat attachment: %w", err)
+	}
+	return a, nil
+}
+
 func (s *Store) ListChatAttachments(conversationID string) ([]ChatAttachment, error) {
 	if s == nil {
 		return nil, ErrStorageUnavailable
@@ -481,21 +533,74 @@ func (s *Store) ListChatAttachments(conversationID string) ([]ChatAttachment, er
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(`SELECT id,conversation_id,COALESCE(message_id,''),kind,name,mime_type,size_bytes,storage_key,width,height,created_at FROM chat_attachments WHERE conversation_id=? ORDER BY created_at,id`, conversationID)
+	rows, err := db.Query(`SELECT `+chatAttachmentColumns+` FROM chat_attachments WHERE conversation_id=? ORDER BY created_at,id`, conversationID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []ChatAttachment
 	for rows.Next() {
-		var a ChatAttachment
-		if err = rows.Scan(&a.ID, &a.ConversationID, &a.MessageID, &a.Kind, &a.Name, &a.MIMEType, &a.SizeBytes, &a.StorageKey, &a.Width, &a.Height, &a.CreatedAt); err != nil {
-			return nil, err
+		a, scanErr := scanChatAttachment(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
 }
+func (s *Store) BindChatAttachments(conversationID, messageID string, attachmentIDs []string) ([]ChatAttachment, error) {
+	if s == nil {
+		return nil, ErrStorageUnavailable
+	}
+	if len(attachmentIDs) == 0 {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.chatDBLocked()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var messageConversation string
+	if err = tx.QueryRow(`SELECT conversation_id FROM chat_messages WHERE id=? AND role='user'`, messageID).Scan(&messageConversation); err == sql.ErrNoRows {
+		return nil, ErrChatMessageNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if messageConversation != conversationID {
+		return nil, ErrChatConflict
+	}
+	bound := make([]ChatAttachment, 0, len(attachmentIDs))
+	for _, id := range attachmentIDs {
+		a, queryErr := scanChatAttachment(tx.QueryRow(`SELECT `+chatAttachmentColumns+` FROM chat_attachments WHERE conversation_id=? AND id=?`, conversationID, id))
+		if queryErr == sql.ErrNoRows {
+			return nil, ErrChatAttachmentNotFound
+		}
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		if a.MessageID != "" && a.MessageID != messageID {
+			return nil, ErrChatConflict
+		}
+		if a.MessageID == "" {
+			if _, err = tx.Exec(`UPDATE chat_attachments SET message_id=? WHERE id=? AND message_id IS NULL`, messageID, id); err != nil {
+				return nil, err
+			}
+			a.MessageID = messageID
+		}
+		bound = append(bound, a)
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return bound, nil
+}
+
 func (s *Store) DeleteChatAttachment(id string) error {
 	if s == nil {
 		return ErrStorageUnavailable

@@ -105,7 +105,7 @@ func (h *Handler) apiReplayChatTurnSSE(w http.ResponseWriter, conversation store
 	_ = conversation
 }
 
-func (h *Handler) apiStreamChatTurn(w http.ResponseWriter, r *http.Request, conversation store.ChatConversation, turn store.ChatTurn, history []store.ChatMessage, req chatGenerateRequest) {
+func (h *Handler) apiStreamChatTurn(w http.ResponseWriter, r *http.Request, conversation store.ChatConversation, turn store.ChatTurn, messages []OpenAIMessage, req chatGenerateRequest) {
 	stream, ok := prepareChatSSE(w)
 	if !ok {
 		h.finalizeUnstartedChatStream(turn.Assistant, "streaming_unsupported", "streaming is not supported by this server")
@@ -118,7 +118,7 @@ func (h *Handler) apiStreamChatTurn(w http.ResponseWriter, r *http.Request, conv
 
 	requestID := uuid.NewString()
 	result, executionErr := h.executeChatTextStream(r.Context(), chatTextExecutionRequest{
-		Messages: chatHistoryMessages(history, req.Content), Provider: req.Provider, Model: req.Model,
+		Messages: messages, Provider: req.Provider, Model: req.Model,
 		ClientIP: ClientIP(r, config.GetTrustProxyHeaders()), RequestID: requestID,
 	}, chatTextStreamCallbacks{
 		OnText: func(text string, thinking bool) error {

@@ -1,5 +1,5 @@
 import { http } from './httpClient'
-import type { ChatConversation, ChatMessage, ChatModel, ChatPage, ChatStreamEvent } from '@/types/chat'
+import type { ChatAttachment, ChatConversation, ChatMessage, ChatModel, ChatPage, ChatStreamEvent } from '@/types/chat'
 
 interface ConversationInput {
   title?: string
@@ -59,9 +59,23 @@ export const chatService = {
   createConversation: (input: ConversationInput) => http.post<ChatConversation>('/chat/conversations', input),
   updateConversation: (id: string, input: ConversationInput) => http.patch<ChatConversation>(`/chat/conversations/${id}`, input),
   deleteConversation: (id: string) => http.delete<void>(`/chat/conversations/${id}`),
+  attachments: (conversationId: string) => http.get<{ data: ChatAttachment[] }>(`/chat/conversations/${conversationId}/attachments`).then((result) => result.data),
+  uploadAttachments: async (conversationId: string, files: File[]) => {
+    const body = new FormData()
+    files.forEach((file) => body.append('files', file))
+    const response = await fetch(`/admin/api/chat/conversations/${conversationId}/attachments`, {
+      method: 'POST', credentials: 'include', headers: { 'X-CSRF-Token': decodeURIComponent(cookie('kiro_csrf')) }, body,
+    })
+    if (!response.ok) {
+      const error = await response.json().catch(() => null) as { message?: string } | null
+      throw new Error(error?.message || `Upload failed (${response.status})`)
+    }
+    return (await response.json() as { data: ChatAttachment[] }).data
+  },
+  deleteAttachment: (conversationId: string, attachmentId: string) => http.delete<void>(`/chat/conversations/${conversationId}/attachments/${attachmentId}`),
   generate: async (
     conversationId: string,
-    input: { clientRequestId: string; content: string },
+    input: { clientRequestId: string; content: string; attachmentIds?: string[] },
     signal: AbortSignal,
     onEvent: (event: ChatStreamEvent) => void,
   ) => {

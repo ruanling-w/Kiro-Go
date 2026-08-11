@@ -6,6 +6,8 @@ import (
 	"kiro-go/config"
 	"kiro-go/store"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,25 +38,26 @@ type chatConversationDTO struct {
 }
 
 type chatMessageDTO struct {
-	ID                  string `json:"id"`
-	ConversationID      string `json:"conversationId"`
-	ParentMessageID     string `json:"parentMessageId"`
-	ClientRequestID     string `json:"clientRequestId"`
-	Role                string `json:"role"`
-	Content             string `json:"content"`
-	Provider            string `json:"provider"`
-	Model               string `json:"model"`
-	Status              string `json:"status"`
-	ErrorCode           string `json:"errorCode"`
-	ErrorMessage        string `json:"errorMessage"`
-	ProviderResponseID  string `json:"providerResponseId"`
-	RequestID           string `json:"requestId"`
-	InputTokens         int    `json:"inputTokens"`
-	OutputTokens        int    `json:"outputTokens"`
-	CacheReadTokens     int    `json:"cacheReadTokens"`
-	CacheCreationTokens int    `json:"cacheCreationTokens"`
-	CreatedAt           int64  `json:"createdAt"`
-	UpdatedAt           int64  `json:"updatedAt"`
+	ID                  string              `json:"id"`
+	ConversationID      string              `json:"conversationId"`
+	ParentMessageID     string              `json:"parentMessageId"`
+	ClientRequestID     string              `json:"clientRequestId"`
+	Role                string              `json:"role"`
+	Content             string              `json:"content"`
+	Provider            string              `json:"provider"`
+	Model               string              `json:"model"`
+	Status              string              `json:"status"`
+	ErrorCode           string              `json:"errorCode"`
+	ErrorMessage        string              `json:"errorMessage"`
+	ProviderResponseID  string              `json:"providerResponseId"`
+	RequestID           string              `json:"requestId"`
+	InputTokens         int                 `json:"inputTokens"`
+	OutputTokens        int                 `json:"outputTokens"`
+	CacheReadTokens     int                 `json:"cacheReadTokens"`
+	CacheCreationTokens int                 `json:"cacheCreationTokens"`
+	CreatedAt           int64               `json:"createdAt"`
+	UpdatedAt           int64               `json:"updatedAt"`
+	Attachments         []chatAttachmentDTO `json:"attachments,omitempty"`
 }
 
 type chatConversationRequest struct {
@@ -115,6 +118,8 @@ func writeChatStoreError(w http.ResponseWriter, err error) {
 		chatAPIError(w, http.StatusNotFound, "conversation_not_found", "conversation not found")
 	case errors.Is(err, store.ErrChatMessageNotFound):
 		chatAPIError(w, http.StatusNotFound, "message_not_found", "message not found")
+	case errors.Is(err, store.ErrChatAttachmentNotFound):
+		chatAPIError(w, http.StatusNotFound, "attachment_not_found", "attachment not found")
 	case errors.Is(err, store.ErrChatInvalidCursor):
 		chatAPIError(w, http.StatusBadRequest, "invalid_cursor", "cursor is invalid")
 	case errors.Is(err, store.ErrChatConflict):
@@ -205,7 +210,21 @@ func (h *Handler) handleAdminChatRoute(w http.ResponseWriter, r *http.Request, p
 		case parts[1] == "generate" && r.Method == http.MethodPost:
 			h.apiGenerateChatConversation(w, r, parts[0])
 			return true
+		case parts[1] == "attachments" && r.Method == http.MethodGet:
+			h.apiListChatAttachments(w, parts[0])
+			return true
+		case parts[1] == "attachments" && r.Method == http.MethodPost:
+			h.apiUploadChatAttachments(w, r, parts[0])
+			return true
 		}
+	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "attachments" && parts[2] != "" && r.Method == http.MethodDelete {
+		h.apiDeleteChatAttachment(w, parts[0], parts[2])
+		return true
+	}
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "attachments" && parts[2] != "" && parts[3] == "content" && r.Method == http.MethodGet {
+		h.apiServeChatAttachment(w, parts[0], parts[2])
+		return true
 	}
 	if len(parts) != 1 || parts[0] == "" {
 		return false
@@ -341,10 +360,20 @@ func (h *Handler) apiDeleteChatConversation(w http.ResponseWriter, id string) {
 	if !ok {
 		return
 	}
-	defer unlock()
+	attachments, _ := st.ListChatAttachments(id)
 	if err := st.DeleteChatConversation(id); err != nil {
+		unlock()
 		writeChatStoreError(w, err)
 		return
+	}
+	unlock()
+	if assets, err := h.chatAssets(); err == nil {
+		for _, attachment := range attachments {
+			if path, pathErr := assets.path(attachment.StorageKey); pathErr == nil {
+				_ = os.Remove(path)
+			}
+		}
+		_ = os.Remove(filepath.Join(assets.root, id))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -370,8 +399,21 @@ func (h *Handler) apiListChatMessages(w http.ResponseWriter, r *http.Request, co
 		return
 	}
 	data := make([]chatMessageDTO, 0, len(page.Items))
+	attachments, err := st.ListChatAttachments(conversationID)
+	if err != nil {
+		writeChatStoreError(w, err)
+		return
+	}
+	byMessage := make(map[string][]chatAttachmentDTO)
+	for _, attachment := range attachments {
+		if attachment.MessageID != "" {
+			byMessage[attachment.MessageID] = append(byMessage[attachment.MessageID], chatAttachmentFromStore(attachment))
+		}
+	}
 	for _, m := range page.Items {
-		data = append(data, chatMessageFromStore(m))
+		dto := chatMessageFromStore(m)
+		dto.Attachments = byMessage[m.ID]
+		data = append(data, dto)
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": data, "nextCursor": page.NextCursor})
 }

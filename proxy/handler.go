@@ -13,6 +13,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -116,16 +117,17 @@ type Handler struct {
 	// Runtime SQLite store (nil = fail-open, RAM-only).
 	runtimeStoreMu sync.RWMutex
 	runtimeStore   *store.Store
+	chatAssetRoot  string
 	// Per-API-key client IP stats (lifetime flushed to store; RPM is RAM-only).
 	ipTrack *ipTracker
 	// Fan-out of live log entries to admin SSE subscribers.
 	logHub *logHub
 	// Combo configuration is copied on publication and read without SQLite access.
-	combosMu         sync.RWMutex
-	comboLoadMu      sync.Mutex
-	combosByID       map[string]store.Combo
-	combosByName     map[string]store.Combo
-	combosLoaded     bool
+	combosMu               sync.RWMutex
+	comboLoadMu            sync.Mutex
+	combosByID             map[string]store.Combo
+	combosByName           map[string]store.Combo
+	combosLoaded           bool
 	chatTextExecutor       func(context.Context, chatTextExecutionRequest) (chatTextExecutionResult, error)
 	chatTextStreamExecutor func(context.Context, chatTextExecutionRequest, chatTextStreamCallbacks) (chatTextExecutionResult, error)
 }
@@ -322,6 +324,7 @@ func NewHandler() *Handler {
 		logHub:            newLogHub(),
 		combosByID:        make(map[string]store.Combo),
 		combosByName:      make(map[string]store.Combo),
+		chatAssetRoot:     filepath.Join(config.GetConfigDir(), "chat-assets"),
 	}
 
 	// Runtime SQLite (logs + key IP lifetime). Fail-open on error.

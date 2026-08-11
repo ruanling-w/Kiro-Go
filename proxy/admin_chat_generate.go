@@ -3,12 +3,15 @@ package proxy
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"kiro-go/config"
 	"kiro-go/store"
 	"net/http"
+	"os"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -21,10 +24,11 @@ const (
 )
 
 type chatGenerateRequest struct {
-	ClientRequestID string `json:"clientRequestId"`
-	Content         string `json:"content"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
+	ClientRequestID string   `json:"clientRequestId"`
+	Content         string   `json:"content"`
+	Provider        string   `json:"provider"`
+	Model           string   `json:"model"`
+	AttachmentIDs   []string `json:"attachmentIds"`
 }
 
 type chatGenerateResponse struct {
@@ -62,8 +66,23 @@ func validateChatGenerateRequest(req *chatGenerateRequest, conversation store.Ch
 	if req.ClientRequestID == "" || len(req.ClientRequestID) > chatClientRequestIDMaxBytes {
 		fields = append(fields, comboFieldError{"clientRequestId", "is required and must be at most 128 bytes"})
 	}
-	if req.Content == "" || len(req.Content) > chatContentMaxBytes || !utf8.ValidString(req.Content) {
-		fields = append(fields, comboFieldError{"content", "is required, must be valid UTF-8, and must be at most 1 MiB"})
+	if req.Content == "" && len(req.AttachmentIDs) == 0 {
+		fields = append(fields, comboFieldError{"content", "content or at least one attachment is required"})
+	} else if len(req.Content) > chatContentMaxBytes || !utf8.ValidString(req.Content) {
+		fields = append(fields, comboFieldError{"content", "must be valid UTF-8 and at most 1 MiB"})
+	}
+	if len(req.AttachmentIDs) > chatAttachmentMaxFiles {
+		fields = append(fields, comboFieldError{"attachmentIds", "must contain at most four attachments"})
+	}
+	seenAttachments := make(map[string]bool, len(req.AttachmentIDs))
+	for i := range req.AttachmentIDs {
+		req.AttachmentIDs[i] = strings.TrimSpace(req.AttachmentIDs[i])
+		id := req.AttachmentIDs[i]
+		if id == "" || seenAttachments[id] {
+			fields = append(fields, comboFieldError{"attachmentIds", "must contain unique non-empty IDs"})
+			break
+		}
+		seenAttachments[id] = true
 	}
 	if (req.Provider == "") != (req.Model == "") {
 		fields = append(fields, comboFieldError{"provider", "provider and model must be supplied together"})
@@ -81,8 +100,13 @@ func validateChatGenerateRequest(req *chatGenerateRequest, conversation store.Ch
 	return fields
 }
 
-func chatRequestHash(content, provider, model string) string {
-	data, _ := json.Marshal([]string{content, provider, model})
+func chatRequestHash(content, provider, model string, attachmentIDs ...string) string {
+	ids := append([]string(nil), attachmentIDs...)
+	sort.Strings(ids)
+	data, _ := json.Marshal(struct {
+		Content, Provider, Model string
+		AttachmentIDs            []string
+	}{content, provider, model, ids})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -97,6 +121,37 @@ func chatHistoryMessages(history []store.ChatMessage, content string) []OpenAIMe
 	}
 	messages = append(messages, OpenAIMessage{Role: "user", Content: content})
 	return messages
+}
+
+func (h *Handler) chatMessagesWithAttachments(history []store.ChatMessage, content string, attachments []store.ChatAttachment) ([]OpenAIMessage, error) {
+	messages := chatHistoryMessages(history, content)
+	if len(attachments) == 0 {
+		return messages, nil
+	}
+	parts := make([]map[string]any, 0, len(attachments)+1)
+	if content != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": content})
+	}
+	assets, err := h.chatAssets()
+	if err != nil {
+		return nil, err
+	}
+	for _, attachment := range attachments {
+		path, pathErr := assets.path(attachment.StorageKey)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || int64(len(data)) != attachment.SizeBytes || len(data) > chatAttachmentMaxBytes {
+			return nil, errInvalidChatImage
+		}
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": "data:" + attachment.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(data)},
+		})
+	}
+	messages[len(messages)-1].Content = parts
+	return messages, nil
 }
 
 func chatAutoTitle(content string) string {
@@ -148,12 +203,23 @@ func (h *Handler) apiGenerateChatConversation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	turn, err := st.CreateChatTurn(conversationID, req.ClientRequestID,
-		store.ChatMessage{ID: uuid.NewString(), Content: req.Content, Provider: req.Provider, Model: req.Model, RequestHash: chatRequestHash(req.Content, req.Provider, req.Model)},
+		store.ChatMessage{ID: uuid.NewString(), Content: req.Content, Provider: req.Provider, Model: req.Model, RequestHash: chatRequestHash(req.Content, req.Provider, req.Model, req.AttachmentIDs...)},
 		store.ChatMessage{ID: uuid.NewString(), Provider: req.Provider, Model: req.Model})
+	var attachments []store.ChatAttachment
+	if err == nil && turn.Created && len(req.AttachmentIDs) > 0 {
+		attachments, err = st.BindChatAttachments(conversationID, turn.User.ID, req.AttachmentIDs)
+	}
 	unlock()
 	if err != nil {
+		if turn.Created {
+			st, release, available := h.chatStore(w)
+			if available {
+				_ = st.AbortChatTurn(turn.User.ID)
+				release()
+			}
+		}
 		if errors.Is(err, store.ErrChatConflict) {
-			chatAPIError(w, http.StatusConflict, "idempotency_conflict", "client request ID was already used for a different request")
+			chatAPIError(w, http.StatusConflict, "idempotency_conflict", "client request ID was already used for a different request or an attachment is already bound")
 			return
 		}
 		writeChatStoreError(w, err)
@@ -167,14 +233,24 @@ func (h *Handler) apiGenerateChatConversation(w http.ResponseWriter, r *http.Req
 		}
 		return
 	}
+	messages, err := h.chatMessagesWithAttachments(history, req.Content, attachments)
+	if err != nil {
+		st, release, available := h.chatStore(w)
+		if available {
+			_ = st.AbortChatTurn(turn.User.ID)
+			release()
+		}
+		chatAPIError(w, http.StatusUnprocessableEntity, "attachment_unavailable", "an attachment could not be read")
+		return
+	}
 	if acceptsChatSSE(r) {
-		h.apiStreamChatTurn(w, r, conversation, turn, history, req)
+		h.apiStreamChatTurn(w, r, conversation, turn, messages, req)
 		return
 	}
 
 	requestID := uuid.NewString()
 	result, executionErr := h.executeChatText(r.Context(), chatTextExecutionRequest{
-		Messages: chatHistoryMessages(history, req.Content), Provider: req.Provider, Model: req.Model,
+		Messages: messages, Provider: req.Provider, Model: req.Model,
 		ClientIP: ClientIP(r, config.GetTrustProxyHeaders()), RequestID: requestID,
 	})
 	assistant := turn.Assistant

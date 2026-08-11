@@ -31,6 +31,21 @@ export interface ChatMessage {
   cacheCreationTokens: number
   createdAt: number
   updatedAt: number
+  attachments?: ChatAttachment[]
+}
+
+export interface ChatAttachment {
+  id: string
+  conversationId: string
+  messageId: string
+  kind: 'image_input' | 'image_output'
+  name: string
+  mimeType: string
+  sizeBytes: number
+  width: number | null
+  height: number | null
+  createdAt: number
+  contentUrl: string
 }
 
 export interface ChatModel {
