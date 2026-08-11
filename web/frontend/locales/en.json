@@ -955,5 +955,6 @@
   "check.error.empty": "Please enter an API key",
   "check.error.notFound": "API key not found",
   "check.error.generic": "Could not check API key",
-  "check.error.network": "Connection error. Try again later."
+  "check.error.network": "Connection error. Try again later.",
+  "nav.chat": "Chat"
 }

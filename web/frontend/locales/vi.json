@@ -955,5 +955,6 @@
   "check.error.empty": "Vui lòng nhập API key",
   "check.error.notFound": "API key không tồn tại",
   "check.error.generic": "Không thể kiểm tra API key",
-  "check.error.network": "Lỗi kết nối. Thử lại sau."
+  "check.error.network": "Lỗi kết nối. Thử lại sau.",
+  "nav.chat": "Trò chuyện AI"
 }

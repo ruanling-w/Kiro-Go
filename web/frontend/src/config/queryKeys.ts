@@ -23,4 +23,7 @@ export const qk = {
   security: ['security', 'settings'] as const,
   blockedIps: ['security', 'blocked-ips'] as const,
   publicModels: (base: string) => ['public-models', base] as const,
+  chatModels: ['chat', 'models'] as const,
+  chatConversations: ['chat', 'conversations'] as const,
+  chatMessages: (conversationId: string) => ['chat', 'conversations', conversationId, 'messages'] as const,
 }

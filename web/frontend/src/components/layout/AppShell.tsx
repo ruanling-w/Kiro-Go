@@ -23,6 +23,8 @@ export function AppShell() {
     setNavOpen(false)
   }, [location.pathname])
 
+  const isChat = location.pathname === '/chat'
+
   return (
     <div className="flex h-dvh overflow-hidden bg-background text-foreground">
       <Sidebar />
@@ -39,10 +41,8 @@ export function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar onOpenNav={() => setNavOpen(true)} />
-        <main className="flex-1 overflow-auto p-4 md:p-6">
-          <MotionPage key={location.pathname}>
-            <Outlet />
-          </MotionPage>
+        <main className={isChat ? 'flex-1 overflow-hidden p-3 md:p-4' : 'flex-1 overflow-auto p-4 md:p-6'}>
+          {isChat ? <Outlet /> : <MotionPage key={location.pathname}><Outlet /></MotionPage>}
         </main>
       </div>
     </div>

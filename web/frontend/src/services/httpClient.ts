@@ -106,6 +106,8 @@ export const http = {
     axiosClient.post<T>(path, body, opts).then((r) => r.data),
   put: <T>(path: string, body?: unknown, opts?: ApiRequestOptions) =>
     axiosClient.put<T>(path, body, opts).then((r) => r.data),
+  patch: <T>(path: string, body?: unknown, opts?: ApiRequestOptions) =>
+    axiosClient.patch<T>(path, body, opts).then((r) => r.data),
   delete: <T>(path: string, opts?: ApiRequestOptions) =>
     axiosClient.delete<T>(path, opts).then((r) => r.data),
 }

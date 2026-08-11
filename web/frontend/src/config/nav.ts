@@ -12,6 +12,7 @@ import {
   GitFork,
   Settings2,
   ScrollText,
+  MessageSquareText,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -30,4 +31,5 @@ export const NAV_ITEMS: NavItem[] = [
   { path: '/combos', labelKey: 'combos.title', icon: GitFork },
   { path: '/settings', labelKey: 'nav.system', icon: Settings2 },
   { path: '/logs', labelKey: 'logs.title', icon: ScrollText },
+  { path: '/chat', labelKey: 'nav.chat', icon: MessageSquareText },
 ]

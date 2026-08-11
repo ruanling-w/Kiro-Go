@@ -16,6 +16,7 @@ const ApiDocsPage = lazy(() => import('@/features/api-docs/ApiDocsPage'))
 const CombosPage = lazy(() => import('@/features/combos/CombosPage'))
 const SettingsPage = lazy(() => import('@/features/settings/SettingsPage'))
 const LogsPage = lazy(() => import('@/features/logs/LogsPage'))
+const ChatPage = lazy(() => import('@/features/chat/ChatPage'))
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<FullPageLoader />}>{children}</Suspense>
@@ -40,6 +41,7 @@ export const router = createBrowserRouter(
         { path: 'combos', element: <Lazy><CombosPage /></Lazy> },
         { path: 'settings', element: <Lazy><SettingsPage /></Lazy> },
         { path: 'logs', element: <Lazy><LogsPage /></Lazy> },
+        { path: 'chat', element: <Lazy><ChatPage /></Lazy> },
         { path: '*', element: <Navigate to="/" replace /> },
       ],
     },

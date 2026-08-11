@@ -1,0 +1,150 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { Bot, MessageSquarePlus, Send, Square, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
+import { useChatConversations, useChatMessages, useChatModels } from '@/hooks/queries/useChat'
+import { chatService } from '@/services/chat.service'
+import { qk } from '@/config/queryKeys'
+import type { ChatMessage, ChatStreamEvent } from '@/types/chat'
+import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+
+function requestId() {
+  return crypto.randomUUID()
+}
+
+export default function ChatPage() {
+  const queryClient = useQueryClient()
+  const models = useChatModels()
+  const conversations = useChatConversations()
+  const [activeId, setActiveId] = useState('')
+  const messages = useChatMessages(activeId)
+  const [selectedModel, setSelectedModel] = useState('')
+  const [draft, setDraft] = useState('')
+  const [streaming, setStreaming] = useState<ChatMessage | null>(null)
+  const [reasoning, setReasoning] = useState('')
+  const controller = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!activeId && conversations.data?.data.length) setActiveId(conversations.data.data[0].id)
+  }, [activeId, conversations.data])
+
+  useEffect(() => {
+    const conversation = conversations.data?.data.find((item) => item.id === activeId)
+    if (conversation) setSelectedModel(`${conversation.provider}:${conversation.model}`)
+  }, [activeId, conversations.data])
+
+  useEffect(() => () => controller.current?.abort(), [])
+
+  const transcript = useMemo(() => messages.data?.data ?? [], [messages.data])
+
+  async function createConversation() {
+    const model = models.data?.find((item) => item.id === selectedModel) ?? models.data?.[0]
+    if (!model) return toast.error('No chat model is available')
+    const created = await chatService.createConversation({ provider: model.provider, model: model.model })
+    await queryClient.invalidateQueries({ queryKey: qk.chatConversations })
+    setActiveId(created.id)
+    setSelectedModel(model.id)
+  }
+
+  async function removeConversation(id: string) {
+    await chatService.deleteConversation(id)
+    if (activeId === id) setActiveId('')
+    await queryClient.invalidateQueries({ queryKey: qk.chatConversations })
+  }
+
+  async function send() {
+    const content = draft.trim()
+    if (!content || controller.current) return
+    let conversationId = activeId
+    const model = models.data?.find((item) => item.id === selectedModel)
+    if (!conversationId) {
+      if (!model) return toast.error('Select a model first')
+      const created = await chatService.createConversation({ provider: model.provider, model: model.model })
+      conversationId = created.id
+      setActiveId(created.id)
+    } else if (model) {
+      await chatService.updateConversation(conversationId, { provider: model.provider, model: model.model })
+    }
+
+    const abort = new AbortController()
+    controller.current = abort
+    setDraft('')
+    setReasoning('')
+    setStreaming({
+      id: requestId(), conversationId, parentMessageId: '', clientRequestId: '', role: 'assistant', content: '',
+      provider: model?.provider ?? '', model: model?.model ?? '', status: 'streaming', errorCode: '', errorMessage: '',
+      requestId: '', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+      createdAt: Date.now(), updatedAt: Date.now(),
+    })
+    try {
+      await chatService.generate(conversationId, { clientRequestId: requestId(), content }, abort.signal, (event: ChatStreamEvent) => {
+        if (event.event === 'response.delta') setStreaming((current) => current ? { ...current, content: current.content + event.data.delta } : current)
+        if (event.event === 'response.reasoning_summary.delta') setReasoning((current) => current + event.data.delta)
+        if (event.event === 'response.completed') setStreaming((current) => current ? {
+          ...current, status: 'complete', provider: event.data.provider, model: event.data.model, ...event.data.usage,
+        } : current)
+        if (event.event === 'response.error') setStreaming((current) => current ? { ...current, status: 'error', errorCode: event.data.code, errorMessage: event.data.message } : current)
+      })
+    } catch (error) {
+      if (!abort.signal.aborted) toast.error(error instanceof Error ? error.message : 'Generation failed')
+    } finally {
+      controller.current = null
+      setStreaming(null)
+      setReasoning('')
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: qk.chatMessages(conversationId) }),
+        queryClient.invalidateQueries({ queryKey: qk.chatConversations }),
+      ])
+    }
+  }
+
+  return (
+    <div className="flex h-[calc(100dvh-7rem)] min-h-[32rem] overflow-hidden rounded-xl border bg-card">
+      <aside className="hidden w-72 shrink-0 flex-col border-r bg-muted/20 md:flex">
+        <div className="p-3"><Button className="w-full" onClick={createConversation}><MessageSquarePlus />New chat</Button></div>
+        <div className="flex-1 space-y-1 overflow-y-auto px-2 pb-3">
+          {(conversations.data?.data ?? []).map((item) => (
+            <div key={item.id} className={`group flex items-center rounded-lg ${activeId === item.id ? 'bg-accent' : 'hover:bg-accent/60'}`}>
+              <button className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm" onClick={() => setActiveId(item.id)}>{item.title || item.model}</button>
+              <Button variant="ghost" size="icon" className="mr-1 size-7 opacity-0 group-hover:opacity-100" onClick={() => removeConversation(item.id)}><Trash2 className="size-3.5" /></Button>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      <section className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
+          <div className="flex items-center gap-2 font-medium"><Bot className="size-5" />AI Chat</div>
+          <Select value={selectedModel} onValueChange={setSelectedModel}>
+            <SelectTrigger className="w-[min(22rem,60vw)]"><SelectValue placeholder="Select provider and model" /></SelectTrigger>
+            <SelectContent>{(models.data ?? []).map((model) => <SelectItem key={model.id} value={model.id}>{model.provider} · {model.displayName}</SelectItem>)}</SelectContent>
+          </Select>
+        </header>
+
+        <div className="flex-1 overflow-y-auto px-4 py-6">
+          {!transcript.length && !streaming ? (
+            <div className="grid h-full place-items-center text-center text-muted-foreground"><div><Bot className="mx-auto mb-3 size-10" /><p className="font-medium text-foreground">How can I help?</p><p className="text-sm">Choose a provider and model, then start a conversation.</p></div></div>
+          ) : (
+            <div className="mx-auto max-w-3xl space-y-6">
+              {transcript.map((message) => <MessageBubble key={message.id} message={message} />)}
+              {streaming && <><MessageBubble message={streaming} />{reasoning && <p className="text-xs text-muted-foreground">Thinking: {reasoning}</p>}</>}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t p-3">
+          <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-xl border bg-background p-2 shadow-sm">
+            <textarea className="max-h-48 min-h-11 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none" rows={1} placeholder="Message AI…" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send() } }} disabled={Boolean(controller.current)} />
+            {controller.current ? <Button size="icon" variant="destructive" onClick={() => controller.current?.abort()}><Square className="size-4" /></Button> : <Button size="icon" onClick={send} disabled={!draft.trim()}><Send className="size-4" /></Button>}
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function MessageBubble({ message }: { message: ChatMessage }) {
+  const assistant = message.role === 'assistant'
+  return <div className={`flex ${assistant ? 'justify-start' : 'justify-end'}`}><div className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm ${assistant ? 'bg-muted' : 'bg-primary text-primary-foreground'}`}>{message.content || (message.status === 'streaming' ? '…' : message.errorMessage)}{assistant && message.status === 'error' && <div className="mt-2 text-xs text-destructive">{message.errorMessage}</div>}</div></div>
+}

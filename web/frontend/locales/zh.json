@@ -955,5 +955,6 @@
   "check.error.empty": "请输入 API key",
   "check.error.notFound": "API key 不存在",
   "check.error.generic": "无法检查 API key",
-  "check.error.network": "连接错误，请稍后重试。"
+  "check.error.network": "连接错误，请稍后重试。",
+  "nav.chat": "AI 聊天"
 }
