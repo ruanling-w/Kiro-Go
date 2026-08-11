@@ -8,6 +8,7 @@ import { qk } from '@/config/queryKeys'
 import type { ChatMessage, ChatStreamEvent } from '@/types/chat'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { SafeMarkdown } from '@/components/shared/SafeMarkdown'
 
 function requestId() {
   return crypto.randomUUID()
@@ -146,5 +147,13 @@ export default function ChatPage() {
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const assistant = message.role === 'assistant'
-  return <div className={`flex ${assistant ? 'justify-start' : 'justify-end'}`}><div className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm ${assistant ? 'bg-muted' : 'bg-primary text-primary-foreground'}`}>{message.content || (message.status === 'streaming' ? '…' : message.errorMessage)}{assistant && message.status === 'error' && <div className="mt-2 text-xs text-destructive">{message.errorMessage}</div>}</div></div>
+  const content = message.content || (message.status === 'streaming' ? '…' : message.errorMessage)
+  return (
+    <div className={`flex ${assistant ? 'justify-start' : 'justify-end'}`}>
+      <div className={`min-w-0 max-w-[85%] rounded-2xl px-4 py-3 ${assistant ? 'bg-muted' : 'bg-primary text-primary-foreground'}`}>
+        {assistant ? <SafeMarkdown>{content}</SafeMarkdown> : <div className="whitespace-pre-wrap text-sm">{content}</div>}
+        {assistant && message.status === 'error' && <div className="mt-2 text-xs text-destructive">{message.errorMessage}</div>}
+      </div>
+    </div>
+  )
 }
