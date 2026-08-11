@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	schemaVersion = 7
+	schemaVersion = 8
 	driverName    = "sqlite"
 )
 
@@ -215,6 +215,30 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		  model_index INTEGER NOT NULL DEFAULT 0,
 		  use_count INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS chat_conversations (
+		  id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+		  mode TEXT NOT NULL DEFAULT 'chat', status TEXT NOT NULL DEFAULT 'active', pinned INTEGER NOT NULL DEFAULT 0,
+		  project_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS chat_messages (
+		  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+		  parent_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, client_request_id TEXT NOT NULL DEFAULT '',
+		  role TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+		  status TEXT NOT NULL DEFAULT 'complete', error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '',
+		  provider_response_id TEXT NOT NULL DEFAULT '', request_id TEXT NOT NULL DEFAULT '', input_tokens INTEGER NOT NULL DEFAULT 0,
+		  output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+		  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS chat_attachments (
+		  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+		  message_id TEXT REFERENCES chat_messages(id) ON DELETE CASCADE, kind TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+		  mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, storage_key TEXT NOT NULL, width INTEGER, height INTEGER, created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_conversations_list ON chat_conversations(status, pinned DESC, updated_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_messages_list ON chat_messages(conversation_id, created_at, id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_client_request ON chat_messages(conversation_id, client_request_id) WHERE client_request_id <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_attachments_conversation ON chat_attachments(conversation_id, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_attachments_message ON chat_attachments(message_id, created_at, id)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {
