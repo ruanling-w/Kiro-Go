@@ -354,6 +354,24 @@ func (s *Store) FinalizeChatMessage(m ChatMessage) (ChatMessage, error) {
 	return updated, nil
 }
 
+func (s *Store) StopStaleChatMessages(updatedBefore int64) (int64, error) {
+	if s == nil {
+		return 0, ErrStorageUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.chatDBLocked()
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UnixMilli()
+	result, err := db.Exec(`UPDATE chat_messages SET status='stopped',error_code='generation_stopped',error_message='generation was interrupted by a server restart',updated_at=? WHERE role='assistant' AND status IN ('pending','streaming') AND updated_at<?`, now, updatedBefore)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *Store) ListCompletedChatMessages(conversationID string) ([]ChatMessage, error) {
 	if s == nil {
 		return nil, ErrStorageUnavailable

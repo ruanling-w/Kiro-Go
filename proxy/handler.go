@@ -126,7 +126,8 @@ type Handler struct {
 	combosByID       map[string]store.Combo
 	combosByName     map[string]store.Combo
 	combosLoaded     bool
-	chatTextExecutor func(context.Context, chatTextExecutionRequest) (chatTextExecutionResult, error)
+	chatTextExecutor       func(context.Context, chatTextExecutionRequest) (chatTextExecutionResult, error)
+	chatTextStreamExecutor func(context.Context, chatTextExecutionRequest, chatTextStreamCallbacks) (chatTextExecutionResult, error)
 }
 
 type thinkingStreamSource int

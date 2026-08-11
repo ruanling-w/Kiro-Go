@@ -160,7 +160,15 @@ func (h *Handler) apiGenerateChatConversation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if !turn.Created {
-		h.apiReplayChatTurn(w, conversation, turn)
+		if acceptsChatSSE(r) {
+			h.apiReplayChatTurnSSE(w, conversation, turn)
+		} else {
+			h.apiReplayChatTurn(w, conversation, turn)
+		}
+		return
+	}
+	if acceptsChatSSE(r) {
+		h.apiStreamChatTurn(w, r, conversation, turn, history, req)
 		return
 	}
 
