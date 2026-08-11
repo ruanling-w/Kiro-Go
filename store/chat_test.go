@@ -60,11 +60,11 @@ func TestChatConversationCRUDCursorAndCascade(t *testing.T) {
 	if _, err := s.db.Exec(`UPDATE chat_conversations SET updated_at=42`); err != nil {
 		t.Fatal(err)
 	}
-	first, err := s.ListChatConversations("active", "", 2)
+	first, err := s.ListChatConversations("active", "", "", 2)
 	if err != nil || len(first.Items) != 2 || first.NextCursor == "" {
 		t.Fatalf("first page=%+v err=%v", first, err)
 	}
-	second, err := s.ListChatConversations("active", first.NextCursor, 2)
+	second, err := s.ListChatConversations("active", "", first.NextCursor, 2)
 	if err != nil || len(second.Items) != 1 {
 		t.Fatalf("second page=%+v err=%v", second, err)
 	}
@@ -75,7 +75,7 @@ func TestChatConversationCRUDCursorAndCascade(t *testing.T) {
 		}
 		seen[c.ID] = true
 	}
-	if _, err = s.ListChatConversations("", "invalid", 2); !errors.Is(err, ErrChatInvalidCursor) {
+	if _, err = s.ListChatConversations("", "", "invalid", 2); !errors.Is(err, ErrChatInvalidCursor) {
 		t.Fatalf("invalid cursor: %v", err)
 	}
 	c, err := s.GetChatConversation("a")
@@ -101,6 +101,34 @@ func TestChatConversationCRUDCursorAndCascade(t *testing.T) {
 		if err = s.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil || n != 0 {
 			t.Fatalf("cascade %s=%d err=%v", table, n, err)
 		}
+	}
+}
+
+func TestChatConversationSearchAndPinnedCursor(t *testing.T) {
+	s := openChatTestStore(t)
+	for _, conversation := range []ChatConversation{
+		{ID: "plain", Title: "Alpha chat", Model: "model-a"},
+		{ID: "percent", Title: "100% literal", Model: "model-b"},
+		{ID: "pinned", Title: "Pinned Alpha", Model: "model-c", Pinned: true},
+	} {
+		if _, err := s.CreateChatConversation(conversation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE chat_conversations SET updated_at=42`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.ListChatConversations("active", "Alpha", "", 1)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != "pinned" || page.NextCursor == "" {
+		t.Fatalf("first=%+v err=%v", page, err)
+	}
+	next, err := s.ListChatConversations("active", "Alpha", page.NextCursor, 1)
+	if err != nil || len(next.Items) != 1 || next.Items[0].ID != "plain" {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+	literal, err := s.ListChatConversations("active", "%", "", 10)
+	if err != nil || len(literal.Items) != 1 || literal.Items[0].ID != "percent" {
+		t.Fatalf("literal=%+v err=%v", literal, err)
 	}
 }
 

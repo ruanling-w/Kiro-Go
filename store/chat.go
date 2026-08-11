@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -53,12 +54,18 @@ type ChatTurn struct {
 }
 
 type chatCursor struct {
-	Time int64  `json:"t"`
-	ID   string `json:"i"`
+	Time   int64  `json:"t"`
+	ID     string `json:"i"`
+	Pinned bool   `json:"p,omitempty"`
 }
 
 func encodeChatCursor(t int64, id string) string {
 	b, _ := json.Marshal(chatCursor{Time: t, ID: id})
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func encodeChatConversationCursor(c ChatConversation) string {
+	b, _ := json.Marshal(chatCursor{Time: c.UpdatedAt, ID: c.ID, Pinned: c.Pinned})
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
@@ -181,7 +188,13 @@ func (s *Store) DeleteChatConversation(id string) error {
 	return nil
 }
 
-func (s *Store) ListChatConversations(status, cursor string, limit int) (ChatConversationPage, error) {
+func escapeChatLike(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
+}
+
+func (s *Store) ListChatConversations(status, search, cursor string, limit int) (ChatConversationPage, error) {
 	if s == nil {
 		return ChatConversationPage{}, ErrStorageUnavailable
 	}
@@ -198,13 +211,14 @@ func (s *Store) ListChatConversations(status, cursor string, limit int) (ChatCon
 	if err != nil {
 		return ChatConversationPage{}, err
 	}
-	query := `SELECT ` + chatConversationColumns + ` FROM chat_conversations WHERE (?='' OR status=?)`
-	args := []any{status, status}
+	query := `SELECT ` + chatConversationColumns + ` FROM chat_conversations WHERE (?='' OR status=?) AND (?='' OR title LIKE ? ESCAPE '\' COLLATE NOCASE OR model LIKE ? ESCAPE '\' COLLATE NOCASE)`
+	searchPattern := "%" + escapeChatLike(strings.TrimSpace(search)) + "%"
+	args := []any{status, status, strings.TrimSpace(search), searchPattern, searchPattern}
 	if cursor != "" {
-		query += ` AND (updated_at < ? OR (updated_at = ? AND id < ?))`
-		args = append(args, cur.Time, cur.Time, cur.ID)
+		query += ` AND (pinned < ? OR (pinned = ? AND (updated_at < ? OR (updated_at = ? AND id < ?))))`
+		args = append(args, cur.Pinned, cur.Pinned, cur.Time, cur.Time, cur.ID)
 	}
-	query += ` ORDER BY updated_at DESC,id DESC LIMIT ?`
+	query += ` ORDER BY pinned DESC,updated_at DESC,id DESC LIMIT ?`
 	args = append(args, limit+1)
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -226,7 +240,7 @@ func (s *Store) ListChatConversations(status, cursor string, limit int) (ChatCon
 	if len(out) > limit {
 		last := out[limit-1]
 		page.Items = out[:limit]
-		page.NextCursor = encodeChatCursor(last.UpdatedAt, last.ID)
+		page.NextCursor = encodeChatConversationCursor(last)
 	}
 	return page, nil
 }

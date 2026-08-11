@@ -6,8 +6,11 @@ export function useChatModels() {
   return useQuery({ queryKey: qk.chatModels, queryFn: chatService.models, staleTime: 60_000 })
 }
 
-export function useChatConversations() {
-  return useQuery({ queryKey: qk.chatConversations, queryFn: chatService.conversations })
+export function useChatConversations(status: 'active' | 'archived' = 'active', search = '') {
+  return useQuery({
+    queryKey: [...qk.chatConversations, status, search],
+    queryFn: () => chatService.conversations(status, search),
+  })
 }
 
 export function useChatMessages(conversationId: string) {

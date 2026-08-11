@@ -287,6 +287,11 @@ func (h *Handler) apiListChatConversations(w http.ResponseWriter, r *http.Reques
 		chatAPIError(w, http.StatusUnprocessableEntity, "validation_failed", "status must be active or archived")
 		return
 	}
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	if len(search) > chatTitleMaxBytes {
+		chatAPIError(w, http.StatusUnprocessableEntity, "validation_failed", "search must be at most 500 bytes")
+		return
+	}
 	limit, ok := parseChatLimit(r.URL.Query().Get("limit"), 50, 100)
 	if !ok {
 		chatAPIError(w, http.StatusUnprocessableEntity, "validation_failed", "limit must be between 1 and 100")
@@ -297,7 +302,7 @@ func (h *Handler) apiListChatConversations(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer unlock()
-	page, err := st.ListChatConversations(status, r.URL.Query().Get("cursor"), limit)
+	page, err := st.ListChatConversations(status, search, r.URL.Query().Get("cursor"), limit)
 	if err != nil {
 		writeChatStoreError(w, err)
 		return

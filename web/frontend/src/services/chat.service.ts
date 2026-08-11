@@ -54,7 +54,11 @@ export async function parseChatSSE(response: Response, onEvent: (event: ChatStre
 
 export const chatService = {
   models: () => http.get<{ data: ChatModel[] }>('/chat/models').then((result) => result.data),
-  conversations: () => http.get<ChatPage<ChatConversation>>('/chat/conversations?status=active&limit=100'),
+  conversations: (status: 'active' | 'archived' = 'active', search = '') => {
+    const params = new URLSearchParams({ status, limit: '100' })
+    if (search.trim()) params.set('search', search.trim())
+    return http.get<ChatPage<ChatConversation>>(`/chat/conversations?${params}`)
+  },
   messages: (conversationId: string) => http.get<ChatPage<ChatMessage>>(`/chat/conversations/${conversationId}/messages?limit=200`),
   createConversation: (input: ConversationInput) => http.post<ChatConversation>('/chat/conversations', input),
   updateConversation: (id: string, input: ConversationInput) => http.patch<ChatConversation>(`/chat/conversations/${id}`, input),
@@ -73,8 +77,11 @@ export const chatService = {
     return (await response.json() as { data: ChatAttachment[] }).data
   },
   deleteAttachment: (conversationId: string, attachmentId: string) => http.delete<void>(`/chat/conversations/${conversationId}/attachments/${attachmentId}`),
-  generateImage: (conversationId: string, input: { clientRequestId: string; prompt: string; provider?: string; model?: string; size?: string; quality?: string }) =>
-    http.post<ChatImageGenerateResponse>(`/chat/conversations/${conversationId}/images/generate`, input),
+  generateImage: (
+    conversationId: string,
+    input: { clientRequestId: string; prompt: string; provider?: string; model?: string; size?: string; quality?: string },
+    signal?: AbortSignal,
+  ) => http.post<ChatImageGenerateResponse>(`/chat/conversations/${conversationId}/images/generate`, input, { signal }),
   generate: async (
     conversationId: string,
     input: { clientRequestId: string; content: string; attachmentIds?: string[] },
