@@ -152,6 +152,56 @@ func TestChatTurnIdempotencyFinalizeAndMessageCursor(t *testing.T) {
 	}
 }
 
+func TestChatTurnConflictArchiveAndCompletedHistory(t *testing.T) {
+	s := openChatTestStore(t)
+	conversation, err := s.CreateChatConversation(ChatConversation{ID: "chat", Title: "history"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := s.CreateChatTurn("chat", "request-1",
+		ChatMessage{ID: "user-1", Content: "first", RequestHash: "hash-1"},
+		ChatMessage{ID: "assistant-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.CreateChatTurn("chat", "request-1",
+		ChatMessage{ID: "other-user", Content: "changed", RequestHash: "hash-2"},
+		ChatMessage{ID: "other-assistant"}); !errors.Is(err, ErrChatConflict) {
+		t.Fatalf("mismatched replay: %v", err)
+	}
+
+	completed := first.Assistant
+	completed.Content = "answer"
+	completed.Status = "complete"
+	if _, err = s.FinalizeChatMessage(completed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.CreateChatTurn("chat", "request-2",
+		ChatMessage{ID: "user-2", Content: "second", RequestHash: "hash-2"},
+		ChatMessage{ID: "assistant-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	history, err := s.ListCompletedChatMessages("chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 3 || history[0].ID != "user-1" || history[1].ID != "assistant-1" || history[2].ID != "user-2" {
+		t.Fatalf("completed history=%+v", history)
+	}
+
+	conversation.Status = "archived"
+	if _, err = s.UpdateChatConversation(conversation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.CreateChatTurn("chat", "request-3",
+		ChatMessage{ID: "user-3", Content: "third", RequestHash: "hash-3"},
+		ChatMessage{ID: "assistant-3"}); !errors.Is(err, ErrChatConflict) {
+		t.Fatalf("archived turn: %v", err)
+	}
+}
+
 func TestChatConcurrentIdempotencyAndUnavailable(t *testing.T) {
 	var nilStore *Store
 	if _, err := nilStore.GetChatConversation("x"); !errors.Is(err, ErrStorageUnavailable) {

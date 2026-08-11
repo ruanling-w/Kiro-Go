@@ -121,11 +121,12 @@ type Handler struct {
 	// Fan-out of live log entries to admin SSE subscribers.
 	logHub *logHub
 	// Combo configuration is copied on publication and read without SQLite access.
-	combosMu     sync.RWMutex
-	comboLoadMu  sync.Mutex
-	combosByID   map[string]store.Combo
-	combosByName map[string]store.Combo
-	combosLoaded bool
+	combosMu         sync.RWMutex
+	comboLoadMu      sync.Mutex
+	combosByID       map[string]store.Combo
+	combosByName     map[string]store.Combo
+	combosLoaded     bool
+	chatTextExecutor func(context.Context, chatTextExecutionRequest) (chatTextExecutionResult, error)
 }
 
 type thinkingStreamSource int

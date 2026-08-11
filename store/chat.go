@@ -364,7 +364,7 @@ func (s *Store) ListCompletedChatMessages(conversationID string) ([]ChatMessage,
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(`SELECT `+chatMessageColumns+` FROM chat_messages WHERE conversation_id=? AND status='complete' ORDER BY created_at,id`, conversationID)
+	rows, err := db.Query(`SELECT `+chatMessageColumns+` FROM chat_messages WHERE conversation_id=? AND status='complete' ORDER BY created_at,rowid`, conversationID)
 	if err != nil {
 		return nil, err
 	}

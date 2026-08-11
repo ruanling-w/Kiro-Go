@@ -197,9 +197,15 @@ func (h *Handler) handleAdminChatRoute(w http.ResponseWriter, r *http.Request, p
 	}
 	rest := strings.TrimPrefix(path, prefix)
 	parts := strings.Split(rest, "/")
-	if len(parts) == 2 && parts[0] != "" && parts[1] == "messages" && r.Method == http.MethodGet {
-		h.apiListChatMessages(w, r, parts[0])
-		return true
+	if len(parts) == 2 && parts[0] != "" {
+		switch {
+		case parts[1] == "messages" && r.Method == http.MethodGet:
+			h.apiListChatMessages(w, r, parts[0])
+			return true
+		case parts[1] == "generate" && r.Method == http.MethodPost:
+			h.apiGenerateChatConversation(w, r, parts[0])
+			return true
+		}
 	}
 	if len(parts) != 1 || parts[0] == "" {
 		return false
