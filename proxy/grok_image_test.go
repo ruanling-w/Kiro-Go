@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net/netip"
 	"testing"
 )
@@ -41,7 +42,7 @@ func TestFetchImageAsBase64RejectsUnsafeURLBeforeRequest(t *testing.T) {
 		"https://[::1]/image.png",
 	} {
 		t.Run(rawURL, func(t *testing.T) {
-			if _, err := fetchImageAsBase64(t.Context(), nil, rawURL); err == nil {
+			if _, err := fetchImageAsBase64(context.Background(), nil, rawURL); err == nil {
 				t.Fatal("expected unsafe URL rejection")
 			}
 		})
