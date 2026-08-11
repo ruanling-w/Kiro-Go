@@ -188,6 +188,12 @@ func (p *AccountPool) GetNextForModel(model string) *config.Account {
 
 // GetNextForModelExcluding 获取下一个支持指定模型的可用账号，并跳过指定账号。
 func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string]bool) *config.Account {
+	return p.GetNextForModelAndProviderExcluding(model, "", excluded)
+}
+
+// GetNextForModelAndProviderExcluding selects an account that supports model and
+// belongs to provider. An empty provider preserves legacy cross-provider routing.
+func (p *AccountPool) GetNextForModelAndProviderExcluding(model, provider string, excluded map[string]bool) *config.Account {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -209,6 +215,10 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 			continue
 		}
 		if seen[acc.ID] {
+			continue
+		}
+		if !accountMatchesProvider(acc, provider) {
+			seen[acc.ID] = true
 			continue
 		}
 		if !p.accountHasModel(acc.ID, model) {
@@ -236,6 +246,9 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 	for i := range p.accounts {
 		acc := &p.accounts[i]
 		if excluded != nil && excluded[acc.ID] {
+			continue
+		}
+		if !accountMatchesProvider(acc, provider) {
 			continue
 		}
 		if !p.accountHasModel(acc.ID, model) {
@@ -571,6 +584,30 @@ func isQuotaBlocked(acc config.Account, allowOverUsage bool) bool {
 // "ENABLED" → true; anything else (DISABLED, UNKNOWN, empty) → false.
 func isUpstreamOverageEnabled(acc config.Account) bool {
 	return strings.EqualFold(acc.OverageStatus, "ENABLED")
+}
+
+func accountMatchesProvider(account *config.Account, provider string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return true
+	}
+	if account == nil {
+		return false
+	}
+	accountProvider := strings.ToLower(strings.TrimSpace(account.Provider))
+	authMethod := strings.ToLower(strings.TrimSpace(account.AuthMethod))
+	switch {
+	case accountProvider == "remotekiro" || authMethod == "remotekiro" || strings.TrimSpace(account.RemoteBaseURL) != "":
+		return provider == "remotekiro"
+	case accountProvider == "codex" || authMethod == "codex":
+		return provider == "codex"
+	case accountProvider == "antigravity" || authMethod == "antigravity":
+		return provider == "antigravity"
+	case accountProvider == "grok" || accountProvider == "xai" || authMethod == "grok" || account.GrokAPIKey != "":
+		return provider == "grok"
+	default:
+		return provider == "kiro"
+	}
 }
 
 func effectiveWeight(weight int) int {

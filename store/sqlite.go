@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	schemaVersion = 6
+	schemaVersion = 7
 	driverName    = "sqlite"
 )
 
@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		  fusion_quorum INTEGER NOT NULL DEFAULT 0,
 		  fusion_timeout_ms INTEGER NOT NULL DEFAULT 0,
 		  judge_model TEXT NOT NULL DEFAULT '',
+			  judge_provider TEXT NOT NULL DEFAULT '',
 		  revision INTEGER NOT NULL DEFAULT 1,
 		  created_at INTEGER NOT NULL,
 		  updated_at INTEGER NOT NULL
@@ -205,6 +206,7 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		  combo_id TEXT NOT NULL REFERENCES combos(id) ON DELETE CASCADE,
 		  position INTEGER NOT NULL,
 		  model TEXT NOT NULL,
+		  provider TEXT NOT NULL DEFAULT '',
 		  PRIMARY KEY (combo_id, position)
 		)`,
 		`CREATE TABLE IF NOT EXISTS combo_rotation (
@@ -244,6 +246,7 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		{"fusion_quorum", `ALTER TABLE combos ADD COLUMN fusion_quorum INTEGER NOT NULL DEFAULT 0`},
 		{"fusion_timeout_ms", `ALTER TABLE combos ADD COLUMN fusion_timeout_ms INTEGER NOT NULL DEFAULT 0`},
 		{"judge_model", `ALTER TABLE combos ADD COLUMN judge_model TEXT NOT NULL DEFAULT ''`},
+		{"judge_provider", `ALTER TABLE combos ADD COLUMN judge_provider TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, column := range fusionColumns {
 		if columns[column.name] {
@@ -251,6 +254,32 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		}
 		if _, err := tx.Exec(column.statement); err != nil {
 			return fmt.Errorf("store: add combo %s column: %w", column.name, err)
+		}
+	}
+	modelColumns := map[string]bool{}
+	modelRows, err := tx.Query(`PRAGMA table_info(combo_models)`)
+	if err != nil {
+		return fmt.Errorf("store: inspect combo model columns: %w", err)
+	}
+	for modelRows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := modelRows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			modelRows.Close()
+			return fmt.Errorf("store: scan combo model columns: %w", err)
+		}
+		modelColumns[name] = true
+	}
+	if err := modelRows.Close(); err != nil {
+		return fmt.Errorf("store: close combo model columns: %w", err)
+	}
+	if err := modelRows.Err(); err != nil {
+		return fmt.Errorf("store: read combo model columns: %w", err)
+	}
+	if !modelColumns["provider"] {
+		if _, err := tx.Exec(`ALTER TABLE combo_models ADD COLUMN provider TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("store: add combo model provider column: %w", err)
 		}
 	}
 	// v5 adds backward-compatible per-attempt Combo observability columns.

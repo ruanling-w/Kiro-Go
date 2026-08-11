@@ -1,7 +1,11 @@
 export type ComboStrategy = 'fallback' | 'round-robin' | 'fusion'
 
-export interface ComboModel {
+export interface ComboCandidate {
   model: string
+  provider?: string
+}
+
+export interface ComboModel extends ComboCandidate {
   position: number
 }
 
@@ -13,6 +17,7 @@ export interface Combo {
   fusionQuorum?: number
   fusionTimeoutMs?: number
   judgeModel?: string
+  judgeProvider?: string
   revision: number
   createdAt: number
   updatedAt: number
@@ -24,10 +29,11 @@ export interface ComboInput {
   strategy: ComboStrategy
   stickyLimit: number
   revision?: number
-  models: string[]
+  models: ComboCandidate[]
   fusionQuorum?: number
   fusionTimeoutMs?: number
   judgeModel?: string
+  judgeProvider?: string
 }
 
 export interface ComboListResponse { data: Combo[] }

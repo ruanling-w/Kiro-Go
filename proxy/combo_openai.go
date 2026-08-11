@@ -31,7 +31,7 @@ func (h *Handler) handleOpenAIComboNonStream(ctx context.Context, w http.Respons
 		payload := OpenAIToKiro(&req, thinking)
 		excluded := map[string]bool{}
 		for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-			account := h.pool.GetNextForModelExcluding(candidate.Model, excluded)
+			account := h.pool.GetNextForModelAndProviderExcluding(candidate.Model, candidate.Provider, excluded)
 			if account == nil {
 				break
 			}
@@ -174,7 +174,7 @@ func (h *Handler) handleOpenAIComboStream(ctx context.Context, w http.ResponseWr
 		payload := OpenAIToKiro(&req, thinking)
 		excluded := map[string]bool{}
 		for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-			account := h.pool.GetNextForModelExcluding(candidate.Model, excluded)
+			account := h.pool.GetNextForModelAndProviderExcluding(candidate.Model, candidate.Provider, excluded)
 			if account == nil {
 				break
 			}

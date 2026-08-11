@@ -19,17 +19,17 @@ func comboValidationHandler() *Handler {
 func TestValidateComboRejectsReservedUnknownEmptyAndNestedJudge(t *testing.T) {
 	h := comboValidationHandler()
 	h.combosByName["primary"] = store.Combo{ID: "c1", Name: "Primary"}
-	base := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []string{"gpt-4"}}
+	base := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []comboCandidate{{Model: "gpt-4"}}}
 	cases := []struct {
 		name  string
 		req   comboRequest
 		field string
 	}{
 		{"reserved", func() comboRequest { x := base; x.Name = "gpt-4o"; return x }(), "name"},
-		{"unknown", func() comboRequest { x := base; x.Models = []string{"made-up"}; return x }(), "models"},
-		{"empty", func() comboRequest { x := base; x.Models = []string{"   "}; return x }(), "models"},
-		{"trimmed nested judge", comboRequest{Name: "safe", Strategy: "fusion", StickyLimit: 1, Models: []string{"gpt-4"}, FusionQuorum: 1, FusionTimeout: 100, JudgeModel: " Primary "}, "judgeModel"},
-		{"unknown judge", comboRequest{Name: "safe", Strategy: "fusion", StickyLimit: 1, Models: []string{"gpt-4"}, FusionQuorum: 1, FusionTimeout: 100, JudgeModel: "unknown"}, "judgeModel"},
+		{"unknown", func() comboRequest { x := base; x.Models = []comboCandidate{{Model: "made-up"}}; return x }(), "models"},
+		{"empty", func() comboRequest { x := base; x.Models = []comboCandidate{{Model: "   "}}; return x }(), "models"},
+		{"trimmed nested judge", comboRequest{Name: "safe", Strategy: "fusion", StickyLimit: 1, Models: []comboCandidate{{Model: "gpt-4"}}, FusionQuorum: 1, FusionTimeout: 100, JudgeModel: " Primary "}, "judgeModel"},
+		{"unknown judge", comboRequest{Name: "safe", Strategy: "fusion", StickyLimit: 1, Models: []comboCandidate{{Model: "gpt-4"}}, FusionQuorum: 1, FusionTimeout: 100, JudgeModel: "unknown"}, "judgeModel"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -48,17 +48,17 @@ func TestValidateComboRejectsReservedUnknownEmptyAndNestedJudge(t *testing.T) {
 
 func TestValidateComboRejectsDirectNameCollisionAndOversizedModelIDs(t *testing.T) {
 	h := comboValidationHandler()
-	base := comboRequest{Name: "gpt-4-turbo", Strategy: "fallback", StickyLimit: 1, Models: []string{"gpt-4"}}
+	base := comboRequest{Name: "gpt-4-turbo", Strategy: "fallback", StickyLimit: 1, Models: []comboCandidate{{Model: "gpt-4"}}}
 	if errors := h.validateCombo(base, ""); !hasComboFieldError(errors, "name") {
 		t.Fatalf("direct collision errors=%+v", errors)
 	}
 	base.Name = "safe"
-	base.Models = []string{strings.Repeat("x", comboModelIDMaxBytes+1)}
+	base.Models = []comboCandidate{{Model: strings.Repeat("x", comboModelIDMaxBytes+1)}}
 	if errors := h.validateCombo(base, ""); !hasComboFieldError(errors, "models") {
 		t.Fatalf("oversized model errors=%+v", errors)
 	}
 	base.Strategy = "fusion"
-	base.Models = []string{"gpt-4"}
+	base.Models = []comboCandidate{{Model: "gpt-4"}}
 	base.FusionQuorum = 1
 	base.FusionTimeout = 100
 	base.JudgeModel = strings.Repeat("x", comboModelIDMaxBytes+1)
@@ -77,9 +77,41 @@ func hasComboFieldError(errors []comboFieldError, field string) bool {
 }
 
 func TestComboFromRequestNormalizesNonFusionFields(t *testing.T) {
-	got := comboFromRequest(comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, FusionQuorum: 2, FusionTimeout: 1234, JudgeModel: "gpt-4", Models: []string{"gpt-4"}}, "c1")
+	got := comboFromRequest(comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, FusionQuorum: 2, FusionTimeout: 1234, JudgeModel: "gpt-4", Models: []comboCandidate{{Model: "gpt-4"}}}, "c1")
 	if got.FusionQuorum != 0 || got.FusionTimeout != 0 || got.JudgeModel != "" {
 		t.Fatalf("non-fusion fields not normalized: %+v", got)
+	}
+}
+
+func TestDecodeComboAcceptsLegacyAndQualifiedCandidates(t *testing.T) {
+	r := httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"safe","strategy":"fallback","stickyLimit":1,"models":["shared-model",{"provider":"codex","model":"shared-model"}]}`))
+	w := httptest.NewRecorder()
+	got, err := decodeCombo(w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 2 || got.Models[0].Provider != "" || got.Models[0].Model != "shared-model" || got.Models[1].Provider != "codex" || got.Models[1].Model != "shared-model" {
+		t.Fatalf("models=%+v", got.Models)
+	}
+}
+
+func TestValidateComboUsesProviderAndModelIdentity(t *testing.T) {
+	h := comboValidationHandler()
+	req := comboRequest{
+		Name:        "safe",
+		Strategy:    "fallback",
+		StickyLimit: 1,
+		Models: []comboCandidate{
+			{Provider: "kiro", Model: "gpt-4"},
+			{Provider: "codex", Model: "gpt-4"},
+		},
+	}
+	if errors := h.validateCombo(req, ""); hasComboFieldError(errors, "models") {
+		t.Fatalf("different providers rejected: %+v", errors)
+	}
+	req.Models[1].Provider = "KIRO"
+	if errors := h.validateCombo(req, ""); !hasComboFieldError(errors, "models") {
+		t.Fatalf("duplicate provider/model accepted: %+v", errors)
 	}
 }
 
@@ -179,7 +211,7 @@ func TestComboCRUDDoesNotAdvertiseUnroutableModelIDs(t *testing.T) {
 
 func TestValidateComboIgnoresEmptyAndStaleCachedModels(t *testing.T) {
 	h := comboValidationHandler()
-	req := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []string{"retired-model"}}
+	req := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []comboCandidate{{Model: "retired-model"}}}
 
 	h.cachedModels = nil
 	h.modelsCacheTime = time.Now().Unix()

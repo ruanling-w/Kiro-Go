@@ -16,7 +16,7 @@ func (h *Handler) handleResponsesComboNonStream(ctx context.Context, w http.Resp
 		payload := OpenAIToKiro(&candidateReq, thinking)
 		excluded := map[string]bool{}
 		for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-			account := h.pool.GetNextForModelExcluding(candidate.Model, excluded)
+			account := h.pool.GetNextForModelAndProviderExcluding(candidate.Model, candidate.Provider, excluded)
 			if account == nil {
 				break
 			}

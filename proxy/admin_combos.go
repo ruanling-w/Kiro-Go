@@ -19,15 +19,37 @@ var comboNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 var builtInComboNames = map[string]bool{"auto": true, "gpt-4": true, "gpt-4o": true}
 
+type comboCandidate struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider,omitempty"`
+}
+
+func (c *comboCandidate) UnmarshalJSON(data []byte) error {
+	var model string
+	if err := json.Unmarshal(data, &model); err == nil {
+		c.Model = model
+		c.Provider = ""
+		return nil
+	}
+	type candidate comboCandidate
+	var value candidate
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*c = comboCandidate(value)
+	return nil
+}
+
 type comboRequest struct {
-	Name          string   `json:"name"`
-	Strategy      string   `json:"strategy"`
-	StickyLimit   int      `json:"stickyLimit"`
-	Revision      int64    `json:"revision"`
-	Models        []string `json:"models"`
-	FusionQuorum  int      `json:"fusionQuorum,omitempty"`
-	FusionTimeout int      `json:"fusionTimeoutMs,omitempty"`
-	JudgeModel    string   `json:"judgeModel,omitempty"`
+	Name          string           `json:"name"`
+	Strategy      string           `json:"strategy"`
+	StickyLimit   int              `json:"stickyLimit"`
+	Revision      int64            `json:"revision"`
+	Models        []comboCandidate `json:"models"`
+	FusionQuorum  int              `json:"fusionQuorum,omitempty"`
+	FusionTimeout int              `json:"fusionTimeoutMs,omitempty"`
+	JudgeModel    string           `json:"judgeModel,omitempty"`
+	JudgeProvider string           `json:"judgeProvider,omitempty"`
 }
 
 type comboFieldError struct{ Field, Message string }
@@ -110,24 +132,27 @@ func (h *Handler) validateCombo(req comboRequest, id string) []comboFieldError {
 		out = append(out, comboFieldError{"name", "conflicts with a direct model"})
 	}
 	seen := map[string]bool{}
-	for i, m := range req.Models {
-		key := strings.ToLower(strings.TrimSpace(m))
-		if key == "" {
+	for i, candidate := range req.Models {
+		model := strings.TrimSpace(candidate.Model)
+		provider := strings.ToLower(strings.TrimSpace(candidate.Provider))
+		modelKey := strings.ToLower(model)
+		key := provider + "\x00" + modelKey
+		if modelKey == "" {
 			out = append(out, comboFieldError{"models", "must not contain empty model names"})
 			continue
 		}
-		if len(strings.TrimSpace(m)) > comboModelIDMaxBytes {
+		if len(model) > comboModelIDMaxBytes {
 			out = append(out, comboFieldError{"models", "model IDs must be at most 128 bytes"})
 			continue
 		}
 		if seen[key] {
-			out = append(out, comboFieldError{"models", "must not contain duplicate models"})
+			out = append(out, comboFieldError{"models", "must not contain duplicate provider/model candidates"})
 			break
 		}
 		seen[key] = true
-		if comboNames[key] {
+		if comboNames[modelKey] {
 			out = append(out, comboFieldError{"models", "nested combos are not allowed"})
-		} else if !known[key] {
+		} else if !known[modelKey] {
 			out = append(out, comboFieldError{"models", "contains an unknown model at index " + strconv.Itoa(i)})
 		}
 	}
@@ -177,9 +202,14 @@ func comboFromRequest(x comboRequest, id string) store.Combo {
 		c.FusionQuorum = x.FusionQuorum
 		c.FusionTimeout = x.FusionTimeout
 		c.JudgeModel = strings.TrimSpace(x.JudgeModel)
+		c.JudgeProvider = strings.ToLower(strings.TrimSpace(x.JudgeProvider))
 	}
-	for i, m := range x.Models {
-		c.Models = append(c.Models, store.ComboModel{Model: strings.TrimSpace(m), Position: i})
+	for i, candidate := range x.Models {
+		c.Models = append(c.Models, store.ComboModel{
+			Model:    strings.TrimSpace(candidate.Model),
+			Provider: strings.ToLower(strings.TrimSpace(candidate.Provider)),
+			Position: i,
+		})
 	}
 	return c
 }

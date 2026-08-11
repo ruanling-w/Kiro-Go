@@ -18,11 +18,13 @@ import { brandFor } from '@/components/shared/ModelBrand'
 import { cn } from '@/lib/utils'
 import { useComboModelOptions } from '@/hooks/queries/useComboModelOptions'
 
+import type { ComboCandidate } from '@/types/combo'
+
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
-  selected: string[]
-  onToggle: (modelId: string) => void
+  selected: ComboCandidate[]
+  onToggle: (candidate: ComboCandidate) => void
   /** Cap enforced by the combo form (8). Adding is blocked once reached. */
   max?: number
   /** Single-select mode for the judge field: picking closes the dialog. */
@@ -33,7 +35,8 @@ export function ModelPickerDialog({ open, onOpenChange, selected, onToggle, max,
   const { t } = useTranslation()
   const [keyword, setKeyword] = useState('')
   const { groups, isLoading, hasActiveProviders } = useComboModelOptions()
-  const selectedSet = useMemo(() => new Set(selected.map((m) => m.toLowerCase())), [selected])
+  const candidateKey = (provider: string | undefined, model: string) => `${provider?.trim().toLowerCase() ?? ''}\0${model.trim().toLowerCase()}`
+  const selectedSet = useMemo(() => new Set(selected.map((m) => candidateKey(m.provider, m.model))), [selected])
 
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase()
@@ -53,10 +56,10 @@ export function ModelPickerDialog({ open, onOpenChange, selected, onToggle, max,
 
   const atCap = typeof max === 'number' && selected.length >= max
 
-  function pick(id: string) {
-    const active = selectedSet.has(id.toLowerCase())
+  function pick(provider: string, model: string) {
+    const active = selectedSet.has(candidateKey(provider, model))
     if (!active && !single && atCap) return
-    onToggle(id)
+    onToggle({ provider, model })
     if (single) onOpenChange(false)
   }
 
@@ -99,16 +102,16 @@ export function ModelPickerDialog({ open, onOpenChange, selected, onToggle, max,
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {group.models.map((m) => {
-                      const active = selectedSet.has(m.id.toLowerCase())
+                      const active = selectedSet.has(candidateKey(group.key, m.id))
                       const disabled = !active && !single && atCap
                       // Unselected chips wear their provider palette (same one the
                       // log table uses); selection overrides it with the primary tint.
                       const brand = brandFor(group.key, m.id, t)
                       return (
                         <button
-                          key={m.id}
+                          key={`${group.key}:${m.id}`}
                           type="button"
-                          onClick={() => pick(m.id)}
+                          onClick={() => pick(group.key, m.id)}
                           disabled={disabled}
                           title={m.description || m.id}
                           aria-pressed={active}

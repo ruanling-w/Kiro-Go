@@ -26,7 +26,7 @@ type comboAttemptLogContext struct {
 	SelectedModel   string
 }
 
-func (h *Handler) executeFusionModel(ctx context.Context, req *OpenAIRequest, model string, thinking bool, estimated int, apiKeyID string, meta comboAttemptLogContext) (openAIComboResult, error) {
+func (h *Handler) executeFusionModel(ctx context.Context, req *OpenAIRequest, model, provider string, thinking bool, estimated int, apiKeyID string, meta comboAttemptLogContext) (openAIComboResult, error) {
 	if model == "" {
 		return openAIComboResult{}, fmt.Errorf("fusion judge model is required")
 	}
@@ -42,7 +42,7 @@ func (h *Handler) executeFusionModel(ctx context.Context, req *OpenAIRequest, mo
 		if err := ctx.Err(); err != nil {
 			return openAIComboResult{}, err
 		}
-		account := h.pool.GetNextForModelExcluding(model, excluded)
+		account := h.pool.GetNextForModelAndProviderExcluding(model, provider, excluded)
 		if account == nil {
 			break
 		}
@@ -80,7 +80,7 @@ func (h *Handler) executeOpenAIFusion(ctx context.Context, req *OpenAIRequest, r
 	results, err := runFusionPanels(ctx, len(route.Candidates), fusionRunConfig{Quorum: route.Combo.FusionQuorum, Timeout: time.Duration(route.Combo.FusionTimeout) * time.Millisecond, Grace: fusionGracePeriod, Run: func(c context.Context, i int) (openAIComboResult, error) {
 		meta := base
 		meta.CandidateModel, meta.EffectiveModel, meta.AttemptIndex, meta.FusionRole = route.Candidates[i].Model, route.Candidates[i].Model, i+1, "panel"
-		return h.executeFusionModel(c, req, route.Candidates[i].Model, false, estimated, apiKeyID, meta)
+		return h.executeFusionModel(c, req, route.Candidates[i].Model, route.Candidates[i].Provider, false, estimated, apiKeyID, meta)
 	}})
 	if err != nil {
 		return openAIComboResult{}, err
@@ -92,7 +92,7 @@ func (h *Handler) executeOpenAIFusion(ctx context.Context, req *OpenAIRequest, r
 	judge.Messages = []OpenAIMessage{{Role: "system", Content: "Synthesize a single accurate answer."}, {Role: "user", Content: fusionJudgePrompt(results)}}
 	judge.Tools, judge.Stream = nil, false
 	base.CandidateModel, base.EffectiveModel, base.AttemptIndex, base.FusionRole, base.SelectedModel = route.Combo.JudgeModel, route.Combo.JudgeModel, len(route.Candidates)+1, "judge", route.Combo.JudgeModel
-	return h.executeFusionModel(ctx, &judge, route.Combo.JudgeModel, thinking, estimateOpenAIRequestInputTokens(&judge), apiKeyID, base)
+	return h.executeFusionModel(ctx, &judge, route.Combo.JudgeModel, route.Combo.JudgeProvider, thinking, estimateOpenAIRequestInputTokens(&judge), apiKeyID, base)
 }
 
 func claudeFusionOpenAIRequest(req *ClaudeRequest) *OpenAIRequest {

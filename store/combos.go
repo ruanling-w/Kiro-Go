@@ -27,6 +27,7 @@ type Combo struct {
 	FusionQuorum  int          `json:"fusionQuorum,omitempty"`
 	FusionTimeout int          `json:"fusionTimeoutMs,omitempty"`
 	JudgeModel    string       `json:"judgeModel,omitempty"`
+	JudgeProvider string       `json:"judgeProvider,omitempty"`
 	Revision      int64        `json:"revision"`
 	CreatedAt     int64        `json:"createdAt"`
 	UpdatedAt     int64        `json:"updatedAt"`
@@ -37,6 +38,7 @@ type Combo struct {
 // returned in ascending order.
 type ComboModel struct {
 	Model    string `json:"model"`
+	Provider string `json:"provider,omitempty"`
 	Position int    `json:"position"`
 }
 
@@ -49,14 +51,14 @@ func (s *Store) comboDBLocked() (*sql.DB, error) {
 
 func scanCombo(row interface{ Scan(...any) error }) (Combo, error) {
 	var c Combo
-	err := row.Scan(&c.ID, &c.Name, &c.Strategy, &c.StickyLimit, &c.FusionQuorum, &c.FusionTimeout, &c.JudgeModel, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.Strategy, &c.StickyLimit, &c.FusionQuorum, &c.FusionTimeout, &c.JudgeModel, &c.JudgeProvider, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
 	return c, err
 }
 
 func loadComboModels(q interface {
 	Query(string, ...any) (*sql.Rows, error)
 }, c *Combo) error {
-	rows, err := q.Query(`SELECT model, position FROM combo_models WHERE combo_id = ? ORDER BY position`, c.ID)
+	rows, err := q.Query(`SELECT model, provider, position FROM combo_models WHERE combo_id = ? ORDER BY position`, c.ID)
 	if err != nil {
 		return err
 	}
@@ -64,7 +66,7 @@ func loadComboModels(q interface {
 	c.Models = []ComboModel{}
 	for rows.Next() {
 		var m ComboModel
-		if err := rows.Scan(&m.Model, &m.Position); err != nil {
+		if err := rows.Scan(&m.Model, &m.Provider, &m.Position); err != nil {
 			return err
 		}
 		c.Models = append(c.Models, m)
@@ -73,13 +75,13 @@ func loadComboModels(q interface {
 }
 
 func insertComboModels(tx *sql.Tx, id string, models []ComboModel) error {
-	stmt, err := tx.Prepare(`INSERT INTO combo_models(combo_id, position, model) VALUES (?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO combo_models(combo_id, position, model, provider) VALUES (?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for i, m := range models {
-		if _, err := stmt.Exec(id, i, m.Model); err != nil {
+		if _, err := stmt.Exec(id, i, m.Model, m.Provider); err != nil {
 			return err
 		}
 	}
@@ -116,7 +118,7 @@ func (s *Store) CreateCombo(c Combo) (Combo, error) {
 	now := time.Now().UnixMilli()
 	c.Revision = 1
 	c.CreatedAt, c.UpdatedAt = now, now
-	if _, err := tx.Exec(`INSERT INTO combos(id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, c.ID, c.Name, c.Strategy, c.StickyLimit, c.FusionQuorum, c.FusionTimeout, c.JudgeModel, c.Revision, now, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO combos(id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,judge_provider,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, c.ID, c.Name, c.Strategy, c.StickyLimit, c.FusionQuorum, c.FusionTimeout, c.JudgeModel, c.JudgeProvider, c.Revision, now, now); err != nil {
 		if isComboNameConflict(err) {
 			return Combo{}, ErrComboNameConflict
 		}
@@ -145,7 +147,7 @@ func (s *Store) GetCombo(id string) (Combo, error) {
 	if err != nil {
 		return Combo{}, err
 	}
-	c, err := scanCombo(db.QueryRow(`SELECT id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,revision,created_at,updated_at FROM combos WHERE id=?`, id))
+	c, err := scanCombo(db.QueryRow(`SELECT id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,judge_provider,revision,created_at,updated_at FROM combos WHERE id=?`, id))
 	if err == sql.ErrNoRows {
 		return Combo{}, ErrComboNotFound
 	}
@@ -169,7 +171,7 @@ func (s *Store) GetComboByName(name string) (Combo, error) {
 	if err != nil {
 		return Combo{}, err
 	}
-	c, err := scanCombo(db.QueryRow(`SELECT id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,revision,created_at,updated_at FROM combos WHERE name=? COLLATE NOCASE`, name))
+	c, err := scanCombo(db.QueryRow(`SELECT id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,judge_provider,revision,created_at,updated_at FROM combos WHERE name=? COLLATE NOCASE`, name))
 	if err == sql.ErrNoRows {
 		return Combo{}, ErrComboNotFound
 	}
@@ -193,7 +195,7 @@ func (s *Store) ListCombos() ([]Combo, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(`SELECT id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,revision,created_at,updated_at FROM combos ORDER BY created_at,id`)
+	rows, err := db.Query(`SELECT id,name,strategy,sticky_limit,fusion_quorum,fusion_timeout_ms,judge_model,judge_provider,revision,created_at,updated_at FROM combos ORDER BY created_at,id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list combos: %w", err)
 	}
@@ -247,7 +249,7 @@ func (s *Store) UpdateCombo(c Combo) (Combo, error) {
 		return Combo{}, ErrComboConflict
 	}
 	now := time.Now().UnixMilli()
-	res, err := tx.Exec(`UPDATE combos SET name=?,strategy=?,sticky_limit=?,fusion_quorum=?,fusion_timeout_ms=?,judge_model=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?`, c.Name, c.Strategy, c.StickyLimit, c.FusionQuorum, c.FusionTimeout, c.JudgeModel, now, c.ID, c.Revision)
+	res, err := tx.Exec(`UPDATE combos SET name=?,strategy=?,sticky_limit=?,fusion_quorum=?,fusion_timeout_ms=?,judge_model=?,judge_provider=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?`, c.Name, c.Strategy, c.StickyLimit, c.FusionQuorum, c.FusionTimeout, c.JudgeModel, c.JudgeProvider, now, c.ID, c.Revision)
 	if err != nil {
 		if isComboNameConflict(err) {
 			return Combo{}, ErrComboNameConflict
@@ -368,13 +370,13 @@ func (s *Store) ReserveComboRotation(id string, revision int64) ([]ComboModel, e
 		return nil, ErrComboConflict
 	}
 	var models []ComboModel
-	rows, err := tx.Query(`SELECT model,position FROM combo_models WHERE combo_id=? ORDER BY position`, id)
+	rows, err := tx.Query(`SELECT model,provider,position FROM combo_models WHERE combo_id=? ORDER BY position`, id)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var m ComboModel
-		if err := rows.Scan(&m.Model, &m.Position); err != nil {
+		if err := rows.Scan(&m.Model, &m.Provider, &m.Position); err != nil {
 			rows.Close()
 			return nil, err
 		}

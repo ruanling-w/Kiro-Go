@@ -33,7 +33,7 @@ func (h *Handler) handleClaudeComboNonStream(ctx context.Context, w http.Respons
 		payload := ClaudeToKiro(&req, thinking)
 		excluded := map[string]bool{}
 		for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-			account := h.pool.GetNextForModelExcluding(candidate.Model, excluded)
+			account := h.pool.GetNextForModelAndProviderExcluding(candidate.Model, candidate.Provider, excluded)
 			if account == nil {
 				break
 			}
@@ -114,7 +114,7 @@ func (h *Handler) handleClaudeComboStream(ctx context.Context, w http.ResponseWr
 		payload := ClaudeToKiro(&req, thinking)
 		excluded := map[string]bool{}
 		for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-			account := h.pool.GetNextForModelExcluding(candidate.Model, excluded)
+			account := h.pool.GetNextForModelAndProviderExcluding(candidate.Model, candidate.Provider, excluded)
 			if account == nil {
 				break
 			}
