@@ -4,6 +4,8 @@ package auth
 import (
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +43,48 @@ func GetAuthClientForProxy(proxyURL string) *http.Client {
 	return client
 }
 
+func environmentProxy(req *http.Request) (*url.URL, error) {
+	if req == nil || req.URL == nil {
+		return nil, nil
+	}
+	proxy := os.Getenv(strings.ToUpper(req.URL.Scheme) + "_PROXY")
+	if proxy == "" {
+		proxy = os.Getenv(strings.ToLower(req.URL.Scheme) + "_proxy")
+	}
+	if proxy == "" {
+		proxy = os.Getenv("ALL_PROXY")
+		if proxy == "" {
+			proxy = os.Getenv("all_proxy")
+		}
+	}
+	if proxy == "" || proxyBypassed(req.URL.Hostname()) {
+		return nil, nil
+	}
+	if !strings.Contains(proxy, "://") {
+		proxy = "http://" + proxy
+	}
+	return url.Parse(proxy)
+}
+
+func proxyBypassed(host string) bool {
+	noProxy := os.Getenv("NO_PROXY")
+	if noProxy == "" {
+		noProxy = os.Getenv("no_proxy")
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, raw := range strings.Split(noProxy, ",") {
+		pattern := strings.ToLower(strings.TrimSpace(raw))
+		if pattern == "*" {
+			return true
+		}
+		pattern = strings.TrimPrefix(strings.Split(pattern, ":")[0], ".")
+		if pattern != "" && (host == pattern || strings.HasSuffix(host, "."+pattern)) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildAuthTransport 构建带可选代理的 Transport
 func buildAuthTransport(proxyURL string) *http.Transport {
 	t := &http.Transport{
@@ -56,7 +100,7 @@ func buildAuthTransport(proxyURL string) *http.Transport {
 			t.ForceAttemptHTTP2 = false
 		}
 	} else {
-		t.Proxy = http.ProxyFromEnvironment
+		t.Proxy = environmentProxy
 	}
 	return t
 }
