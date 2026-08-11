@@ -21,7 +21,7 @@ func openChatTestStore(t *testing.T) *Store {
 func TestChatMigrationSchemaAndRecovery(t *testing.T) {
 	s := openChatTestStore(t)
 	var version int
-	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 8 {
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 9 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 	for _, table := range []string{"chat_conversations", "chat_messages", "chat_attachments"} {
@@ -116,8 +116,11 @@ func TestChatTurnIdempotencyFinalizeAndMessageCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !first.Created {
+		t.Fatal("first turn should own generation")
+	}
 	second, err := create()
-	if err != nil || second.User.ID != first.User.ID || second.Assistant.ID != first.Assistant.ID {
+	if err != nil || second.Created || second.User.ID != first.User.ID || second.Assistant.ID != first.Assistant.ID {
 		t.Fatalf("idempotent turn=%+v err=%v", second, err)
 	}
 	final := first.Assistant

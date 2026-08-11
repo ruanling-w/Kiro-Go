@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	schemaVersion = 8
+	schemaVersion = 9
 	driverName    = "sqlite"
 )
 
@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		)`,
 		`CREATE TABLE IF NOT EXISTS chat_messages (
 		  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-		  parent_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, client_request_id TEXT NOT NULL DEFAULT '',
+		  parent_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, client_request_id TEXT NOT NULL DEFAULT '', request_hash TEXT NOT NULL DEFAULT '',
 		  role TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
 		  status TEXT NOT NULL DEFAULT 'complete', error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '',
 		  provider_response_id TEXT NOT NULL DEFAULT '', request_id TEXT NOT NULL DEFAULT '', input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -304,6 +304,32 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 	if !modelColumns["provider"] {
 		if _, err := tx.Exec(`ALTER TABLE combo_models ADD COLUMN provider TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("store: add combo model provider column: %w", err)
+		}
+	}
+	chatMessageColumns := map[string]bool{}
+	chatRows, err := tx.Query(`PRAGMA table_info(chat_messages)`)
+	if err != nil {
+		return fmt.Errorf("store: inspect chat message columns: %w", err)
+	}
+	for chatRows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := chatRows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			chatRows.Close()
+			return fmt.Errorf("store: scan chat message columns: %w", err)
+		}
+		chatMessageColumns[name] = true
+	}
+	if err := chatRows.Close(); err != nil {
+		return fmt.Errorf("store: close chat message columns: %w", err)
+	}
+	if err := chatRows.Err(); err != nil {
+		return fmt.Errorf("store: read chat message columns: %w", err)
+	}
+	if !chatMessageColumns["request_hash"] {
+		if _, err := tx.Exec(`ALTER TABLE chat_messages ADD COLUMN request_hash TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("store: add chat message request_hash column: %w", err)
 		}
 	}
 	// v5 adds backward-compatible per-attempt Combo observability columns.

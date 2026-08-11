@@ -25,11 +25,11 @@ type ChatConversation struct {
 }
 
 type ChatMessage struct {
-	ID, ConversationID, ParentMessageID, ClientRequestID            string
-	Role, Content, Provider, Model, Status                          string
-	ErrorCode, ErrorMessage, ProviderResponseID, RequestID          string
-	InputTokens, OutputTokens, CacheReadTokens, CacheCreationTokens int
-	CreatedAt, UpdatedAt                                            int64
+	ID, ConversationID, ParentMessageID, ClientRequestID, RequestHash string
+	Role, Content, Provider, Model, Status                            string
+	ErrorCode, ErrorMessage, ProviderResponseID, RequestID            string
+	InputTokens, OutputTokens, CacheReadTokens, CacheCreationTokens   int
+	CreatedAt, UpdatedAt                                              int64
 }
 
 type ChatAttachment struct {
@@ -47,7 +47,10 @@ type ChatMessagePage struct {
 	Items      []ChatMessage
 	NextCursor string
 }
-type ChatTurn struct{ User, Assistant ChatMessage }
+type ChatTurn struct {
+	User, Assistant ChatMessage
+	Created         bool
+}
 
 type chatCursor struct {
 	Time int64  `json:"t"`
@@ -230,11 +233,11 @@ func (s *Store) ListChatConversations(status, cursor string, limit int) (ChatCon
 
 func scanChatMessage(row interface{ Scan(...any) error }) (ChatMessage, error) {
 	var m ChatMessage
-	err := row.Scan(&m.ID, &m.ConversationID, &m.ParentMessageID, &m.ClientRequestID, &m.Role, &m.Content, &m.Provider, &m.Model, &m.Status, &m.ErrorCode, &m.ErrorMessage, &m.ProviderResponseID, &m.RequestID, &m.InputTokens, &m.OutputTokens, &m.CacheReadTokens, &m.CacheCreationTokens, &m.CreatedAt, &m.UpdatedAt)
+	err := row.Scan(&m.ID, &m.ConversationID, &m.ParentMessageID, &m.ClientRequestID, &m.RequestHash, &m.Role, &m.Content, &m.Provider, &m.Model, &m.Status, &m.ErrorCode, &m.ErrorMessage, &m.ProviderResponseID, &m.RequestID, &m.InputTokens, &m.OutputTokens, &m.CacheReadTokens, &m.CacheCreationTokens, &m.CreatedAt, &m.UpdatedAt)
 	return m, err
 }
 
-const chatMessageColumns = `id,conversation_id,COALESCE(parent_message_id,''),client_request_id,role,content,provider,model,status,error_code,error_message,provider_response_id,request_id,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,created_at,updated_at`
+const chatMessageColumns = `id,conversation_id,COALESCE(parent_message_id,''),client_request_id,request_hash,role,content,provider,model,status,error_code,error_message,provider_response_id,request_id,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,created_at,updated_at`
 
 func (s *Store) CreateChatTurn(conversationID, clientRequestID string, user, assistant ChatMessage) (ChatTurn, error) {
 	if s == nil {
@@ -254,20 +257,26 @@ func (s *Store) CreateChatTurn(conversationID, clientRequestID string, user, ass
 	if clientRequestID != "" {
 		existing, e := scanChatMessage(tx.QueryRow(`SELECT `+chatMessageColumns+` FROM chat_messages WHERE conversation_id=? AND client_request_id=?`, conversationID, clientRequestID))
 		if e == nil {
+			if existing.RequestHash != user.RequestHash {
+				return ChatTurn{}, ErrChatConflict
+			}
 			a, e := scanChatMessage(tx.QueryRow(`SELECT `+chatMessageColumns+` FROM chat_messages WHERE parent_message_id=? AND role='assistant' ORDER BY created_at,id LIMIT 1`, existing.ID))
 			if e != nil {
 				return ChatTurn{}, e
 			}
-			return ChatTurn{existing, a}, nil
+			return ChatTurn{User: existing, Assistant: a, Created: false}, nil
 		} else if e != sql.ErrNoRows {
 			return ChatTurn{}, e
 		}
 	}
-	var exists int
-	if err = tx.QueryRow(`SELECT 1 FROM chat_conversations WHERE id=?`, conversationID).Scan(&exists); err == sql.ErrNoRows {
+	var status string
+	if err = tx.QueryRow(`SELECT status FROM chat_conversations WHERE id=?`, conversationID).Scan(&status); err == sql.ErrNoRows {
 		return ChatTurn{}, ErrChatNotFound
 	} else if err != nil {
 		return ChatTurn{}, err
+	}
+	if status != "active" {
+		return ChatTurn{}, ErrChatConflict
 	}
 	now := time.Now().UnixMilli()
 	user.ConversationID = conversationID
@@ -276,7 +285,7 @@ func (s *Store) CreateChatTurn(conversationID, clientRequestID string, user, ass
 	user.Status = "complete"
 	user.CreatedAt = now
 	user.UpdatedAt = now
-	_, err = tx.Exec(`INSERT INTO chat_messages(id,conversation_id,parent_message_id,client_request_id,role,content,provider,model,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, user.ID, conversationID, nil, clientRequestID, user.Role, user.Content, user.Provider, user.Model, user.Status, now, now)
+	_, err = tx.Exec(`INSERT INTO chat_messages(id,conversation_id,parent_message_id,client_request_id,request_hash,role,content,provider,model,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, user.ID, conversationID, nil, clientRequestID, user.RequestHash, user.Role, user.Content, user.Provider, user.Model, user.Status, now, now)
 	if err != nil {
 		return ChatTurn{}, fmt.Errorf("store: create chat user message: %w", err)
 	}
@@ -296,7 +305,7 @@ func (s *Store) CreateChatTurn(conversationID, clientRequestID string, user, ass
 	if err = tx.Commit(); err != nil {
 		return ChatTurn{}, err
 	}
-	return ChatTurn{user, assistant}, nil
+	return ChatTurn{User: user, Assistant: assistant, Created: true}, nil
 }
 
 func (s *Store) FinalizeChatMessage(m ChatMessage) (ChatMessage, error) {
@@ -312,16 +321,63 @@ func (s *Store) FinalizeChatMessage(m ChatMessage) (ChatMessage, error) {
 	if err != nil {
 		return ChatMessage{}, err
 	}
-	now := time.Now().UnixMilli()
-	res, err := db.Exec(`UPDATE chat_messages SET content=?,provider=?,model=?,status=?,error_code=?,error_message=?,provider_response_id=?,request_id=?,input_tokens=?,output_tokens=?,cache_read_tokens=?,cache_creation_tokens=?,updated_at=? WHERE id=? AND role='assistant' AND status IN ('pending','streaming')`, m.Content, m.Provider, m.Model, m.Status, m.ErrorCode, m.ErrorMessage, m.ProviderResponseID, m.RequestID, m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.CacheCreationTokens, now, m.ID)
+	tx, err := db.Begin()
 	if err != nil {
 		return ChatMessage{}, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer tx.Rollback()
+	existing, err := scanChatMessage(tx.QueryRow(`SELECT `+chatMessageColumns+` FROM chat_messages WHERE id=?`, m.ID))
+	if err == sql.ErrNoRows {
+		return ChatMessage{}, ErrChatMessageNotFound
+	}
+	if err != nil {
+		return ChatMessage{}, err
+	}
+	if existing.Role != "assistant" || (existing.Status != "pending" && existing.Status != "streaming") {
 		return ChatMessage{}, ErrChatConflict
 	}
-	m.UpdatedAt = now
-	return m, nil
+	now := time.Now().UnixMilli()
+	_, err = tx.Exec(`UPDATE chat_messages SET content=?,provider=?,model=?,status=?,error_code=?,error_message=?,provider_response_id=?,request_id=?,input_tokens=?,output_tokens=?,cache_read_tokens=?,cache_creation_tokens=?,updated_at=? WHERE id=?`, m.Content, m.Provider, m.Model, m.Status, m.ErrorCode, m.ErrorMessage, m.ProviderResponseID, m.RequestID, m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.CacheCreationTokens, now, m.ID)
+	if err != nil {
+		return ChatMessage{}, err
+	}
+	if _, err = tx.Exec(`UPDATE chat_conversations SET updated_at=? WHERE id=?`, now, existing.ConversationID); err != nil {
+		return ChatMessage{}, err
+	}
+	updated, err := scanChatMessage(tx.QueryRow(`SELECT `+chatMessageColumns+` FROM chat_messages WHERE id=?`, m.ID))
+	if err != nil {
+		return ChatMessage{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return ChatMessage{}, err
+	}
+	return updated, nil
+}
+
+func (s *Store) ListCompletedChatMessages(conversationID string) ([]ChatMessage, error) {
+	if s == nil {
+		return nil, ErrStorageUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.chatDBLocked()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT `+chatMessageColumns+` FROM chat_messages WHERE conversation_id=? AND status='complete' ORDER BY created_at,id`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ChatMessage, 0)
+	for rows.Next() {
+		m, scanErr := scanChatMessage(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) ListChatMessages(conversationID, cursor string, limit int) (ChatMessagePage, error) {
