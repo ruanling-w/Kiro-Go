@@ -559,6 +559,72 @@ func (s *Store) GetChatAttachment(conversationID, id string) (ChatAttachment, er
 	return a, nil
 }
 
+func (s *Store) ListAllChatAttachments() ([]ChatAttachment, error) {
+	if s == nil {
+		return nil, ErrStorageUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.chatDBLocked()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`SELECT ` + chatAttachmentColumns + ` FROM chat_attachments ORDER BY created_at,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatAttachment
+	for rows.Next() {
+		a, scanErr := scanChatAttachment(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteUnboundChatAttachments(createdBefore int64) ([]ChatAttachment, error) {
+	if s == nil {
+		return nil, ErrStorageUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.chatDBLocked()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT `+chatAttachmentColumns+` FROM chat_attachments WHERE message_id IS NULL AND created_at<? ORDER BY created_at,id`, createdBefore)
+	if err != nil {
+		return nil, err
+	}
+	var out []ChatAttachment
+	for rows.Next() {
+		a, scanErr := scanChatAttachment(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return nil, scanErr
+		}
+		out = append(out, a)
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(`DELETE FROM chat_attachments WHERE message_id IS NULL AND created_at<?`, createdBefore); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *Store) ListChatAttachments(conversationID string) ([]ChatAttachment, error) {
 	if s == nil {
 		return nil, ErrStorageUnavailable

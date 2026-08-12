@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -113,6 +114,59 @@ func (s *chatAssetStore) path(storageKey string) (string, error) {
 		return "", errInvalidChatImage
 	}
 	return path, nil
+}
+
+type chatAssetReconcileResult struct {
+	RemovedOrphans int
+	RemovedUploads int
+	RemovedExpired int
+}
+
+func (s *chatAssetStore) reconcile(referenced map[string]bool, expired []string, staleBefore time.Time) (chatAssetReconcileResult, error) {
+	result := chatAssetReconcileResult{}
+	for _, storageKey := range expired {
+		path, err := s.path(storageKey)
+		if err == nil && os.Remove(path) == nil {
+			result.RemovedExpired++
+		}
+	}
+	err := filepath.WalkDir(s.root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == s.root || entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return filepath.SkipDir
+		}
+		rel, err := filepath.Rel(s.root, path)
+		if err != nil {
+			return err
+		}
+		storageKey := filepath.ToSlash(rel)
+		if strings.HasSuffix(entry.Name(), ".upload") {
+			info, infoErr := entry.Info()
+			if infoErr == nil && info.ModTime().Before(staleBefore) && os.Remove(path) == nil {
+				result.RemovedUploads++
+			}
+			return nil
+		}
+		if !referenced[storageKey] && os.Remove(path) == nil {
+			result.RemovedOrphans++
+		}
+		return nil
+	})
+	if err != nil {
+		return result, err
+	}
+	_ = filepath.WalkDir(s.root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr == nil && entry.IsDir() && path != s.root {
+			_ = os.Remove(path)
+		}
+		return nil
+	})
+	return result, nil
 }
 
 func validateStoredChatImage(path string, size int64) (validatedChatImage, error) {

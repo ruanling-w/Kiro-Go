@@ -336,6 +336,7 @@ func NewHandler() *Handler {
 		h.runtimeStore = st
 		h.hydrateFromStore()
 		h.loadCombosFromStore()
+		h.reconcileChatAssets()
 		logger.Infof("runtime store ready: %s", dbPath)
 	}
 

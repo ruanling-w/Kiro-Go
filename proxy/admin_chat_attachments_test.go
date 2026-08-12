@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testPNG(t *testing.T) []byte {
@@ -124,6 +125,48 @@ func TestAdminChatAttachmentUploadServeDeleteAndVision(t *testing.T) {
 	h.handleAdminAPI(w, chatAdminRequest(http.MethodDelete, "/admin/api/chat/conversations/"+conversation.ID+"/attachments/"+attachment.ID, "", "pw"))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("bound delete status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestChatAssetReconciliationRemovesExpiredAndOrphanFiles(t *testing.T) {
+	root := t.TempDir()
+	assets, err := newChatAssetStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID := "conversation"
+	dir := filepath.Join(root, conversationID)
+	if err = os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"referenced":    testPNG(t),
+		"expired":       testPNG(t),
+		"orphan":        testPNG(t),
+		".stale.upload": []byte("partial"),
+	} {
+		if err = os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := filepath.Join(dir, ".stale.upload")
+	old := time.Now().Add(-2 * chatAttachmentUnboundTTL)
+	if err = os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	result, err := assets.reconcile(
+		map[string]bool{conversationID + "/referenced": true},
+		[]string{conversationID + "/expired"},
+		time.Now().Add(-chatAttachmentUnboundTTL),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RemovedExpired != 1 || result.RemovedOrphans != 1 || result.RemovedUploads != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	if _, err = os.Stat(filepath.Join(dir, "referenced")); err != nil {
+		t.Fatalf("referenced file removed: %v", err)
 	}
 }
 

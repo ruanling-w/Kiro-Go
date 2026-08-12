@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"kiro-go/logger"
 	"kiro-go/store"
 	"mime"
 	"net/http"
@@ -12,9 +13,64 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+const chatAttachmentUnboundTTL = 24 * time.Hour
+
+func (h *Handler) reconcileChatAssets() {
+	st, unlock := h.runtimeStoreForOperation()
+	if st == nil {
+		return
+	}
+	defer unlock()
+	assets, err := h.chatAssets()
+	if err != nil {
+		logger.Warnf("chat asset reconciliation unavailable: %v", err)
+		return
+	}
+	expired, err := st.DeleteUnboundChatAttachments(time.Now().Add(-chatAttachmentUnboundTTL).UnixMilli())
+	if err != nil {
+		logger.Warnf("chat attachment expiry failed: %v", err)
+		return
+	}
+	attachments, err := st.ListAllChatAttachments()
+	if err != nil {
+		logger.Warnf("chat attachment reconciliation failed: %v", err)
+		return
+	}
+	referenced := make(map[string]bool, len(attachments))
+	for _, attachment := range attachments {
+		path, pathErr := assets.path(attachment.StorageKey)
+		info, statErr := os.Stat(path)
+		valid := pathErr == nil && statErr == nil && info.Mode().IsRegular() && info.Size() == attachment.SizeBytes
+		if valid && (attachment.Kind == "image_input" || attachment.Kind == "image_output") {
+			_, validErr := validateStoredChatImage(path, attachment.SizeBytes)
+			valid = validErr == nil
+		}
+		if !valid {
+			if deleteErr := st.DeleteChatAttachment(attachment.ID); deleteErr != nil {
+				logger.Warnf("remove invalid chat attachment metadata %s: %v", attachment.ID, deleteErr)
+			}
+			continue
+		}
+		referenced[attachment.StorageKey] = true
+	}
+	expiredKeys := make([]string, 0, len(expired))
+	for _, attachment := range expired {
+		expiredKeys = append(expiredKeys, attachment.StorageKey)
+	}
+	result, err := assets.reconcile(referenced, expiredKeys, time.Now().Add(-chatAttachmentUnboundTTL))
+	if err != nil {
+		logger.Warnf("chat asset reconciliation failed: %v", err)
+		return
+	}
+	if result.RemovedOrphans+result.RemovedUploads+result.RemovedExpired > 0 {
+		logger.Infof("chat assets reconciled: expired=%d orphan=%d upload=%d", result.RemovedExpired, result.RemovedOrphans, result.RemovedUploads)
+	}
+}
 
 type chatAttachmentDTO struct {
 	ID             string `json:"id"`
