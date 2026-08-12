@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Archive, Bot, Download, ImagePlus, MessageSquarePlus, Pin, PinOff, RotateCcw, Send, Square, Trash2, X } from 'lucide-react'
+import { Archive, Bot, Copy, Download, FileJson, FileText, ImagePlus, MessageSquarePlus, Pencil, Pin, PinOff, RotateCcw, Send, Square, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { useChatConversations, useChatMessages, useChatModels } from '@/hooks/queries/useChat'
 import { chatService } from '@/services/chat.service'
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { SafeMarkdown } from '@/components/shared/SafeMarkdown'
 import { useConfirm } from '@/components/shared/ConfirmDialog'
+import { chatExportJSON, chatExportMarkdown, downloadChatExport } from './chatExport'
 
 function requestId() {
   return crypto.randomUUID()
@@ -54,6 +55,25 @@ export default function ChatPage() {
   useEffect(() => () => controller.current?.abort(), [])
 
   const transcript = useMemo(() => messages.data?.data ?? [], [messages.data])
+  const activeConversation = conversations.data?.data.find((item) => item.id === activeId)
+
+  async function renameConversation() {
+    if (!activeConversation) return
+    const title = window.prompt('Conversation title', activeConversation.title)
+    if (title === null || !title.trim() || title.trim() === activeConversation.title) return
+    await chatService.updateConversation(activeConversation.id, { title: title.trim() })
+    await queryClient.invalidateQueries({ queryKey: qk.chatConversations })
+  }
+
+  function exportConversation(format: 'markdown' | 'json') {
+    if (!activeConversation) return
+    const stem = (activeConversation.title || 'conversation').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '') || 'conversation'
+    if (format === 'json') {
+      downloadChatExport(`${stem}.json`, chatExportJSON(activeConversation, transcript), 'application/json;charset=utf-8')
+      return
+    }
+    downloadChatExport(`${stem}.md`, chatExportMarkdown(activeConversation, transcript), 'text/markdown;charset=utf-8')
+  }
 
   async function createConversation() {
     const model = models.data?.find((item) => item.id === selectedModel) ?? models.data?.[0]
@@ -196,8 +216,9 @@ export default function ChatPage() {
 
       <section className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
-          <div className="flex items-center gap-2 font-medium"><Bot className="size-5" />AI Chat</div>
+          <div className="flex min-w-0 items-center gap-2 font-medium"><Bot className="size-5 shrink-0" /><span className="truncate">{activeConversation?.title || 'AI Chat'}</span>{activeConversation && <Button type="button" variant="ghost" size="icon" className="size-7" onClick={renameConversation} aria-label="Rename conversation"><Pencil className="size-3.5" /></Button>}</div>
           <div className="flex items-center gap-2">
+            {activeConversation && <><Button type="button" variant="ghost" size="icon" onClick={() => exportConversation('markdown')} aria-label="Export Markdown"><FileText className="size-4" /></Button><Button type="button" variant="ghost" size="icon" onClick={() => exportConversation('json')} aria-label="Export JSON"><FileJson className="size-4" /></Button></>}
             <Button
               type="button"
               variant={imageMode ? 'default' : 'outline'}
@@ -229,7 +250,7 @@ export default function ChatPage() {
             <div className="grid h-full place-items-center text-center text-muted-foreground"><div><Bot className="mx-auto mb-3 size-10" /><p className="font-medium text-foreground">How can I help?</p><p className="text-sm">Choose a provider and model, then start a conversation.</p></div></div>
           ) : (
             <div className="mx-auto max-w-3xl space-y-6">
-              {transcript.map((message) => <MessageBubble key={message.id} message={message} />)}
+              {transcript.map((message, index) => <MessageBubble key={message.id} message={message} userPrompt={message.role === 'assistant' ? transcript.slice(0, index).findLast((candidate) => candidate.role === 'user')?.content : undefined} onRetry={(prompt, image) => { setDraft(prompt); setImageMode(image) }} />)}
               {streaming && <><MessageBubble message={streaming} />{reasoning && <p className="text-xs text-muted-foreground">Thinking: {reasoning}</p>}</>}
             </div>
           )}
@@ -265,15 +286,26 @@ function ImagePreview({ file, onRemove }: { file: File; onRemove: () => void }) 
   return <div className="group relative size-20 shrink-0 overflow-hidden rounded-lg border bg-muted">{url && <img src={url} alt={file.name} className="size-full object-cover" />}<Button type="button" size="icon" variant="secondary" className="absolute right-1 top-1 size-6 opacity-90" onClick={onRemove} aria-label={`Remove ${file.name}`}><X className="size-3" /></Button></div>
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({ message, userPrompt, onRetry }: { message: ChatMessage; userPrompt?: string; onRetry?: (prompt: string, image: boolean) => void }) {
   const assistant = message.role === 'assistant'
   const content = message.content || (message.status === 'streaming' ? '…' : message.errorMessage)
+  const generatedImage = message.attachments?.some((attachment) => attachment.kind === 'image_output') ?? false
+  async function copyPrompt() {
+    if (!userPrompt) return
+    try {
+      await navigator.clipboard.writeText(userPrompt)
+      toast.success('Prompt copied')
+    } catch {
+      toast.error('Could not copy prompt')
+    }
+  }
   return (
     <div className={`flex ${assistant ? 'justify-start' : 'justify-end'}`}>
       <div className={`min-w-0 max-w-[85%] rounded-2xl px-4 py-3 ${assistant ? 'bg-muted' : 'bg-primary text-primary-foreground'}`}>
         {message.attachments?.length ? <div className="mb-3 grid grid-cols-2 gap-2">{message.attachments.map((attachment) => <div key={attachment.id} className="group/image relative"><img src={attachment.contentUrl} alt={attachment.name} className="max-h-96 w-full rounded-lg object-contain" loading="lazy" />{attachment.kind === 'image_output' && <a href={attachment.contentUrl} download={attachment.name} className="absolute right-2 top-2 grid size-8 place-items-center rounded-md bg-background/90 text-foreground opacity-0 shadow-sm transition-opacity group-hover/image:opacity-100" aria-label={`Download ${attachment.name}`}><Download className="size-4" /></a>}</div>)}</div> : null}
         {assistant ? <SafeMarkdown>{content}</SafeMarkdown> : <div className="whitespace-pre-wrap text-sm">{content}</div>}
         {assistant && message.status === 'error' && <div className="mt-2 text-xs text-destructive">{message.errorMessage}</div>}
+        {assistant && userPrompt && <div className="mt-2 flex gap-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onRetry?.(userPrompt, generatedImage)}><RotateCcw className="size-3" />Retry</Button>{generatedImage && <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={copyPrompt}><Copy className="size-3" />Copy prompt</Button>}</div>}
         {assistant && <details className="mt-2 text-xs opacity-70"><summary className="cursor-pointer">Details</summary><div className="mt-1 space-y-0.5"><div>{message.provider} · {message.model} · {message.status}</div><div>Input {message.inputTokens} · Output {message.outputTokens}</div><div>Cache read {message.cacheReadTokens} · Cache write {message.cacheCreationTokens}</div>{message.requestId && <div className="break-all">Request {message.requestId}</div>}</div></details>}
       </div>
     </div>
