@@ -117,6 +117,13 @@ func (h *Handler) apiStreamChatTurn(w http.ResponseWriter, r *http.Request, conv
 	}
 
 	requestID := uuid.NewString()
+	if !acquireChatSemaphore(r.Context(), h.chatTextSemaphore) {
+		h.finalizeUnstartedChatStream(turn.Assistant, "concurrency_limit", "too many chat generations are in progress")
+		_ = stream.Terminal("response.error", chatSSEError{Code: "concurrency_limit", Message: "too many chat generations are in progress", Retryable: true})
+		_ = stream.Done()
+		return
+	}
+	defer releaseChatSemaphore(h.chatTextSemaphore)
 	result, executionErr := h.executeChatTextStream(r.Context(), chatTextExecutionRequest{
 		Messages: messages, Provider: req.Provider, Model: req.Model,
 		ClientIP: ClientIP(r, config.GetTrustProxyHeaders()), RequestID: requestID,

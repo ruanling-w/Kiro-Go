@@ -100,6 +100,11 @@ func (h *Handler) chatAssets() (*chatAssetStore, error) {
 }
 
 func (h *Handler) apiUploadChatAttachments(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if !acquireChatSemaphore(r.Context(), h.chatUploadSemaphore) {
+		chatAPIError(w, http.StatusTooManyRequests, "concurrency_limit", "too many attachment uploads are in progress")
+		return
+	}
+	defer releaseChatSemaphore(h.chatUploadSemaphore)
 	st, unlock, ok := h.chatStore(w)
 	if !ok {
 		return

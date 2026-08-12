@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"kiro-go/config"
@@ -425,6 +426,26 @@ func (h *Handler) apiListChatMessages(w http.ResponseWriter, r *http.Request, co
 		data = append(data, dto)
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": data, "nextCursor": page.NextCursor})
+}
+
+func acquireChatSemaphore(ctx context.Context, semaphore chan struct{}) bool {
+	if semaphore == nil {
+		return true
+	}
+	select {
+	case semaphore <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	default:
+		return false
+	}
+}
+
+func releaseChatSemaphore(semaphore chan struct{}) {
+	if semaphore != nil {
+		<-semaphore
+	}
 }
 
 func parseChatLimit(value string, defaultValue, maxValue int) (int, bool) {

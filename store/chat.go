@@ -362,6 +362,9 @@ func (s *Store) AbortChatTurn(userMessageID string) error {
 	if _, err = tx.Exec(`UPDATE chat_attachments SET message_id=NULL WHERE message_id=?`, userMessageID); err != nil {
 		return err
 	}
+	if _, err = tx.Exec(`DELETE FROM chat_messages WHERE parent_message_id=? AND role='assistant'`, userMessageID); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(`DELETE FROM chat_messages WHERE id=? AND role='user'`, userMessageID); err != nil {
 		return err
 	}

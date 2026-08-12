@@ -299,6 +299,16 @@ func (h *Handler) apiGenerateChatConversation(w http.ResponseWriter, r *http.Req
 	}
 
 	requestID := uuid.NewString()
+	if !acquireChatSemaphore(r.Context(), h.chatTextSemaphore) {
+		st, release, available := h.chatStore(w)
+		if available {
+			_ = st.AbortChatTurn(turn.User.ID)
+			release()
+		}
+		chatAPIError(w, http.StatusTooManyRequests, "concurrency_limit", "too many chat generations are in progress")
+		return
+	}
+	defer releaseChatSemaphore(h.chatTextSemaphore)
 	result, executionErr := h.executeChatText(r.Context(), chatTextExecutionRequest{
 		Messages: messages, Provider: req.Provider, Model: req.Model,
 		ClientIP: ClientIP(r, config.GetTrustProxyHeaders()), RequestID: requestID,

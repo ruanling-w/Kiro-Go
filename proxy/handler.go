@@ -131,6 +131,9 @@ type Handler struct {
 	chatTextExecutor       func(context.Context, chatTextExecutionRequest) (chatTextExecutionResult, error)
 	chatTextStreamExecutor func(context.Context, chatTextExecutionRequest, chatTextStreamCallbacks) (chatTextExecutionResult, error)
 	chatImageExecutor      func(context.Context, chatImageExecutionRequest) (chatImageExecutionResult, error)
+	chatTextSemaphore      chan struct{}
+	chatUploadSemaphore    chan struct{}
+	chatImageSemaphore     chan struct{}
 }
 
 type thinkingStreamSource int
@@ -308,24 +311,27 @@ func NewHandler() *Handler {
 
 	totalReq, successReq, failedReq, totalTokens, totalCredits := config.GetStats()
 	h := &Handler{
-		pool:              pool.GetPool(),
-		totalRequests:     int64(totalReq),
-		successRequests:   int64(successReq),
-		failedRequests:    int64(failedReq),
-		totalTokens:       int64(totalTokens),
-		totalCredits:      totalCredits,
-		startTime:         time.Now().Unix(),
-		stopRefresh:       make(chan struct{}),
-		stopStatsSaver:    make(chan struct{}),
-		stopRuntime:       make(chan struct{}),
-		promptCache:       newPromptCacheTracker(defaultPromptCacheTTL),
-		responseCache:     newResponseCache(config.GetResponseCacheTTL(), defaultResponseCacheMaxPerKey),
-		ipTrack:           newIPTracker(),
-		tokenRefreshLocks: make(map[string]*sync.Mutex),
-		logHub:            newLogHub(),
-		combosByID:        make(map[string]store.Combo),
-		combosByName:      make(map[string]store.Combo),
-		chatAssetRoot:     filepath.Join(config.GetConfigDir(), "chat-assets"),
+		pool:                pool.GetPool(),
+		totalRequests:       int64(totalReq),
+		successRequests:     int64(successReq),
+		failedRequests:      int64(failedReq),
+		totalTokens:         int64(totalTokens),
+		totalCredits:        totalCredits,
+		startTime:           time.Now().Unix(),
+		stopRefresh:         make(chan struct{}),
+		stopStatsSaver:      make(chan struct{}),
+		stopRuntime:         make(chan struct{}),
+		promptCache:         newPromptCacheTracker(defaultPromptCacheTTL),
+		responseCache:       newResponseCache(config.GetResponseCacheTTL(), defaultResponseCacheMaxPerKey),
+		ipTrack:             newIPTracker(),
+		tokenRefreshLocks:   make(map[string]*sync.Mutex),
+		logHub:              newLogHub(),
+		combosByID:          make(map[string]store.Combo),
+		combosByName:        make(map[string]store.Combo),
+		chatAssetRoot:       filepath.Join(config.GetConfigDir(), "chat-assets"),
+		chatTextSemaphore:   make(chan struct{}, 8),
+		chatUploadSemaphore: make(chan struct{}, 4),
+		chatImageSemaphore:  make(chan struct{}, 2),
 	}
 
 	// Runtime SQLite (logs + key IP lifetime). Fail-open on error.

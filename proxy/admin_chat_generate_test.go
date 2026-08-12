@@ -196,6 +196,27 @@ func TestAdminChatGenerateRejectsImageForKnownNonVisionModel(t *testing.T) {
 	}
 }
 
+func TestAdminChatGenerateConcurrencyLimitDoesNotPersistTurn(t *testing.T) {
+	mustInitConfig(t)
+	setAdminPassword(t, "pw")
+	h := newAdminChatTestHandler(t)
+	h.chatTextSemaphore = make(chan struct{}, 1)
+	h.chatTextSemaphore <- struct{}{}
+	conversation := createGenerateTestConversation(t, h, "kiro", "claude")
+
+	w := httptest.NewRecorder()
+	h.handleAdminAPI(w, chatAdminRequest(http.MethodPost, "/admin/api/chat/conversations/"+conversation.ID+"/generate", `{"clientRequestId":"limited","content":"prompt"}`, "pw"))
+	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "concurrency_limit") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	st, unlock := h.runtimeStoreForOperation()
+	messages, err := st.ListChatMessages(conversation.ID, "", 10)
+	unlock()
+	if err != nil || len(messages.Items) != 0 {
+		t.Fatalf("messages=%+v err=%v", messages.Items, err)
+	}
+}
+
 func TestChatExecutorInjectedError(t *testing.T) {
 	expected := errors.New("upstream")
 	h := &Handler{chatTextExecutor: func(context.Context, chatTextExecutionRequest) (chatTextExecutionResult, error) {
