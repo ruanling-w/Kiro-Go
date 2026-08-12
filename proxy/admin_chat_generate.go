@@ -123,34 +123,58 @@ func chatHistoryMessages(history []store.ChatMessage, content string) []OpenAIMe
 	return messages
 }
 
-func (h *Handler) chatMessagesWithAttachments(history []store.ChatMessage, content string, attachments []store.ChatAttachment) ([]OpenAIMessage, error) {
-	messages := chatHistoryMessages(history, content)
-	if len(attachments) == 0 {
-		return messages, nil
+func (h *Handler) chatMessagesWithAttachments(history []store.ChatMessage, current store.ChatMessage, attachments []store.ChatAttachment) ([]OpenAIMessage, error) {
+	messages := make([]OpenAIMessage, 0, len(history)+1)
+	messageIDs := make([]string, 0, len(history)+1)
+	for _, message := range history {
+		if message.Role != "user" && message.Role != "assistant" {
+			continue
+		}
+		messages = append(messages, OpenAIMessage{Role: message.Role, Content: message.Content})
+		messageIDs = append(messageIDs, message.ID)
 	}
-	parts := make([]map[string]any, 0, len(attachments)+1)
-	if content != "" {
-		parts = append(parts, map[string]any{"type": "text", "text": content})
+	messages = append(messages, OpenAIMessage{Role: "user", Content: current.Content})
+	messageIDs = append(messageIDs, current.ID)
+
+	byMessage := make(map[string][]store.ChatAttachment)
+	for _, attachment := range attachments {
+		if attachment.Kind == "image_input" && attachment.MessageID != "" {
+			byMessage[attachment.MessageID] = append(byMessage[attachment.MessageID], attachment)
+		}
+	}
+	if len(byMessage) == 0 {
+		return messages, nil
 	}
 	assets, err := h.chatAssets()
 	if err != nil {
 		return nil, err
 	}
-	for _, attachment := range attachments {
-		path, pathErr := assets.path(attachment.StorageKey)
-		if pathErr != nil {
-			return nil, pathErr
+	for i, messageID := range messageIDs {
+		messageAttachments := byMessage[messageID]
+		if len(messageAttachments) == 0 || messages[i].Role != "user" {
+			continue
 		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil || int64(len(data)) != attachment.SizeBytes || len(data) > chatAttachmentMaxBytes {
-			return nil, errInvalidChatImage
+		content, _ := messages[i].Content.(string)
+		parts := make([]map[string]any, 0, len(messageAttachments)+1)
+		if content != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": content})
 		}
-		parts = append(parts, map[string]any{
-			"type":      "image_url",
-			"image_url": map[string]any{"url": "data:" + attachment.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(data)},
-		})
+		for _, attachment := range messageAttachments {
+			path, pathErr := assets.path(attachment.StorageKey)
+			if pathErr != nil {
+				return nil, pathErr
+			}
+			data, readErr := os.ReadFile(path)
+			if readErr != nil || int64(len(data)) != attachment.SizeBytes || len(data) > chatAttachmentMaxBytes {
+				return nil, errInvalidChatImage
+			}
+			parts = append(parts, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": "data:" + attachment.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(data)},
+			})
+		}
+		messages[i].Content = parts
 	}
-	messages[len(messages)-1].Content = parts
 	return messages, nil
 }
 
@@ -202,18 +226,27 @@ func (h *Handler) apiGenerateChatConversation(w http.ResponseWriter, r *http.Req
 		writeChatStoreError(w, err)
 		return
 	}
+	allAttachments, err := st.ListChatAttachments(conversationID)
+	if err != nil {
+		unlock()
+		writeChatStoreError(w, err)
+		return
+	}
 	turn, err := st.CreateChatTurnWithAttachments(conversationID, req.ClientRequestID,
 		store.ChatMessage{ID: uuid.NewString(), Content: req.Content, Provider: req.Provider, Model: req.Model, RequestHash: chatRequestHash(req.Content, req.Provider, req.Model, req.AttachmentIDs...)},
 		store.ChatMessage{ID: uuid.NewString(), Provider: req.Provider, Model: req.Model}, req.AttachmentIDs)
 	var attachments []store.ChatAttachment
-	if err == nil && turn.Created && len(req.AttachmentIDs) > 0 {
-		allAttachments, listErr := st.ListChatAttachments(conversationID)
-		if listErr != nil {
-			err = listErr
-		} else {
-			for _, attachment := range allAttachments {
-				if attachment.MessageID == turn.User.ID {
+	if err == nil && turn.Created {
+		for _, attachment := range allAttachments {
+			if attachment.MessageID != "" {
+				attachments = append(attachments, attachment)
+				continue
+			}
+			for _, attachmentID := range req.AttachmentIDs {
+				if attachment.ID == attachmentID {
+					attachment.MessageID = turn.User.ID
 					attachments = append(attachments, attachment)
+					break
 				}
 			}
 		}
@@ -242,7 +275,7 @@ func (h *Handler) apiGenerateChatConversation(w http.ResponseWriter, r *http.Req
 		}
 		return
 	}
-	messages, err := h.chatMessagesWithAttachments(history, req.Content, attachments)
+	messages, err := h.chatMessagesWithAttachments(history, turn.User, attachments)
 	if err != nil {
 		st, release, available := h.chatStore(w)
 		if available {

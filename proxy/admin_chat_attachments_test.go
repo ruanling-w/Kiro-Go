@@ -83,10 +83,19 @@ func TestAdminChatAttachmentUploadServeDeleteAndVision(t *testing.T) {
 		t.Fatalf("content status=%d headers=%v", w.Code, w.Header())
 	}
 
+	var generation int
 	h.chatTextExecutor = func(_ context.Context, req chatTextExecutionRequest) (chatTextExecutionResult, error) {
-		parts, ok := req.Messages[len(req.Messages)-1].Content.([]map[string]any)
+		generation++
+		messageIndex := len(req.Messages) - 1
+		if generation == 2 {
+			messageIndex = 0
+			if len(req.Messages) != 3 || req.Messages[2].Content != "what did you see?" {
+				t.Fatalf("historical messages=%#v", req.Messages)
+			}
+		}
+		parts, ok := req.Messages[messageIndex].Content.([]map[string]any)
 		if !ok || len(parts) != 2 {
-			t.Fatalf("content=%#v", req.Messages[len(req.Messages)-1].Content)
+			t.Fatalf("content=%#v", req.Messages[messageIndex].Content)
 		}
 		imagePart := parts[1]["image_url"].(map[string]any)["url"].(string)
 		if !strings.HasPrefix(imagePart, "data:image/png;base64,") {
@@ -102,6 +111,15 @@ func TestAdminChatAttachmentUploadServeDeleteAndVision(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("generate status=%d body=%s", w.Code, w.Body.String())
 	}
+	w = httptest.NewRecorder()
+	h.handleAdminAPI(w, chatAdminRequest(http.MethodPost, "/admin/api/chat/conversations/"+conversation.ID+"/generate", `{"clientRequestId":"vision-history","content":"what did you see?"}`, "pw"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("historical generate status=%d body=%s", w.Code, w.Body.String())
+	}
+	if generation != 2 {
+		t.Fatalf("generation calls=%d", generation)
+	}
+
 	w = httptest.NewRecorder()
 	h.handleAdminAPI(w, chatAdminRequest(http.MethodDelete, "/admin/api/chat/conversations/"+conversation.ID+"/attachments/"+attachment.ID, "", "pw"))
 	if w.Code != http.StatusConflict {
