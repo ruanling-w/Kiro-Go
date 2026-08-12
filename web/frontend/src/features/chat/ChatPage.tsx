@@ -73,6 +73,11 @@ export default function ChatPage() {
   }
 
   function addImages(files: File[]) {
+    const model = models.data?.find((item) => item.id === selectedModel)
+    if (model && !model.capabilities.vision) {
+      toast.error('The selected model does not support image input')
+      return
+    }
     const valid = files.filter((file) => ['image/png', 'image/jpeg', 'image/webp'].includes(file.type) && file.size <= 10 * 1024 * 1024)
     if (valid.length !== files.length) toast.error('Use PNG, JPEG, or WebP images up to 10 MiB')
     setPendingImages((current) => [...current, ...valid].slice(0, 4))
@@ -83,6 +88,10 @@ export default function ChatPage() {
     if ((!content && !pendingImages.length) || controller.current) return
     let conversationId = activeId
     const model = models.data?.find((item) => item.id === selectedModel)
+    if (pendingImages.length && model && !model.capabilities.vision) {
+      toast.error('The selected model does not support image input')
+      return
+    }
     if (!conversationId) {
       if (!model) return toast.error('Select a model first')
       const created = await chatService.createConversation({ provider: model.provider, model: model.model })
@@ -235,7 +244,7 @@ export default function ChatPage() {
               onDrop={(event) => { event.preventDefault(); addImages(Array.from(event.dataTransfer.files)) }}
             >
               <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" multiple className="hidden" onChange={(event) => { addImages(Array.from(event.target.files ?? [])); event.target.value = '' }} />
-              {!imageMode && <Button type="button" size="icon" variant="ghost" onClick={() => fileInput.current?.click()} disabled={Boolean(controller.current) || pendingImages.length >= 4} aria-label="Attach images"><ImagePlus className="size-4" /></Button>}
+              {!imageMode && <Button type="button" size="icon" variant="ghost" onClick={() => fileInput.current?.click()} disabled={Boolean(controller.current) || pendingImages.length >= 4 || models.data?.find((item) => item.id === selectedModel)?.capabilities.vision === false} aria-label="Attach images"><ImagePlus className="size-4" /></Button>}
               <textarea className="max-h-48 min-h-11 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none" rows={1} placeholder={imageMode ? 'Describe the image to create…' : 'Message AI…'} value={draft} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { if (!imageMode) { const files = Array.from(event.clipboardData.files); if (files.length) addImages(files) } }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send() } }} disabled={Boolean(controller.current)} />
               {controller.current ? <Button size="icon" variant="destructive" onClick={() => controller.current?.abort()}><Square className="size-4" /></Button> : <Button size="icon" onClick={send} disabled={(!draft.trim() && !pendingImages.length) || uploading}><Send className="size-4" /></Button>}
             </div>

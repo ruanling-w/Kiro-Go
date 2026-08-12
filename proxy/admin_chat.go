@@ -450,7 +450,7 @@ func chatProviderBucket(account *config.Account) string {
 	}
 }
 
-func (h *Handler) apiListChatModels(w http.ResponseWriter) {
+func (h *Handler) chatModelCatalog() []chatModelDTO {
 	enabled := config.GetEnabledAccounts()
 	providers := make(map[string]bool)
 	for i := range enabled {
@@ -514,5 +514,18 @@ func (h *Handler) apiListChatModels(w http.ResponseWriter) {
 		}
 		return models[i].Provider < models[j].Provider
 	})
-	_ = json.NewEncoder(w).Encode(map[string]any{"data": models})
+	return models
+}
+
+func (h *Handler) chatModelVisionCapability(provider, model string) (bool, bool) {
+	for _, candidate := range h.chatModelCatalog() {
+		if candidate.Provider == provider && strings.EqualFold(candidate.Model, model) {
+			return candidate.Capabilities.Vision, true
+		}
+	}
+	return false, false
+}
+
+func (h *Handler) apiListChatModels(w http.ResponseWriter) {
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": h.chatModelCatalog()})
 }

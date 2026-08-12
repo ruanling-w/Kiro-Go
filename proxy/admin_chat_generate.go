@@ -220,6 +220,14 @@ func (h *Handler) apiGenerateChatConversation(w http.ResponseWriter, r *http.Req
 		comboError(w, http.StatusUnprocessableEntity, "validation failed", fields)
 		return
 	}
+	if len(req.AttachmentIDs) > 0 {
+		vision, known := h.chatModelVisionCapability(req.Provider, req.Model)
+		if known && !vision {
+			unlock()
+			chatAPIError(w, http.StatusUnprocessableEntity, "model_capability_mismatch", "the selected model does not support image input")
+			return
+		}
+	}
 	history, err := st.ListCompletedChatMessages(conversationID)
 	if err != nil {
 		unlock()

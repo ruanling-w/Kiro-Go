@@ -3,9 +3,11 @@ package proxy
 import (
 	"context"
 	"errors"
+	"kiro-go/config"
 	"kiro-go/store"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -148,6 +150,49 @@ func TestAdminChatGeneratePendingReplayAndCancellation(t *testing.T) {
 	h.handleAdminAPI(w, chatAdminRequest(http.MethodPost, "/admin/api/chat/conversations/"+conversation.ID+"/generate", `{"clientRequestId":"cancel","content":"cancel me"}`, "pw"))
 	if w.Code != http.StatusRequestTimeout {
 		t.Fatalf("cancel status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminChatGenerateRejectsImageForKnownNonVisionModel(t *testing.T) {
+	mustInitConfig(t)
+	setAdminPassword(t, "pw")
+	if err := config.AddAccount(config.Account{ID: "kiro", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	h := newAdminChatTestHandler(t)
+	h.modelsCacheMu.Lock()
+	h.cachedModels = []ModelInfo{{ModelId: "text-only", ModelName: "Text only", InputTypes: []string{"text"}}}
+	h.modelsCacheMu.Unlock()
+	conversation := createGenerateTestConversation(t, h, "kiro", "text-only")
+
+	st, unlock := h.runtimeStoreForOperation()
+	attachment, err := st.CreateChatAttachment(store.ChatAttachment{
+		ID: "attachment", ConversationID: conversation.ID, Kind: "image_input",
+		Name: "image.png", MIMEType: "image/png", SizeBytes: 1, StorageKey: conversation.ID + "/image.png",
+	})
+	unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var called atomic.Bool
+	h.chatTextExecutor = func(_ context.Context, _ chatTextExecutionRequest) (chatTextExecutionResult, error) {
+		called.Store(true)
+		return chatTextExecutionResult{}, nil
+	}
+	w := httptest.NewRecorder()
+	h.handleAdminAPI(w, chatAdminRequest(http.MethodPost, "/admin/api/chat/conversations/"+conversation.ID+"/generate", `{"clientRequestId":"no-vision","content":"describe","attachmentIds":["`+attachment.ID+`"]}`, "pw"))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "model_capability_mismatch") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if called.Load() {
+		t.Fatal("executor was called")
+	}
+	st, unlock = h.runtimeStoreForOperation()
+	messages, err := st.ListChatMessages(conversation.ID, "", 10)
+	unlock()
+	if err != nil || len(messages.Items) != 0 {
+		t.Fatalf("messages=%+v err=%v", messages.Items, err)
 	}
 }
 
