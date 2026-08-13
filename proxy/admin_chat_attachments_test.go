@@ -164,6 +164,34 @@ func TestAdminChatAttachmentSniffsMIMEAndRejectsPixelBomb(t *testing.T) {
 	}
 }
 
+func TestAdminChatAttachmentRejectsMalformedAndExcessiveDimensions(t *testing.T) {
+	mustInitConfig(t)
+	setAdminPassword(t, "pw")
+	h := newAdminChatTestHandler(t)
+	h.chatAssetRoot = filepath.Join(t.TempDir(), "assets")
+	conversation := createGenerateTestConversation(t, h, "kiro", "vision")
+
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{name: "maximum width", data: pngWithDimensions(t, chatAttachmentMaxDimension+1, 1)},
+		{name: "truncated png", data: []byte("\x89PNG\r\n\x1a\n")},
+		{name: "malformed jpeg", data: []byte("\xff\xd8\xffnot-jpeg")},
+		{name: "malformed webp", data: []byte("RIFF\x04\x00\x00\x00WEBP")},
+		{name: "html disguised as png", data: []byte("<html><script>alert(1)</script></html>")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := uploadChatMultipart(t, h, conversation.ID, map[string][]byte{"image.png": tc.data})
+			if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "invalid_image") {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			assertNoChatAttachments(t, h, conversation.ID)
+		})
+	}
+}
+
 func TestAdminChatAttachmentUploadServeDeleteAndVision(t *testing.T) {
 	mustInitConfig(t)
 	setAdminPassword(t, "pw")
