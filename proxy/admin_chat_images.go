@@ -235,6 +235,13 @@ func (h *Handler) apiGenerateChatImage(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 	width, height := imageInfo.Width, imageInfo.Height
+	if result.MIMEType != "" && !strings.EqualFold(strings.TrimSpace(result.MIMEType), imageInfo.MIMEType) {
+		if path, pathErr := assets.path(storageKey); pathErr == nil {
+			_ = os.Remove(path)
+		}
+		h.failChatImageTurn(w, turn, "image MIME type returned by provider does not match its content")
+		return
+	}
 	attachment := store.ChatAttachment{ID: uuid.NewString(), ConversationID: conversationID, MessageID: turn.Assistant.ID, Kind: "image_output", Name: "generated." + strings.TrimPrefix(imageInfo.MIMEType, "image/"), MIMEType: imageInfo.MIMEType, SizeBytes: imageInfo.Size, StorageKey: storageKey, Width: &width, Height: &height}
 	turn.Assistant.Status, turn.Assistant.Provider, turn.Assistant.Model = "complete", result.Provider, result.Model
 	st, release, available := h.chatStore(w)
