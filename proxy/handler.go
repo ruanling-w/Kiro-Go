@@ -5569,6 +5569,16 @@ func firstNonEmpty(vals ...string) string {
 }
 
 func (h *Handler) usageStatsSnapshot() map[string]interface{} {
+	cost := usageCostEstimate{PricingCoverage: 1, PricingComplete: true}
+	if st, unlock := h.runtimeStoreForOperation(); st != nil {
+		rows, err := st.ListUsageRollups()
+		unlock()
+		if err != nil {
+			logger.Warnf("list usage rollups for cost estimate: %v", err)
+		} else {
+			cost = estimateUsageCost(rows)
+		}
+	}
 	return map[string]interface{}{
 		"totalRequests":            atomic.LoadInt64(&h.totalRequests),
 		"successRequests":          atomic.LoadInt64(&h.successRequests),
@@ -5584,6 +5594,13 @@ func (h *Handler) usageStatsSnapshot() map[string]interface{} {
 		"totalDetailedTokenRows":   atomic.LoadInt64(&h.totalDetailedTokenRows),
 		"totalLegacyTokenRows":     atomic.LoadInt64(&h.totalLegacyTokenRows),
 		"totalCredits":             h.getCredits(),
+		"estimatedCostUsd":         cost.EstimatedCostUSD,
+		"pricingVersion":           usagePricingVersion,
+		"pricedTokens":             cost.PricedTokens,
+		"unpricedTokens":           cost.UnpricedTokens,
+		"unpricedLegacyTokens":     cost.UnpricedLegacy,
+		"pricingCoverage":          cost.PricingCoverage,
+		"pricingComplete":          cost.PricingComplete,
 		"uptime":                   time.Now().Unix() - h.startTime,
 	}
 }
