@@ -182,6 +182,58 @@ func TestAdminChatRouteAuthAndCSRF(t *testing.T) {
 	}
 }
 
+func chatSessionRequest(method, target, body, token, csrf string) *http.Request {
+	r := chatAdminRequest(method, target, body, "")
+	r.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: token})
+	if csrf != "" {
+		r.Header.Set(adminCSRFHeader, csrf)
+	}
+	return r
+}
+
+func TestAdminChatMutationsRequireSessionCSRFBeforeSideEffects(t *testing.T) {
+	mustInitConfig(t)
+	resetAdminAuth()
+	setAdminPassword(t, "pw")
+	h := newAdminChatTestHandler(t)
+	h.chatAssetRoot = filepath.Join(t.TempDir(), "assets")
+	conversation := createGenerateTestConversation(t, h, "codex", "gpt-5.5-image")
+	token, _, err := adminAuth.createSession("192.0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name, method, target, body string
+	}{
+		{"text generation", http.MethodPost, "/admin/api/chat/conversations/" + conversation.ID + "/generate", `{"clientRequestId":"csrf-text","content":"hello"}`},
+		{"attachment upload", http.MethodPost, "/admin/api/chat/conversations/" + conversation.ID + "/attachments", ""},
+		{"attachment delete", http.MethodDelete, "/admin/api/chat/conversations/" + conversation.ID + "/attachments/missing", ""},
+		{"image generation", http.MethodPost, "/admin/api/chat/conversations/" + conversation.ID + "/images/generate", `{"clientRequestId":"csrf-image","prompt":"draw"}`},
+		{"conversation delete", http.MethodDelete, "/admin/api/chat/conversations/" + conversation.ID, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, csrf := range []string{"", "wrong-token"} {
+				w := httptest.NewRecorder()
+				h.handleAdminAPI(w, chatSessionRequest(tc.method, tc.target, tc.body, token, csrf))
+				if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "csrf_mismatch") {
+					t.Fatalf("csrf=%q status=%d body=%s", csrf, w.Code, w.Body.String())
+				}
+			}
+		})
+	}
+
+	st, release := h.runtimeStoreForOperation()
+	messages, err := st.ListChatMessages(conversation.ID, "", 10)
+	attachments, attachmentErr := st.ListChatAttachments(conversation.ID)
+	_, conversationErr := st.GetChatConversation(conversation.ID)
+	release()
+	if err != nil || attachmentErr != nil || conversationErr != nil || len(messages.Items) != 0 || len(attachments) != 0 {
+		t.Fatalf("messages=%+v attachments=%+v errors=%v/%v/%v", messages.Items, attachments, err, attachmentErr, conversationErr)
+	}
+}
+
 func TestAdminChatModelCatalogPreservesProviderIdentity(t *testing.T) {
 	mustInitConfig(t)
 	setAdminPassword(t, "pw")
