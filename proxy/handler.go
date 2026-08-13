@@ -5771,6 +5771,18 @@ func (h *Handler) apiResetStats(w http.ResponseWriter, r *http.Request) {
 	atomic.StoreInt64(&h.totalCacheReadTokens, 0)
 	atomic.StoreInt64(&h.totalCacheCreationTokens, 0)
 	atomic.StoreInt64(&h.totalResponseCacheHits, 0)
+	atomic.StoreInt64(&h.totalLegacyTokens, 0)
+	atomic.StoreInt64(&h.totalDetailedTokenRows, 0)
+	atomic.StoreInt64(&h.totalLegacyTokenRows, 0)
+	if st, unlock := h.runtimeStoreForOperation(); st != nil {
+		defer unlock()
+		if err := st.ClearUsageRollups(); err != nil {
+			logger.Warnf("clear usage rollups: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	h.creditsMu.Lock()
 	h.totalCredits = 0
 	h.creditsMu.Unlock()
@@ -5798,11 +5810,6 @@ func (h *Handler) apiClearLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	atomic.StoreInt64(&h.totalInputTokens, 0)
-	atomic.StoreInt64(&h.totalOutputTokens, 0)
-	atomic.StoreInt64(&h.totalCacheReadTokens, 0)
-	atomic.StoreInt64(&h.totalCacheCreationTokens, 0)
-	atomic.StoreInt64(&h.totalResponseCacheHits, 0)
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 

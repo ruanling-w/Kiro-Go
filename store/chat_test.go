@@ -21,7 +21,7 @@ func openChatTestStore(t *testing.T) *Store {
 func TestChatMigrationSchemaAndRecovery(t *testing.T) {
 	s := openChatTestStore(t)
 	var version int
-	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 9 {
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 	for _, table := range []string{"chat_conversations", "chat_messages", "chat_attachments"} {

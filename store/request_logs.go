@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // RequestLogRow is the persisted form of an admin request log entry.
@@ -69,6 +70,26 @@ func (s *Store) InsertRequestLogs(rows []RequestLogRow) error {
 	}
 	defer stmt.Close()
 
+	rollup, err := tx.Prepare(`
+		INSERT INTO usage_rollups(
+		  provider, model, input_tokens, output_tokens, cache_read_tokens,
+		  cache_creation_tokens, response_cache_hits, legacy_tokens,
+		  detailed_rows, legacy_rows
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(provider, model) DO UPDATE SET
+		  input_tokens = input_tokens + excluded.input_tokens,
+		  output_tokens = output_tokens + excluded.output_tokens,
+		  cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+		  cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
+		  response_cache_hits = response_cache_hits + excluded.response_cache_hits,
+		  legacy_tokens = legacy_tokens + excluded.legacy_tokens,
+		  detailed_rows = detailed_rows + excluded.detailed_rows,
+		  legacy_rows = legacy_rows + excluded.legacy_rows`)
+	if err != nil {
+		return fmt.Errorf("store: prepare usage rollup: %w", err)
+	}
+	defer rollup.Close()
+
 	for _, r := range rows {
 		if _, err := stmt.Exec(
 			r.Time, r.Endpoint, r.Model, r.AccountID, r.Status, r.Error, r.ErrorType,
@@ -78,6 +99,26 @@ func (s *Store) InsertRequestLogs(rows []RequestLogRow) error {
 			r.InputTokens, r.OutputTokens, r.CacheReadTokens, r.CacheCreationTokens, r.Cached,
 		); err != nil {
 			return fmt.Errorf("store: insert log: %w", err)
+		}
+		if r.Status == "success" && r.Endpoint != "combo_attempt" {
+			detailed := r.InputTokens != 0 || r.OutputTokens != 0 || r.CacheReadTokens != 0 || r.CacheCreationTokens != 0
+			legacyTokens, detailedRows, legacyRows := 0, 0, 0
+			if detailed {
+				detailedRows = 1
+			} else if r.Tokens > 0 {
+				legacyTokens, legacyRows = r.Tokens, 1
+			}
+			cached := 0
+			if r.Cached {
+				cached = 1
+			}
+			if _, err := rollup.Exec(
+				strings.ToLower(strings.TrimSpace(r.Provider)), strings.TrimSpace(r.Model),
+				r.InputTokens, r.OutputTokens, r.CacheReadTokens, r.CacheCreationTokens,
+				cached, legacyTokens, detailedRows, legacyRows,
+			); err != nil {
+				return fmt.Errorf("store: update usage rollup: %w", err)
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -189,8 +230,7 @@ type RequestLogAggregates struct {
 	LegacyRows          int64
 }
 
-// AggregateRequestLogUsage sums successful public request logs. Combo attempts are
-// excluded because their usage is already represented by the client-visible log.
+// AggregateRequestLogUsage sums durable client-visible usage rollups.
 func (s *Store) AggregateRequestLogUsage() (RequestLogAggregates, error) {
 	var out RequestLogAggregates
 	if s == nil || s.db == nil {
@@ -201,22 +241,11 @@ func (s *Store) AggregateRequestLogUsage() (RequestLogAggregates, error) {
 	       COALESCE(SUM(output_tokens), 0),
 	       COALESCE(SUM(cache_read_tokens), 0),
 	       COALESCE(SUM(cache_creation_tokens), 0),
-	       COALESCE(SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END), 0),
-	       COALESCE(SUM(CASE
-	         WHEN input_tokens = 0 AND output_tokens = 0
-	          AND cache_read_tokens = 0 AND cache_creation_tokens = 0
-	         THEN tokens ELSE 0 END), 0),
-	       COALESCE(SUM(CASE
-	         WHEN input_tokens <> 0 OR output_tokens <> 0
-	          OR cache_read_tokens <> 0 OR cache_creation_tokens <> 0
-	         THEN 1 ELSE 0 END), 0),
-	       COALESCE(SUM(CASE
-	         WHEN input_tokens = 0 AND output_tokens = 0
-	          AND cache_read_tokens = 0 AND cache_creation_tokens = 0
-	          AND tokens > 0
-	         THEN 1 ELSE 0 END), 0)
-	FROM request_logs
-	WHERE status = 'success' AND endpoint <> 'combo_attempt'`).Scan(
+	       COALESCE(SUM(response_cache_hits), 0),
+	       COALESCE(SUM(legacy_tokens), 0),
+	       COALESCE(SUM(detailed_rows), 0),
+	       COALESCE(SUM(legacy_rows), 0)
+	FROM usage_rollups`).Scan(
 		&out.InputTokens,
 		&out.OutputTokens,
 		&out.CacheReadTokens,
@@ -230,6 +259,19 @@ func (s *Store) AggregateRequestLogUsage() (RequestLogAggregates, error) {
 		return RequestLogAggregates{}, fmt.Errorf("store: aggregate request log usage: %w", err)
 	}
 	return out, nil
+}
+
+// ClearUsageRollups resets durable detailed usage without deleting request history.
+func (s *Store) ClearUsageRollups() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.Exec(`DELETE FROM usage_rollups`); err != nil {
+		return fmt.Errorf("store: clear usage rollups: %w", err)
+	}
+	return nil
 }
 
 // ClearRequestLogs deletes all persisted request logs.

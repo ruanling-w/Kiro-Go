@@ -120,6 +120,27 @@ func TestAggregateRequestLogUsageSeparatesLegacyTokens(t *testing.T) {
 	if got.LegacyTokens != 75 || got.DetailedRows != 1 || got.LegacyRows != 1 {
 		t.Fatalf("coverage=%+v", got)
 	}
+
+	if err := s.PruneRequestLogs(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClearRequestLogs(); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.AggregateRequestLogUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.InputTokens != 120 || got.LegacyTokens != 75 {
+		t.Fatalf("rollup changed after prune/clear: %+v", got)
+	}
+	if err := s.ClearUsageRollups(); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.AggregateRequestLogUsage()
+	if err != nil || got != (RequestLogAggregates{}) {
+		t.Fatalf("rollup reset=%+v err=%v", got, err)
+	}
 }
 
 func TestPruneAndClearLogs(t *testing.T) {

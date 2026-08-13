@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	schemaVersion = 9
+	schemaVersion = 10
 	driverName    = "sqlite"
 )
 
@@ -239,6 +239,19 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_client_request ON chat_messages(conversation_id, client_request_id) WHERE client_request_id <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_attachments_conversation ON chat_attachments(conversation_id, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_attachments_message ON chat_attachments(message_id, created_at, id)`,
+		`CREATE TABLE IF NOT EXISTS usage_rollups (
+		  provider TEXT NOT NULL,
+		  model TEXT NOT NULL,
+		  input_tokens INTEGER NOT NULL DEFAULT 0,
+		  output_tokens INTEGER NOT NULL DEFAULT 0,
+		  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		  cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+		  response_cache_hits INTEGER NOT NULL DEFAULT 0,
+		  legacy_tokens INTEGER NOT NULL DEFAULT 0,
+		  detailed_rows INTEGER NOT NULL DEFAULT 0,
+		  legacy_rows INTEGER NOT NULL DEFAULT 0,
+		  PRIMARY KEY (provider, model)
+		)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {
@@ -377,6 +390,30 @@ CREATE TABLE IF NOT EXISTS key_ip_stats (
 			if _, err := tx.Exec(column.statement); err != nil {
 				return fmt.Errorf("store: add request log %s column: %w", column.name, err)
 			}
+		}
+	}
+	if ver < 10 {
+		if _, err := tx.Exec(`
+			INSERT INTO usage_rollups(
+			  provider, model, input_tokens, output_tokens, cache_read_tokens,
+			  cache_creation_tokens, response_cache_hits, legacy_tokens,
+			  detailed_rows, legacy_rows
+			)
+			SELECT LOWER(TRIM(provider)), TRIM(model),
+			       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			       COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0),
+			       COALESCE(SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END), 0),
+			       COALESCE(SUM(CASE WHEN input_tokens = 0 AND output_tokens = 0
+			         AND cache_read_tokens = 0 AND cache_creation_tokens = 0 THEN tokens ELSE 0 END), 0),
+			       COALESCE(SUM(CASE WHEN input_tokens <> 0 OR output_tokens <> 0
+			         OR cache_read_tokens <> 0 OR cache_creation_tokens <> 0 THEN 1 ELSE 0 END), 0),
+			       COALESCE(SUM(CASE WHEN input_tokens = 0 AND output_tokens = 0
+			         AND cache_read_tokens = 0 AND cache_creation_tokens = 0 AND tokens > 0 THEN 1 ELSE 0 END), 0)
+			FROM request_logs
+			WHERE status = 'success' AND endpoint <> 'combo_attempt'
+			GROUP BY LOWER(TRIM(provider)), TRIM(model)
+			ON CONFLICT(provider, model) DO NOTHING`); err != nil {
+			return fmt.Errorf("store: backfill usage rollups: %w", err)
 		}
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = ?`, schemaVersion); err != nil {
