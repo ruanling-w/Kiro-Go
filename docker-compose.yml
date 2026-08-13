@@ -3,16 +3,17 @@ services:
     build: .
     container_name: kiro-go
     ports:
-      - "127.0.0.1:8080:8080"    # chỉ bind localhost, Caddy systemd sẽ proxy vào
+      - "127.0.0.1:18080:8080"
       - "127.0.0.1:3128:3128"
       - "127.0.0.1:3129:3129"
       - "127.0.0.1:56121:56121"
     volumes:
-      - ./data:/app/data
+      - /home/ruanling/.kirogo:/app/data
+    env_file:
+      - /home/ruanling/.kirogo/.env
     environment:
       - CONFIG_PATH=/app/data/config.json
       - KIRO_SSO_CALLBACK_BIND=0.0.0.0
       - ANTIGRAVITY_CALLBACK_BIND=0.0.0.0
       - XAI_CALLBACK_BIND=0.0.0.0
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
     restart: unless-stopped

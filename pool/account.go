@@ -179,6 +179,52 @@ func (p *AccountPool) accountHasModel(accountID, model string) bool {
 	return list[strings.ToLower(strings.TrimSpace(model))]
 }
 
+// BucketOf returns the normalized provider bucket for an account.
+func BucketOf(account *config.Account) string {
+	if account == nil {
+		return ""
+	}
+	p := strings.ToLower(strings.TrimSpace(account.Provider))
+	switch p {
+	case "antigravity", "grok", "xai", "codex", "remotekiro", "remote-kiro":
+		if p == "xai" {
+			return "grok"
+		}
+		if p == "remote-kiro" {
+			return "remotekiro"
+		}
+		return p
+	}
+
+	a := strings.ToLower(strings.TrimSpace(account.AuthMethod))
+	switch a {
+	case "antigravity", "grok", "codex", "remotekiro", "remote-kiro":
+		if a == "remote-kiro" {
+			return "remotekiro"
+		}
+		return a
+	}
+
+	if account.RemoteBaseURL != "" {
+		return "remotekiro"
+	}
+	return "kiro"
+}
+
+// parseModelRouting extracts an optional provider constraint from a Combo candidate.
+func parseModelRouting(candidate string) (targetProvider, targetModel string) {
+	targetProvider, targetModel, qualified := strings.Cut(strings.TrimSpace(candidate), "::")
+	if !qualified {
+		return "", targetModel
+	}
+	targetProvider = strings.ToLower(strings.TrimSpace(targetProvider))
+	targetModel = strings.TrimSpace(targetModel)
+	if targetProvider == "" || targetModel == "" || strings.Contains(targetModel, "::") {
+		return "", ""
+	}
+	return targetProvider, targetModel
+}
+
 // GetNextForModel 获取下一个支持指定模型的可用账号。
 // model 应为去掉 thinking 后缀的实际模型名。
 // 若无账号有该模型列表数据，行为与 GetNext 相同（乐观路由）。
@@ -206,6 +252,11 @@ func (p *AccountPool) GetNextForModelAndProviderExcluding(model, provider string
 	n := len(p.accounts)
 	seen := make(map[string]bool)
 
+	targetProvider, targetModel := parseModelRouting(model)
+	if targetModel == "" {
+		return nil
+	}
+
 	for i := 0; i < n; i++ {
 		idx := atomic.AddUint64(&p.currentIndex, 1) % uint64(n)
 		acc := &p.accounts[idx]
@@ -217,11 +268,15 @@ func (p *AccountPool) GetNextForModelAndProviderExcluding(model, provider string
 		if seen[acc.ID] {
 			continue
 		}
-		if !accountMatchesProvider(acc, provider) {
+
+		if targetProvider == "" {
+			targetProvider = provider
+		}
+		if targetProvider != "" && !accountMatchesProvider(acc, targetProvider) {
 			seen[acc.ID] = true
 			continue
 		}
-		if !p.accountHasModel(acc.ID, model) {
+		if !p.accountHasModel(acc.ID, targetModel) {
 			seen[acc.ID] = true
 			continue
 		}
@@ -248,10 +303,13 @@ func (p *AccountPool) GetNextForModelAndProviderExcluding(model, provider string
 		if excluded != nil && excluded[acc.ID] {
 			continue
 		}
-		if !accountMatchesProvider(acc, provider) {
+		if targetProvider == "" {
+			targetProvider = provider
+		}
+		if targetProvider != "" && !accountMatchesProvider(acc, targetProvider) {
 			continue
 		}
-		if !p.accountHasModel(acc.ID, model) {
+		if !p.accountHasModel(acc.ID, targetModel) {
 			continue
 		}
 		if isQuotaBlocked(*acc, allowOverUsage) {

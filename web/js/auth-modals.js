@@ -994,7 +994,7 @@ export function modalCodex(title, body) {
     '<div id="codexImportPane" class="hidden">' +
     '<div class="form-group">' +
     '<label>' + escapeHtml(t('codex.token') || 'Token / auth.json') + '</label>' +
-    '<textarea id="codexToken" class="font-mono" rows="5" placeholder=\'{"accessToken":"...","refreshToken":"...","idToken":"..."} or a single ChatGPT access token\'></textarea>' +
+    '<textarea id="codexToken" class="font-mono" rows="5" placeholder=\'[{"accessToken":"...","refreshToken":"...","idToken":"..."}] or a single ChatGPT access token\'></textarea>' +
     '<p class="help-block text-xs mt-1">' + escapeHtml(t('codex.tokenHint') || 'Paste a full auth.json (with refresh token) or a single ChatGPT access token.') + '</p>' +
     '</div>' +
     '<div class="form-group">' +
@@ -1096,39 +1096,63 @@ export async function importCodexAccount() {
     return toastError((t('codex.token') || 'Token') + ' is required');
   }
 
-  // Accept either a full auth.json object or a single access token string.
-  const payload = { weight };
-  if (raw[0] === '{') {
+  // Accept: single access token string, one auth.json object, or an array of objects.
+  let payloads = [];
+  if (raw[0] === '{' || raw[0] === '[') {
     try {
       const parsed = JSON.parse(raw);
-      payload.accessToken = parsed.accessToken || parsed.access_token || '';
-      payload.refreshToken = parsed.refreshToken || parsed.refresh_token || '';
-      payload.idToken = parsed.idToken || parsed.id_token || '';
-      payload.expiresIn = parsed.expiresIn || parsed.expires_in || 0;
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      payloads = items.map((item) => ({
+        weight,
+        accessToken: (item && (item.accessToken || item.access_token)) || '',
+        refreshToken: (item && (item.refreshToken || item.refresh_token)) || '',
+        idToken: (item && (item.idToken || item.id_token)) || '',
+        expiresIn: (item && (item.expiresIn || item.expires_in)) || 0,
+      }));
     } catch (e) {
       return toastError('Invalid auth.json: ' + (e.message || e));
     }
   } else {
-    payload.accessToken = raw;
+    payloads = [{ weight, accessToken: raw }];
   }
-  if (!payload.accessToken) {
+
+  payloads = payloads.filter((p) => p && String(p.accessToken || '').trim());
+  if (payloads.length === 0) {
     return toastError('accessToken is required');
   }
 
-  try {
-    const res = await api('/accounts/codex/import', { method: 'POST', body: JSON.stringify(payload) });
-    const d = await res.json();
-    if (!res.ok || !d.success) {
-      throw new Error(d.error || 'Failed to add Codex account');
+  let ok = 0;
+  let fail = 0;
+  let firstAccount = null;
+  for (const payload of payloads) {
+    try {
+      const res = await api('/accounts/codex/import', { method: 'POST', body: JSON.stringify(payload) });
+      const d = await res.json();
+      if (!res.ok || !d.success) {
+        fail++;
+        continue;
+      }
+      ok++;
+      if (!firstAccount) firstAccount = d.account || null;
+    } catch {
+      fail++;
     }
+  }
+
+  if (ok > 0) {
     closeModal();
     await loadAccounts();
     await loadStats();
-    toastPrimary(t('builderid.success') + ': ' + (d.account?.email || d.account?.id));
-    autoRefreshNewAccount(d.account?.id);
-  } catch (e) {
-    toastError('Failed to add Codex account: ' + (e.message || e));
+    if (ok === 1 && fail === 0 && firstAccount) {
+      toastPrimary(t('builderid.success') + ': ' + (firstAccount.email || firstAccount.id));
+      autoRefreshNewAccount(firstAccount.id);
+    } else {
+      toastPrimary('Codex import: ' + ok + ' success, ' + fail + ' failed');
+      if (firstAccount?.id) autoRefreshNewAccount(firstAccount.id);
+    }
+    return;
   }
+  toastError('Failed to add Codex account');
 }
 
 export function updateLocalFields() {

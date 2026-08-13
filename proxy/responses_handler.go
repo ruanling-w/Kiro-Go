@@ -325,12 +325,12 @@ func (h *Handler) handleResponsesStream(
 	estimatedInputTokens int, apiKeyID, clientIP, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
 ) {
-	h.handleResponsesStreamModels(ctx, w, payload, model, model, false, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, req, storedInput, storeResponse)
+	h.handleResponsesStreamModels(ctx, w, payload, model, model, model, false, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, req, storedInput, storeResponse)
 }
 
 func (h *Handler) handleResponsesStreamModels(
 	ctx context.Context,
-	w http.ResponseWriter, payload *KiroPayload, effectiveModel, publicModel string, comboAttempt bool, thinking bool,
+	w http.ResponseWriter, payload *KiroPayload, routingModel, effectiveModel, publicModel string, comboAttempt bool, thinking bool,
 	estimatedInputTokens int, apiKeyID, clientIP, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
 ) {
@@ -378,7 +378,7 @@ func (h *Handler) handleResponsesStreamModels(
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		var account *config.Account
 		if h.pool != nil {
-			account = h.pool.GetNextForModelExcluding(effectiveModel, excluded)
+			account = h.pool.GetNextForModelExcluding(routingModel, excluded)
 		}
 		if account == nil {
 			break

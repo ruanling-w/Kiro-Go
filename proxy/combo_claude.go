@@ -25,8 +25,9 @@ func (h *Handler) handleClaudeComboNonStream(ctx context.Context, w http.Respons
 	start := time.Now()
 	var lastErr error
 	for _, candidate := range route.Candidates {
+		model := comboUpstreamModel(candidate.Model)
 		req := *original
-		req.Model = candidate.Model
+		req.Model = model
 		effective := cloneClaudeRequestForThinking(&req, thinking)
 		estimatedInput := estimateClaudeRequestInputTokens(effective)
 		cacheProfile := h.promptCache.BuildClaudeProfile(effective, estimatedInput)
@@ -44,7 +45,7 @@ func (h *Handler) handleClaudeComboNonStream(ctx context.Context, w http.Respons
 				continue
 			}
 			cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
-			result, err := h.executeClaudeComboAttempt(ctx, account, payload, candidate.Model, thinking, estimatedInput)
+			result, err := h.executeClaudeComboAttempt(ctx, account, payload, model, thinking, estimatedInput)
 			if err != nil {
 				lastErr = err
 				excluded[account.ID] = true
@@ -106,8 +107,9 @@ func (h *Handler) handleClaudeComboStream(ctx context.Context, w http.ResponseWr
 	gate := newStreamCommitGate(w)
 	var lastErr error
 	for _, candidate := range route.Candidates {
+		model := comboUpstreamModel(candidate.Model)
 		req := *original
-		req.Model = candidate.Model
+		req.Model = model
 		effective := cloneClaudeRequestForThinking(&req, thinking)
 		estimatedInput := estimateClaudeRequestInputTokens(effective)
 		cacheProfile := h.promptCache.BuildClaudeProfile(effective, estimatedInput)
@@ -130,7 +132,7 @@ func (h *Handler) handleClaudeComboStream(ctx context.Context, w http.ResponseWr
 			setClaudeStreamHeaders(gate)
 			sink := &comboStreamSink{gate: gate}
 			sse := newClaudeSSEWriter(sink, sink)
-			result := h.streamClaudeAttempt(ctx, account, payload, claudeStreamAttempt{sse: sse, messageID: msgID, effectiveModel: candidate.Model, publicModel: route.RequestedModel, thinking: thinking, thinkingOpts: thinkingOpts, estimatedInputTokens: estimatedInput, cacheProfile: cacheProfile, cacheUsage: cacheUsage})
+			result := h.streamClaudeAttempt(ctx, account, payload, claudeStreamAttempt{sse: sse, messageID: msgID, effectiveModel: model, publicModel: route.RequestedModel, thinking: thinking, thinkingOpts: thinkingOpts, estimatedInputTokens: estimatedInput, cacheProfile: cacheProfile, cacheUsage: cacheUsage})
 			if result.writeErr != nil {
 				if gate.Committed() {
 					return

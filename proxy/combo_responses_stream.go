@@ -37,11 +37,12 @@ func (h *Handler) handleResponsesComboStream(ctx context.Context, w http.Respons
 		return
 	}
 	for _, candidate := range route.Candidates {
+		model := comboUpstreamModel(candidate.Model)
 		attempt := *original
-		attempt.Model = candidate.Model
+		attempt.Model = model
 		gate := newStreamCommitGate(w)
 		sink := &responsesComboSink{gate: gate}
-		h.handleResponsesStreamModels(ctx, sink, OpenAIToKiro(&attempt, thinking), candidate.Model, route.RequestedModel, true, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, req, storedInput, storeResponse)
+		h.handleResponsesStreamModels(ctx, sink, OpenAIToKiro(&attempt, thinking), candidate.Model, model, route.RequestedModel, true, thinking, estimatedInputTokens, apiKeyID, clientIP, respID, req, storedInput, storeResponse)
 		if gate.Committed() {
 			return
 		}

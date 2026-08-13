@@ -11,8 +11,9 @@ func (h *Handler) handleResponsesComboNonStream(ctx context.Context, w http.Resp
 	start := time.Now()
 	var lastErr error
 	for _, candidate := range route.Candidates {
+		model := comboUpstreamModel(candidate.Model)
 		candidateReq := *original
-		candidateReq.Model = candidate.Model
+		candidateReq.Model = model
 		payload := OpenAIToKiro(&candidateReq, thinking)
 		excluded := map[string]bool{}
 		for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
@@ -26,7 +27,7 @@ func (h *Handler) handleResponsesComboNonStream(ctx context.Context, w http.Resp
 				h.handleAccountFailure(account, err)
 				continue
 			}
-			result, err := h.executeOpenAIComboAttempt(ctx, account, payload, candidate.Model, thinking, estimatedInput)
+			result, err := h.executeOpenAIComboAttempt(ctx, account, payload, model, thinking, estimatedInput)
 			if err != nil {
 				lastErr = err
 				excluded[account.ID] = true

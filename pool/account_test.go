@@ -210,6 +210,29 @@ func TestGetNextForModelExcludingReturnsNilOnEmptyPool(t *testing.T) {
 	}
 }
 
+func TestGetNextForModelExcludingHonorsProviderQualifiedModel(t *testing.T) {
+	p := newTestPool(
+		config.Account{ID: "kiro", Provider: "kiro"},
+		config.Account{ID: "grok", Provider: "grok"},
+	)
+	p.SetModelList("kiro", []string{"shared-model"})
+	p.SetModelList("grok", []string{"shared-model"})
+
+	for i := 0; i < 5; i++ {
+		acc := p.GetNextForModelExcluding("grok::shared-model", nil)
+		if acc == nil || acc.ID != "grok" {
+			t.Fatalf("qualified model chose %#v, want grok account", acc)
+		}
+	}
+}
+
+func TestGetNextForModelExcludingRejectsMalformedProviderQualifiedModel(t *testing.T) {
+	p := newTestPool(config.Account{ID: "grok", Provider: "grok"})
+	if acc := p.GetNextForModelExcluding("grok::", nil); acc != nil {
+		t.Fatalf("malformed candidate chose %#v", acc)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DisableAccount
 // ---------------------------------------------------------------------------

@@ -124,7 +124,7 @@
   "accounts.testSuccess": "Kiểm tra OK",
   "accounts.testFailed": "Kiểm tra thất bại",
   "accounts.testModalTitle": "Kiểm tra tài khoản",
-  "accounts.selectModel": "Chọn mô hình kiểm tra",
+  "accounts.selectModel": "Chọn / gõ để tìm mô hình kiểm tra",
   "accounts.testModelsLoading": "Đang tải mô hình...",
   "accounts.testModelsReady": "Mô hình đã lưu: {0}",
   "accounts.testModelsFallback": "Danh sách mô hình không khả dụng",

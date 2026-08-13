@@ -13,6 +13,7 @@ import {
   importSsoToken,
   importAccountsJson,
   importCodex,
+  type CodexImport,
 } from '@/services/authFlows.service'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -300,26 +301,97 @@ export function CredentialsFlow({ onDone }: FlowComponentProps) {
 // --- Codex credentials import ---
 export function CodexImportFlow({ onDone }: FlowComponentProps) {
   const { t } = useTranslation()
-  const m = useImport(importCodex)
+  const qc = useQueryClient()
+  const m = useMutation({
+    mutationFn: async (payloads: CodexImport[]) => {
+      let ok = 0
+      let fail = 0
+      for (const payload of payloads) {
+        try {
+          const res = await importCodex(payload)
+          if (res?.success) ok++
+          else fail++
+        } catch {
+          fail++
+        }
+      }
+      if (ok === 0) throw new Error('No valid Codex account imported')
+      return { ok, fail }
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.accounts }),
+  })
+  const [rawJson, setRawJson] = useState('')
   const [accessToken, setAccessToken] = useState('')
   const [refreshToken, setRefreshToken] = useState('')
   const [idToken, setIdToken] = useState('')
+  const [localError, setLocalError] = useState('')
 
-  if (m.isSuccess) return <Done onDone={onDone} label={t('accounts.testSuccess')} />
+  if (m.isSuccess) {
+    const ok = m.data?.ok || 0
+    const fail = m.data?.fail || 0
+    const label = fail > 0 ? `Imported ${ok} account(s), failed ${fail}.` : `Imported ${ok} account(s).`
+    return <Done onDone={onDone} label={label} />
+  }
 
   function submit(e: FormEvent) {
     e.preventDefault()
-    m.mutate({
-      accessToken: accessToken.trim(),
-      refreshToken: refreshToken.trim(),
-      idToken: idToken.trim() || undefined,
-    })
+    setLocalError('')
+
+    let payloads: CodexImport[] = [
+      {
+        accessToken: accessToken.trim(),
+        refreshToken: refreshToken.trim(),
+        idToken: idToken.trim() || undefined,
+      },
+    ]
+
+    if (rawJson.trim()) {
+      try {
+        const parsed = JSON.parse(rawJson.trim())
+        if (!parsed || typeof parsed !== 'object') {
+          throw new Error('invalid')
+        }
+        const items = Array.isArray(parsed) ? parsed : [parsed]
+        payloads = items
+          .map((item) => {
+            const rawExpires = (item as Record<string, unknown>)?.expiresIn ?? (item as Record<string, unknown>)?.expires_in
+            const expiresNum = typeof rawExpires === 'number' ? rawExpires : Number(rawExpires)
+            return {
+              accessToken: String((item as Record<string, unknown>)?.accessToken ?? (item as Record<string, unknown>)?.access_token ?? '').trim(),
+              refreshToken: String((item as Record<string, unknown>)?.refreshToken ?? (item as Record<string, unknown>)?.refresh_token ?? '').trim(),
+              idToken: String((item as Record<string, unknown>)?.idToken ?? (item as Record<string, unknown>)?.id_token ?? '').trim() || undefined,
+              expiresIn: Number.isFinite(expiresNum) && expiresNum > 0 ? expiresNum : undefined,
+            } satisfies CodexImport
+          })
+          .filter((item) => item.accessToken)
+      } catch {
+        return setLocalError('Invalid JSON. Paste a JSON object or array with accessToken/refreshToken/idToken fields.')
+      }
+    }
+
+    if (payloads.length === 0) {
+      return setLocalError('accessToken is required')
+    }
+
+    m.mutate(payloads)
   }
+
   return (
     <form onSubmit={submit} className="space-y-4">
       <div className="space-y-2">
+        <Label>JSON credentials</Label>
+        <textarea
+          value={rawJson}
+          onChange={(e) => setRawJson(e.target.value)}
+          placeholder={`[{"accessToken":"...","refreshToken":"...","idToken":"...","expiresIn":3600}]`}
+          className="min-h-24 w-full rounded-lg border bg-transparent px-3 py-2 font-mono text-xs"
+          autoFocus
+        />
+        <p className="text-xs text-muted-foreground">Paste a JSON object or array with accessToken / refreshToken / idToken. You can also fill the fields below manually.</p>
+      </div>
+      <div className="space-y-2">
         <Label>Access Token</Label>
-        <PasswordInput value={accessToken} onChange={(e) => setAccessToken(e.target.value)} autoFocus />
+        <PasswordInput value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
       </div>
       <div className="space-y-2">
         <Label>Refresh Token</Label>
@@ -329,8 +401,13 @@ export function CodexImportFlow({ onDone }: FlowComponentProps) {
         <Label>ID Token</Label>
         <PasswordInput value={idToken} onChange={(e) => setIdToken(e.target.value)} />
       </div>
+      {localError && (
+        <p className="text-sm text-destructive" role="alert">
+          {localError}
+        </p>
+      )}
       <ErrorNote error={m.error} />
-      <Button type="submit" className="w-full" disabled={!accessToken.trim() || !refreshToken.trim() || m.isPending}>
+      <Button type="submit" className="w-full" disabled={(!accessToken.trim() && !rawJson.trim()) || m.isPending}>
         {m.isPending ? <HamsterWheel size="sm" /> : t('accounts.add')}
       </Button>
     </form>

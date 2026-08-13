@@ -26,8 +26,9 @@ func (h *Handler) handleOpenAIComboNonStream(ctx context.Context, w http.Respons
 	start := time.Now()
 	var lastErr error
 	for _, candidate := range route.Candidates {
+		model := comboUpstreamModel(candidate.Model)
 		req := *original
-		req.Model = candidate.Model
+		req.Model = model
 		payload := OpenAIToKiro(&req, thinking)
 		excluded := map[string]bool{}
 		for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
@@ -41,7 +42,7 @@ func (h *Handler) handleOpenAIComboNonStream(ctx context.Context, w http.Respons
 				h.handleAccountFailure(account, err)
 				continue
 			}
-			result, err := h.executeOpenAIComboAttempt(ctx, account, payload, candidate.Model, thinking, estimatedInputTokens)
+			result, err := h.executeOpenAIComboAttempt(ctx, account, payload, model, thinking, estimatedInputTokens)
 			if err != nil {
 				lastErr = err
 				excluded[account.ID] = true
@@ -169,8 +170,9 @@ func (h *Handler) handleOpenAIComboStream(ctx context.Context, w http.ResponseWr
 
 	var lastErr error
 	for _, candidate := range route.Candidates {
+		model := comboUpstreamModel(candidate.Model)
 		req := *original
-		req.Model = candidate.Model
+		req.Model = model
 		payload := OpenAIToKiro(&req, thinking)
 		excluded := map[string]bool{}
 		for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
@@ -194,7 +196,7 @@ func (h *Handler) handleOpenAIComboStream(ctx context.Context, w http.ResponseWr
 			result := h.streamOpenAIAttempt(ctx, account, payload, openAIStreamAttempt{
 				sse:            sse,
 				chatID:         chatID,
-				effectiveModel: candidate.Model,
+				effectiveModel: model,
 				// Public identity stays the Combo name for every frame.
 				publicModel:          route.RequestedModel,
 				thinking:             thinking,

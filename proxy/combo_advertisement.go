@@ -51,14 +51,14 @@ func advertisedComboRoutable(h *Handler, c store.Combo) bool {
 	for _, candidate := range c.Models {
 		model := strings.TrimSpace(candidate.Model)
 		key := strings.ToLower(model)
-		if key == "" || len(model) > comboModelIDMaxBytes || seen[key] || !known[key] {
+		if key == "" || len(model) > comboModelIDMaxBytes || seen[key] || !h.isKnownComboCandidate(model, known) {
 			return false
 		}
 		seen[key] = true
 	}
 	if c.Strategy == "fusion" {
-		judge := strings.ToLower(strings.TrimSpace(c.JudgeModel))
-		if c.FusionQuorum < 1 || c.FusionQuorum > len(c.Models) || c.FusionTimeout < 100 || c.FusionTimeout > 300000 || judge == "" || !known[judge] {
+		judge := strings.TrimSpace(c.JudgeModel)
+		if c.FusionQuorum < 1 || c.FusionQuorum > len(c.Models) || c.FusionTimeout < 100 || c.FusionTimeout > 300000 || judge == "" || !h.isKnownComboCandidate(judge, known) {
 			return false
 		}
 	}

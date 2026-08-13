@@ -4,6 +4,7 @@
 import { useTranslation } from 'react-i18next'
 import { ProviderIcon } from '@/components/shared/ProviderIcon'
 import { bucketOf, providerMeta } from '@/config/providers'
+import { parseModelRouting } from '@/lib/comboModelUtils'
 import { cn } from '@/lib/utils'
 
 const PROVIDER_STYLE: Record<
@@ -79,7 +80,10 @@ export function brandFor(
   model: string | undefined,
   t: (k: string) => string,
 ): Brand | null {
-  const key = provider?.trim() ? bucketOf(provider) : guessBucket(model, provider)
+  const { provider: parsedProvider, model: parsedModel } = parseModelRouting(model || '')
+
+  const effectiveProvider = provider?.trim() ? provider : parsedProvider
+  const key = effectiveProvider ? bucketOf(effectiveProvider) : guessBucket(parsedModel, effectiveProvider)
   if (!key) return null
   const style = PROVIDER_STYLE[key]
   if (!style) return null
@@ -171,19 +175,20 @@ export function ModelChip({
   className?: string
 }) {
   const { t } = useTranslation()
+  const { model: cleanModel } = parseModelRouting(model || '')
   const brand = brandFor(provider, model, t)
   if (!brand) {
     return (
       <span
-        title={model}
+        title={cleanModel}
         className={cn(
           'inline-flex max-w-full items-center rounded-full border bg-background px-2 py-0.5 text-[11px] font-semibold text-muted-foreground',
           className,
         )}
       >
-        <span className="truncate">{model}</span>
+        <span className="truncate">{cleanModel}</span>
       </span>
     )
   }
-  return <BrandChip brand={brand} text={model} title={model} className={className} />
+  return <BrandChip brand={brand} text={cleanModel} title={cleanModel} className={className} />
 }

@@ -46,6 +46,27 @@ func TestValidateComboRejectsReservedUnknownEmptyAndNestedJudge(t *testing.T) {
 	}
 }
 
+func TestValidateComboAcceptsProviderQualifiedModel(t *testing.T) {
+	h := comboValidationHandler()
+	req := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []string{"grok::grok-4"}}
+	if errors := h.validateCombo(req, ""); len(errors) != 0 {
+		t.Fatalf("provider-qualified model rejected: %+v", errors)
+	}
+	if got := comboUpstreamModel("grok::grok-4"); got != "grok-4" {
+		t.Fatalf("upstream model = %q, want grok-4", got)
+	}
+}
+
+func TestValidateComboRejectsMalformedProviderQualifiedModel(t *testing.T) {
+	h := comboValidationHandler()
+	for _, model := range []string{"unknown::grok-4", "grok::", "grok::grok-4::extra"} {
+		req := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []string{model}}
+		if !hasComboFieldError(h.validateCombo(req, ""), "models") {
+			t.Fatalf("model %q was accepted", model)
+		}
+	}
+}
+
 func TestValidateComboRejectsDirectNameCollisionAndOversizedModelIDs(t *testing.T) {
 	h := comboValidationHandler()
 	base := comboRequest{Name: "gpt-4-turbo", Strategy: "fallback", StickyLimit: 1, Models: []comboCandidate{{Model: "gpt-4"}}}

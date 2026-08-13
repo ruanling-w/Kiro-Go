@@ -901,9 +901,12 @@ export function renderTestModal() {
   const modelField = state.testModalLoadingModels
     ? '<div class="test-model-loading">' + escapeHtml(t('accounts.testModelsLoading')) + '</div>'
     : state.testModalModels.length
-      ? '<select id="testModelChoice">' +
-      state.testModalModels.map(m => '<option value="' + escapeAttr(m) + '">' + escapeHtml(m) + '</option>').join('') +
-      '</select>'
+      ? '<div class="test-model-search">' +
+        '<input type="text" id="testModelChoice" placeholder="' + escapeAttr(t('accounts.selectModel')) + '" value="" autocomplete="off" />' +
+        '<div class="test-model-suggestions" id="testModelSuggestions" style="max-height: 220px; overflow: auto; border: 1px solid var(--border-color); border-radius: 12px; padding: 8px; margin-top: 8px; display: grid; gap: 6px; background: var(--card-bg, #fff);">' +
+        '<div class="text-xs muted-text">' + escapeHtml(t('accounts.selectModel')) + '</div>' +
+        '</div>' +
+        '</div>'
       : '<input type="text" id="testModelChoice" placeholder="claude-sonnet-4" value="claude-sonnet-4" />';
 
   body.innerHTML =
@@ -936,6 +939,22 @@ export function renderTestModal() {
     '</div>';
 
   if (!state.testModalLoadingModels) enhanceCustomSelects(body);
+  const modelInput = $('testModelChoice');
+  const suggestionWrap = $('testModelSuggestions');
+  if (modelInput && suggestionWrap && state.testModalModels.length) {
+    const renderSuggestions = () => {
+      const q = modelInput.value.trim().toLowerCase();
+      const matches = state.testModalModels.filter(m => !q || m.toLowerCase().includes(q)).slice(0, 30);
+      suggestionWrap.innerHTML = matches.length
+        ? matches.map(m => '<button type="button" class="test-model-chip" data-model="' + escapeAttr(m) + '" style="text-align:left; border:1px solid var(--border-color); border-radius:10px; padding:8px 10px; background: var(--card-bg, #fff);">' + escapeHtml(m) + '</button>').join('')
+        : '<div class="text-xs muted-text">' + escapeHtml(t('common.noResults') || 'No matches') + '</div>';
+      qsa('.test-model-chip', suggestionWrap).forEach(btn => {
+        btn.addEventListener('click', () => { modelInput.value = btn.dataset.model || ''; modelInput.focus(); renderSuggestions(); });
+      });
+    };
+    modelInput.addEventListener('input', renderSuggestions);
+    renderSuggestions();
+  }
   renderTestLog();
 }
 export async function testAccount(id) {

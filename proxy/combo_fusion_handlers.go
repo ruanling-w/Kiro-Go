@@ -26,13 +26,14 @@ type comboAttemptLogContext struct {
 	SelectedModel   string
 }
 
-func (h *Handler) executeFusionModel(ctx context.Context, req *OpenAIRequest, model, provider string, thinking bool, estimated int, apiKeyID string, meta comboAttemptLogContext) (openAIComboResult, error) {
-	if model == "" {
+func (h *Handler) executeFusionModel(ctx context.Context, req *OpenAIRequest, candidateModel, provider string, thinking bool, estimated int, apiKeyID string, meta comboAttemptLogContext) (openAIComboResult, error) {
+	if candidateModel == "" {
 		return openAIComboResult{}, fmt.Errorf("fusion judge model is required")
 	}
-	if combo, ok := h.lookupComboSnapshot(model); ok {
-		return openAIComboResult{}, fmt.Errorf("fusion judge model %q resolves to Combo %q", model, combo.Name)
+	if combo, ok := h.lookupComboSnapshot(candidateModel); ok {
+		return openAIComboResult{}, fmt.Errorf("fusion judge model %q resolves to Combo %q", candidateModel, combo.Name)
 	}
+	model := comboUpstreamModel(candidateModel)
 	candidate := *req
 	candidate.Model, candidate.Stream, candidate.Tools = model, false, nil
 	payload := OpenAIToKiro(&candidate, thinking)

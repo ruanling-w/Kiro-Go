@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"kiro-go/config"
+	"kiro-go/pool"
 	"kiro-go/store"
 	"net/http"
 	"regexp"
@@ -66,6 +67,78 @@ func comboError(w http.ResponseWriter, status int, message string, fields []comb
 	}
 	_ = json.NewEncoder(w).Encode(body)
 }
+var comboProviders = map[string]bool{
+	"kiro":        true,
+	"antigravity": true,
+	"grok":        true,
+	"codex":       true,
+	"remotekiro":  true,
+}
+
+func parseComboCandidate(value string) (provider, model string, qualified bool) {
+	value = strings.TrimSpace(value)
+	provider, model, qualified = strings.Cut(value, "::")
+	if !qualified {
+		return "", value, false
+	}
+	return strings.ToLower(strings.TrimSpace(provider)), strings.TrimSpace(model), true
+}
+
+func comboUpstreamModel(candidate string) string {
+	provider, model, qualified := parseComboCandidate(candidate)
+	if qualified && comboProviders[provider] && model != "" && !strings.Contains(model, "::") {
+		return model
+	}
+	return strings.TrimSpace(candidate)
+}
+
+func (h *Handler) isKnownComboCandidate(candidate string, known map[string]bool) bool {
+	provider, model, qualified := parseComboCandidate(candidate)
+	if model == "" || (qualified && (!comboProviders[provider] || strings.Contains(model, "::"))) {
+		return false
+	}
+	if !qualified {
+		return known[strings.ToLower(model)]
+	}
+	for _, account := range config.GetAccounts() {
+		if h.pool == nil || pool.BucketOf(&account) != provider {
+			continue
+		}
+		for _, id := range h.pool.GetModelList(account.ID) {
+			if strings.EqualFold(strings.TrimSpace(id), model) {
+				return true
+			}
+		}
+	}
+	switch provider {
+	case "grok":
+		for _, id := range grokModelIDs() {
+			if strings.EqualFold(id, model) {
+				return true
+			}
+		}
+	case "codex":
+		for _, id := range codexModelIDs() {
+			if strings.EqualFold(id, model) {
+				return true
+			}
+		}
+	case "antigravity":
+		for _, id := range antigravityModelIDs() {
+			if strings.EqualFold(id, model) {
+				return true
+			}
+		}
+	case "kiro":
+		for _, id := range fallbackAnthropicModels("-thinking") {
+			if candidateID, ok := id["id"].(string); ok && strings.EqualFold(candidateID, model) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (h *Handler) knownComboModels() map[string]bool {
 	known := map[string]bool{
 		"auto": true, "gpt-4": true, "gpt-4o": true, "gpt-4-turbo": true, "gpt-3.5-turbo": true,
@@ -74,6 +147,11 @@ func (h *Handler) knownComboModels() map[string]bool {
 	thinkingSuffix := "-thinking"
 	for _, model := range fallbackAnthropicModels(thinkingSuffix) {
 		if id, ok := model["id"].(string); ok {
+			known[strings.ToLower(id)] = true
+		}
+	}
+	for _, ids := range [][]string{grokModelIDs(), codexModelIDs(), antigravityModelIDs()} {
+		for _, id := range ids {
 			known[strings.ToLower(id)] = true
 		}
 	}
@@ -152,8 +230,14 @@ func (h *Handler) validateCombo(req comboRequest, id string) []comboFieldError {
 		seen[key] = true
 		if comboNames[modelKey] {
 			out = append(out, comboFieldError{"models", "nested combos are not allowed"})
-		} else if !known[modelKey] {
-			out = append(out, comboFieldError{"models", "contains an unknown model at index " + strconv.Itoa(i)})
+		} else {
+			candidateRef := model
+			if provider != "" {
+				candidateRef = provider + "::" + model
+			}
+			if !h.isKnownComboCandidate(candidateRef, known) {
+				out = append(out, comboFieldError{"models", "contains an unknown model at index " + strconv.Itoa(i)})
+			}
 		}
 	}
 	if req.Strategy == "fusion" {
@@ -164,7 +248,7 @@ func (h *Handler) validateCombo(req comboRequest, id string) []comboFieldError {
 			out = append(out, comboFieldError{"fusionTimeoutMs", "must be between 100 and 300000"})
 		}
 		judgeKey := strings.ToLower(strings.TrimSpace(req.JudgeModel))
-		if judgeKey == "" || len(strings.TrimSpace(req.JudgeModel)) > comboModelIDMaxBytes || comboNames[judgeKey] || !known[judgeKey] {
+		if judgeKey == "" || len(strings.TrimSpace(req.JudgeModel)) > comboModelIDMaxBytes || comboNames[judgeKey] || !h.isKnownComboCandidate(req.JudgeModel, known) {
 			out = append(out, comboFieldError{"judgeModel", "must be a known non-Combo model"})
 		}
 	}
