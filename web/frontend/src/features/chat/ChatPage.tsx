@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { SafeMarkdown } from '@/components/shared/SafeMarkdown'
 import { useConfirm } from '@/components/shared/ConfirmDialog'
 import { chatExportJSON, chatExportMarkdown, downloadChatExport } from './chatExport'
-import { validateChatUploads } from './chatLogic'
+import { reduceChatStream, validateChatUploads, type ChatStreamState } from './chatLogic'
 
 function requestId() {
   return crypto.randomUUID()
@@ -29,8 +29,7 @@ export default function ChatPage() {
   const messages = useChatMessages(activeId)
   const [selectedModel, setSelectedModel] = useState('')
   const [draft, setDraft] = useState('')
-  const [streaming, setStreaming] = useState<ChatMessage | null>(null)
-  const [reasoning, setReasoning] = useState('')
+  const [streamState, setStreamState] = useState<ChatStreamState | null>(null)
   const [pendingImages, setPendingImages] = useState<File[]>([])
   const [imageMode, setImageMode] = useState(false)
   const [imageSize, setImageSize] = useState('auto')
@@ -164,32 +163,26 @@ export default function ChatPage() {
     setUploading(false)
     setDraft('')
     setPendingImages([])
-    setReasoning('')
-    setStreaming({
+    const initialMessage: ChatMessage = {
       id: requestId(), conversationId, parentMessageId: '', clientRequestId: '', role: 'assistant', content: '',
       provider: model?.provider ?? '', model: model?.model ?? '', status: 'streaming', errorCode: '', errorMessage: '',
       requestId: '', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
       createdAt: Date.now(), updatedAt: Date.now(),
-    })
+    }
+    setStreamState({ message: initialMessage, reasoning: '', done: false })
     try {
       await chatService.generate(conversationId, { clientRequestId: requestId(), content, attachmentIds }, abort.signal, (event: ChatStreamEvent) => {
-        if (event.event === 'response.delta') setStreaming((current) => current ? { ...current, content: current.content + event.data.delta } : current)
-        if (event.event === 'response.reasoning_summary.delta') setReasoning((current) => current + event.data.delta)
-        if (event.event === 'response.completed') setStreaming((current) => current ? {
-          ...current, status: 'complete', provider: event.data.provider, model: event.data.model, ...event.data.usage,
-        } : current)
-        if (event.event === 'response.error') setStreaming((current) => current ? { ...current, status: 'error', errorCode: event.data.code, errorMessage: event.data.message } : current)
+        setStreamState((current) => current ? reduceChatStream(current, event) : current)
       })
     } catch (error) {
       if (!abort.signal.aborted) toast.error(error instanceof Error ? error.message : 'Generation failed')
     } finally {
       controller.current = null
-      setStreaming(null)
-      setReasoning('')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: qk.chatMessages(conversationId) }),
         queryClient.invalidateQueries({ queryKey: qk.chatConversations }),
       ])
+      setStreamState(null)
     }
   }
 
@@ -250,12 +243,12 @@ export default function ChatPage() {
         </header>
 
         <div className="flex-1 overflow-y-auto px-4 py-6">
-          {!transcript.length && !streaming ? (
+          {!transcript.length && !streamState ? (
             <div className="grid h-full place-items-center text-center text-muted-foreground"><div><Bot className="mx-auto mb-3 size-10" /><p className="font-medium text-foreground">How can I help?</p><p className="text-sm">Choose a provider and model, then start a conversation.</p></div></div>
           ) : (
             <div className="mx-auto max-w-3xl space-y-6">
               {transcript.map((message, index) => <MessageBubble key={message.id} message={message} userPrompt={message.role === 'assistant' ? transcript.slice(0, index).findLast((candidate) => candidate.role === 'user')?.content : undefined} onRetry={(prompt, image) => { setDraft(prompt); setImageMode(image) }} />)}
-              {streaming && <><MessageBubble message={streaming} />{reasoning && <p className="text-xs text-muted-foreground">Thinking: {reasoning}</p>}</>}
+              {streamState && <><MessageBubble message={streamState.message} />{streamState.reasoning && <p className="text-xs text-muted-foreground">Thinking: {streamState.reasoning}</p>}</>}
             </div>
           )}
         </div>
