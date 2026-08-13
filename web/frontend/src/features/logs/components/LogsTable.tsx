@@ -64,9 +64,10 @@ function EndpointChip({ endpoint }: { endpoint?: string }) {
   )
 }
 
-/** Token breakdown cell: shows in/out split with a total, plus a cache tooltip
- *  and a CACHE badge for response-cache hits. Falls back to the flat `tokens`
- *  total for older log rows that predate the breakdown fields. */
+/** Token breakdown cell: shows input/output/cache categories in one vertical
+ *  column with an all-category display total, plus a CACHE badge for
+ *  response-cache hits. Falls back to the flat `tokens` total for older log
+ *  rows that predate the breakdown fields. */
 function TokensCell({ log }: { log: LiveLog }) {
   const { t } = useTranslation()
   const hasBreakdown =
@@ -78,7 +79,7 @@ function TokensCell({ log }: { log: LiveLog }) {
   const output = log.outputTokens ?? 0
   const cacheRead = log.cacheReadTokens ?? 0
   const cacheCreation = log.cacheCreationTokens ?? 0
-  const total = log.tokens ?? input + output
+  const total = input + output + cacheRead + cacheCreation
 
   const titleParts: string[] = []
   if (hasBreakdown) {
@@ -98,18 +99,18 @@ function TokensCell({ log }: { log: LiveLog }) {
   }
 
   return (
-    <span className="inline-flex items-center gap-1" title={titleParts.join(' · ')}>
+    <span className="inline-flex items-start justify-end gap-1" title={titleParts.join(' · ')}>
       {log.cached && (
         <span className="rounded-sm bg-violet-500/15 px-1 text-[9px] font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300">
           {t('logs.cacheHit')}
         </span>
       )}
-      <span className="inline-flex flex-wrap items-center justify-end gap-x-1 text-[10px]">
+      <span className="inline-flex flex-col items-end gap-0.5 text-[10px] leading-tight">
         <span className="text-sky-600 dark:text-sky-400">in {formatNumber(input)}</span>
         <span className="text-emerald-600 dark:text-emerald-400">cache-r {formatNumber(cacheRead)}</span>
         <span className="text-amber-600 dark:text-amber-400">cache-w {formatNumber(cacheCreation)}</span>
         <span>out {formatNumber(output)}</span>
-        <span className="font-semibold">total {formatNumber(total)}</span>
+        <span className="border-t border-border/60 pt-0.5 font-semibold">total {formatNumber(total)}</span>
       </span>
     </span>
   )
