@@ -26,6 +26,13 @@ export interface StatusSnapshot {
   totalDetailedTokenRows: number
   totalLegacyTokenRows: number
   totalCredits: number
+  estimatedCostUsd: number
+  pricingVersion: string
+  pricedTokens: number
+  unpricedTokens: number
+  unpricedLegacyTokens: number
+  pricingCoverage: number
+  pricingComplete: boolean
   totalRpm: number
   uptime: number
 }

@@ -92,19 +92,19 @@ export default function DashboardPage() {
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
                   <span className="tabular-nums font-medium text-sky-600 dark:text-sky-400">
                     {formatCompact(s?.totalInputTokens ?? 0)}{' '}
-                    <span className="font-normal text-muted-foreground">in</span>
+                    <span className="font-normal text-muted-foreground">{t('stats.inputShort')}</span>
                   </span>
                   <span className="tabular-nums font-medium text-emerald-600 dark:text-emerald-400">
                     {formatCompact(s?.totalOutputTokens ?? 0)}{' '}
-                    <span className="font-normal text-muted-foreground">out</span>
+                    <span className="font-normal text-muted-foreground">{t('stats.outputShort')}</span>
                   </span>
                   {(s?.totalLegacyTokens ?? 0) > 0 && (
                     <span
                       className="tabular-nums font-medium text-amber-600 dark:text-amber-400"
-                      title="Historical tokens recorded before input/output breakdown was available"
+                      title={t('stats.legacyHint')}
                     >
                       {formatCompact(s?.totalLegacyTokens ?? 0)}{' '}
-                      <span className="font-normal text-muted-foreground">legacy</span>
+                      <span className="font-normal text-muted-foreground">{t('stats.legacy')}</span>
                     </span>
                   )}
                 </div>
@@ -118,7 +118,7 @@ export default function DashboardPage() {
               className="h-full"
               icon={Database}
               label={t('stats.cacheReadTokens')}
-              count={s?.totalCacheReadTokens ?? s?.totalCacheTokens ?? 0}
+              count={s?.totalCacheReadTokens ?? 0}
               format={formatCompact}
             >
               <div className="mt-1 space-y-1 text-xs text-muted-foreground">
@@ -150,11 +150,24 @@ export default function DashboardPage() {
               className="h-full"
               icon={Coins}
               label={t('stats.estCost')}
-              count={s?.totalCredits ?? 0}
-              format={(n) => `~$${n.toFixed(2)}`}
-              tone="warning"
-              hint={t('stats.estCostHint')}
-            />
+              count={s?.estimatedCostUsd ?? 0}
+              format={(n) => `~$${n.toFixed(n < 0.01 && n > 0 ? 4 : 2)}`}
+              tone={s?.pricingComplete === false ? 'warning' : 'default'}
+              hint={
+                s
+                  ? `${t(s.pricingComplete ? 'stats.costComplete' : 'stats.costPartial')} · ${Math.round(s.pricingCoverage * 100)}% · ${s.pricingVersion}`
+                  : t('stats.estCostHint')
+              }
+            >
+              {s && !s.pricingComplete && (
+                <div className="mt-1 space-y-1 text-xs text-muted-foreground">
+                  <div>{formatCompact(s.unpricedTokens)} {t('stats.unpricedTokens')}</div>
+                  {s.unpricedLegacyTokens > 0 && (
+                    <div>{formatCompact(s.unpricedLegacyTokens)} {t('stats.unpricedLegacyTokens')}</div>
+                  )}
+                </div>
+              )}
+            </StatCard>
           </StaggerItem>
 
           {/* 7 — RPM live */}
