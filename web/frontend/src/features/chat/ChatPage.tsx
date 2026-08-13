@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { SafeMarkdown } from '@/components/shared/SafeMarkdown'
 import { useConfirm } from '@/components/shared/ConfirmDialog'
 import { chatExportJSON, chatExportMarkdown, downloadChatExport } from './chatExport'
+import { validateChatUploads } from './chatLogic'
 
 function requestId() {
   return crypto.randomUUID()
@@ -98,9 +99,12 @@ export default function ChatPage() {
       toast.error('The selected model does not support image input')
       return
     }
-    const valid = files.filter((file) => ['image/png', 'image/jpeg', 'image/webp'].includes(file.type) && file.size <= 10 * 1024 * 1024)
-    if (valid.length !== files.length) toast.error('Use PNG, JPEG, or WebP images up to 10 MiB')
-    setPendingImages((current) => [...current, ...valid].slice(0, 4))
+    setPendingImages((current) => {
+      const result = validateChatUploads(current, files)
+      if (result.rejected === 'too_many') toast.error('You can attach at most four images')
+      if (result.rejected === 'invalid_image') toast.error('Use non-empty PNG, JPEG, or WebP images up to 10 MiB')
+      return result.rejected ? current : result.accepted
+    })
   }
 
   async function send() {
