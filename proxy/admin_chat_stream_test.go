@@ -105,6 +105,49 @@ func TestAdminChatGenerateStreamPersistsPartialError(t *testing.T) {
 	}
 }
 
+func TestAdminChatGenerateStreamConcurrencyLimitAndRelease(t *testing.T) {
+	mustInitConfig(t)
+	setAdminPassword(t, "pw")
+	h := newAdminChatTestHandler(t)
+	h.chatTextSemaphore = make(chan struct{}, 1)
+	first := createGenerateTestConversation(t, h, "kiro", "claude")
+	second := createGenerateTestConversation(t, h, "kiro", "claude")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	h.chatTextStreamExecutor = func(_ context.Context, req chatTextExecutionRequest, _ chatTextStreamCallbacks) (chatTextExecutionResult, error) {
+		close(entered)
+		<-release
+		return chatTextExecutionResult{Content: "done", Provider: "kiro", Model: "claude", RequestID: req.RequestID}, nil
+	}
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		h.handleAdminAPI(w, chatSSEGenerateRequest(http.MethodPost, "/admin/api/chat/conversations/"+first.ID+"/generate", `{"clientRequestId":"first","content":"one"}`, "pw"))
+		firstDone <- w
+	}()
+	<-entered
+
+	w := httptest.NewRecorder()
+	h.handleAdminAPI(w, chatSSEGenerateRequest(http.MethodPost, "/admin/api/chat/conversations/"+second.ID+"/generate", `{"clientRequestId":"second","content":"two"}`, "pw"))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"code":"concurrency_limit"`) || !strings.Contains(w.Body.String(), "event: done") {
+		t.Fatalf("overload status=%d stream=%s", w.Code, w.Body.String())
+	}
+	assistant := findAssistantMessage(t, h, second.ID)
+	if assistant.Status != "error" || assistant.ErrorCode != "concurrency_limit" {
+		t.Fatalf("assistant=%+v", assistant)
+	}
+
+	close(release)
+	completed := <-firstDone
+	if completed.Code != http.StatusOK || !strings.Contains(completed.Body.String(), "event: response.completed") {
+		t.Fatalf("first status=%d stream=%s", completed.Code, completed.Body.String())
+	}
+	if len(h.chatTextSemaphore) != 0 {
+		t.Fatalf("semaphore permit leaked: %d", len(h.chatTextSemaphore))
+	}
+}
+
 func TestAdminChatGenerateStreamReplayDoesNotExecute(t *testing.T) {
 	mustInitConfig(t)
 	setAdminPassword(t, "pw")
