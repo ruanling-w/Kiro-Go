@@ -164,6 +164,26 @@ func TestAdminChatAttachmentSniffsMIMEAndRejectsPixelBomb(t *testing.T) {
 	}
 }
 
+func TestAdminChatAttachmentRejectsTotalRequestLimit(t *testing.T) {
+	mustInitConfig(t)
+	setAdminPassword(t, "pw")
+	h := newAdminChatTestHandler(t)
+	h.chatAssetRoot = filepath.Join(t.TempDir(), "assets")
+	conversation := createGenerateTestConversation(t, h, "kiro", "vision")
+
+	boundary := "limit"
+	body := strings.NewReader("--" + boundary + "\r\nContent-Disposition: form-data; name=\"files\"; filename=\"large.png\"\r\nContent-Type: image/png\r\n\r\n" + strings.Repeat("x", chatAttachmentRequestMax) + "\r\n--" + boundary + "--\r\n")
+	r := chatAdminRequest(http.MethodPost, "/admin/api/chat/conversations/"+conversation.ID+"/attachments", "", "pw")
+	r.Body = io.NopCloser(body)
+	r.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	w := httptest.NewRecorder()
+	h.handleAdminAPI(w, r)
+	if w.Code != http.StatusUnprocessableEntity && w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	assertNoChatAttachments(t, h, conversation.ID)
+}
+
 func TestAdminChatAttachmentRejectsMalformedAndExcessiveDimensions(t *testing.T) {
 	mustInitConfig(t)
 	setAdminPassword(t, "pw")
