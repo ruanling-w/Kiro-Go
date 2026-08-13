@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -65,6 +68,100 @@ func uploadChatImage(t *testing.T, h *Handler, conversationID, filename string, 
 		t.Fatalf("attachments=%+v", response.Data)
 	}
 	return response.Data[0]
+}
+
+func pngWithDimensions(t *testing.T, width, height uint32) []byte {
+	t.Helper()
+	data := append([]byte(nil), testPNG(t)...)
+	binary.BigEndian.PutUint32(data[16:20], width)
+	binary.BigEndian.PutUint32(data[20:24], height)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	return data
+}
+
+func uploadChatMultipart(t *testing.T, h *Handler, conversationID string, files map[string][]byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for name, data := range files {
+		part, err := writer.CreateFormFile("files", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = part.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := chatAdminRequest(http.MethodPost, "/admin/api/chat/conversations/"+conversationID+"/attachments", "", "pw")
+	r.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+	r.ContentLength = int64(body.Len())
+	r.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	h.handleAdminAPI(w, r)
+	return w
+}
+
+func assertNoChatAttachments(t *testing.T, h *Handler, conversationID string) {
+	t.Helper()
+	st, unlock := h.runtimeStoreForOperation()
+	attachments, err := st.ListChatAttachments(conversationID)
+	unlock()
+	if err != nil || len(attachments) != 0 {
+		t.Fatalf("attachments=%+v err=%v", attachments, err)
+	}
+	entries, err := os.ReadDir(filepath.Join(h.chatAssetRoot, conversationID))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("asset entries=%v", entries)
+	}
+}
+
+func TestAdminChatAttachmentUploadLimitsRollback(t *testing.T) {
+	mustInitConfig(t)
+	setAdminPassword(t, "pw")
+	h := newAdminChatTestHandler(t)
+	h.chatAssetRoot = filepath.Join(t.TempDir(), "assets")
+	conversation := createGenerateTestConversation(t, h, "kiro", "vision")
+	imageData := testPNG(t)
+
+	files := map[string][]byte{}
+	for i := range 5 {
+		files[fmt.Sprintf("image-%d.png", i)] = imageData
+	}
+	w := uploadChatMultipart(t, h, conversation.ID, files)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "too_many_attachments") {
+		t.Fatalf("five files status=%d body=%s", w.Code, w.Body.String())
+	}
+	assertNoChatAttachments(t, h, conversation.ID)
+
+	w = uploadChatMultipart(t, h, conversation.ID, map[string][]byte{"large.png": make([]byte, chatAttachmentMaxBytes+1)})
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "invalid_image") {
+		t.Fatalf("large file status=%d body=%s", w.Code, w.Body.String())
+	}
+	assertNoChatAttachments(t, h, conversation.ID)
+}
+
+func TestAdminChatAttachmentSniffsMIMEAndRejectsPixelBomb(t *testing.T) {
+	mustInitConfig(t)
+	setAdminPassword(t, "pw")
+	h := newAdminChatTestHandler(t)
+	h.chatAssetRoot = filepath.Join(t.TempDir(), "assets")
+	conversation := createGenerateTestConversation(t, h, "kiro", "vision")
+
+	attachment := uploadChatImage(t, h, conversation.ID, "claimed.jpg", testPNG(t))
+	if attachment.MIMEType != "image/png" {
+		t.Fatalf("mime=%q", attachment.MIMEType)
+	}
+
+	w := uploadChatMultipart(t, h, conversation.ID, map[string][]byte{"bomb.png": pngWithDimensions(t, 10_000, 5_000)})
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "invalid_image") {
+		t.Fatalf("pixel bomb status=%d body=%s", w.Code, w.Body.String())
+	}
 }
 
 func TestAdminChatAttachmentUploadServeDeleteAndVision(t *testing.T) {
