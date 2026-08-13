@@ -13,6 +13,52 @@ import (
 	"time"
 )
 
+func TestStatusIncludesDetailedUsageSnapshot(t *testing.T) {
+	cfgFile := t.TempDir() + "/config.json"
+	if err := config.Init(cfgFile); err != nil {
+		t.Fatal(err)
+	}
+	p := accountpool.GetPool()
+	p.Reload()
+	h := &Handler{pool: p, startTime: time.Now().Unix() - 10}
+	atomic.StoreInt64(&h.totalRequests, 11)
+	atomic.StoreInt64(&h.successRequests, 9)
+	atomic.StoreInt64(&h.failedRequests, 2)
+	atomic.StoreInt64(&h.totalTokens, 170)
+	atomic.StoreInt64(&h.totalInputTokens, 120)
+	atomic.StoreInt64(&h.totalOutputTokens, 50)
+	atomic.StoreInt64(&h.totalCacheReadTokens, 80)
+	atomic.StoreInt64(&h.totalCacheCreationTokens, 20)
+	atomic.StoreInt64(&h.totalResponseCacheHits, 3)
+	atomic.StoreInt64(&h.totalLegacyTokens, 40)
+	atomic.StoreInt64(&h.totalDetailedTokenRows, 7)
+	atomic.StoreInt64(&h.totalLegacyTokenRows, 1)
+	h.totalCredits = 2.5
+
+	w := httptest.NewRecorder()
+	h.apiGetStatus(w, httptest.NewRequest(http.MethodGet, "/admin/api/status", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{
+		"totalRequests": 11, "successRequests": 9, "failedRequests": 2,
+		"totalTokens": 170, "totalInputTokens": 120, "totalOutputTokens": 50,
+		"totalCacheTokens": 80, "totalCacheReadTokens": 80,
+		"totalCacheCreationTokens": 20, "totalResponseCacheHits": 3,
+		"totalLegacyTokens": 40, "totalDetailedTokenRows": 7,
+		"totalLegacyTokenRows": 1, "totalCredits": 2.5,
+	}
+	for field, value := range want {
+		if got[field] != value {
+			t.Errorf("%s=%v want=%v", field, got[field], value)
+		}
+	}
+}
+
 func TestComboPublicAndBillableAccountingAreSeparated(t *testing.T) {
 	cfgFile := t.TempDir() + "/config.json"
 	if err := config.Init(cfgFile); err != nil {

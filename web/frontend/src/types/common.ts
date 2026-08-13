@@ -16,17 +16,17 @@ export interface StatusSnapshot {
   successRequests: number
   failedRequests: number
   totalTokens: number
-  totalInputTokens?: number
-  totalOutputTokens?: number
-  totalCacheTokens?: number
-  totalCacheReadTokens?: number
-  totalCacheCreationTokens?: number
-  totalResponseCacheHits?: number
-  totalLegacyTokens?: number
-  totalDetailedTokenRows?: number
-  totalLegacyTokenRows?: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCacheTokens: number
+  totalCacheReadTokens: number
+  totalCacheCreationTokens: number
+  totalResponseCacheHits: number
+  totalLegacyTokens: number
+  totalDetailedTokenRows: number
+  totalLegacyTokenRows: number
   totalCredits: number
-  totalRpm?: number
+  totalRpm: number
   uptime: number
 }
 

@@ -5568,6 +5568,26 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+func (h *Handler) usageStatsSnapshot() map[string]interface{} {
+	return map[string]interface{}{
+		"totalRequests":            atomic.LoadInt64(&h.totalRequests),
+		"successRequests":          atomic.LoadInt64(&h.successRequests),
+		"failedRequests":           atomic.LoadInt64(&h.failedRequests),
+		"totalTokens":              atomic.LoadInt64(&h.totalTokens),
+		"totalInputTokens":         atomic.LoadInt64(&h.totalInputTokens),
+		"totalOutputTokens":        atomic.LoadInt64(&h.totalOutputTokens),
+		"totalCacheTokens":         atomic.LoadInt64(&h.totalCacheReadTokens),
+		"totalCacheReadTokens":     atomic.LoadInt64(&h.totalCacheReadTokens),
+		"totalCacheCreationTokens": atomic.LoadInt64(&h.totalCacheCreationTokens),
+		"totalResponseCacheHits":   atomic.LoadInt64(&h.totalResponseCacheHits),
+		"totalLegacyTokens":        atomic.LoadInt64(&h.totalLegacyTokens),
+		"totalDetailedTokenRows":   atomic.LoadInt64(&h.totalDetailedTokenRows),
+		"totalLegacyTokenRows":     atomic.LoadInt64(&h.totalLegacyTokenRows),
+		"totalCredits":             h.getCredits(),
+		"uptime":                   time.Now().Unix() - h.startTime,
+	}
+}
+
 func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 	var totalRpm int64
 	if h != nil && h.ipTrack != nil {
@@ -5575,18 +5595,12 @@ func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 			totalRpm += v
 		}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"version":         config.Version,
-		"accounts":        h.pool.Count(),
-		"available":       h.pool.AvailableCount(),
-		"totalRequests":   h.totalRequests,
-		"successRequests": h.successRequests,
-		"failedRequests":  h.failedRequests,
-		"totalTokens":     h.totalTokens,
-		"totalCredits":    h.totalCredits,
-		"totalRpm":        totalRpm,
-		"uptime":          time.Now().Unix() - h.startTime,
-	})
+	snapshot := h.usageStatsSnapshot()
+	snapshot["version"] = config.Version
+	snapshot["accounts"] = h.pool.Count()
+	snapshot["available"] = h.pool.AvailableCount()
+	snapshot["totalRpm"] = totalRpm
+	json.NewEncoder(w).Encode(snapshot)
 }
 
 func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -5744,23 +5758,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) apiGetStats(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"totalRequests":            atomic.LoadInt64(&h.totalRequests),
-		"successRequests":          atomic.LoadInt64(&h.successRequests),
-		"failedRequests":           atomic.LoadInt64(&h.failedRequests),
-		"totalTokens":              atomic.LoadInt64(&h.totalTokens),
-		"totalInputTokens":         atomic.LoadInt64(&h.totalInputTokens),
-		"totalOutputTokens":        atomic.LoadInt64(&h.totalOutputTokens),
-		"totalCacheTokens":         atomic.LoadInt64(&h.totalCacheReadTokens),
-		"totalCacheReadTokens":     atomic.LoadInt64(&h.totalCacheReadTokens),
-		"totalCacheCreationTokens": atomic.LoadInt64(&h.totalCacheCreationTokens),
-		"totalResponseCacheHits":   atomic.LoadInt64(&h.totalResponseCacheHits),
-		"totalLegacyTokens":        atomic.LoadInt64(&h.totalLegacyTokens),
-		"totalDetailedTokenRows":   atomic.LoadInt64(&h.totalDetailedTokenRows),
-		"totalLegacyTokenRows":     atomic.LoadInt64(&h.totalLegacyTokenRows),
-		"totalCredits":             h.getCredits(),
-		"uptime":                   time.Now().Unix() - h.startTime,
-	})
+	json.NewEncoder(w).Encode(h.usageStatsSnapshot())
 }
 
 func (h *Handler) apiResetStats(w http.ResponseWriter, r *http.Request) {
