@@ -153,11 +153,6 @@ export default function DashboardPage() {
               count={s?.estimatedCostUsd ?? 0}
               format={(n) => `~$${n.toFixed(n < 0.01 && n > 0 ? 4 : 2)}`}
               tone={s?.pricingComplete === false ? 'warning' : 'default'}
-              hint={
-                s
-                  ? `${t(s.pricingComplete ? 'stats.costComplete' : 'stats.costPartial')} · ${Math.round(s.pricingCoverage * 100)}% · ${s.pricingVersion}`
-                  : t('stats.estCostHint')
-              }
             >
               {s && !s.pricingComplete && (
                 <div className="mt-1 space-y-1 text-xs text-muted-foreground">
