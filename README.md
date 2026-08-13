@@ -60,6 +60,7 @@
 - **Account pool** — round-robin, retry cùng model (tối đa 3 account), cooldown khi quota/lỗi
 - **Combos** — chuỗi multi-model do bạn định nghĩa: `fallback` · `round-robin` · `fusion`
 - **Admin web** (`/admin`) — accounts, API keys, combos, logs SSE, settings
+- **Admin Chat** (`/admin/chat`) — persisted text streaming, secure image upload/vision, image generation, stop/retry, gallery và export; xem [hướng dẫn vận hành](docs/admin-chat.md)
 - **API key** — tạo key `sk-…`, RPM limit, tra cứu public `/check/key`
 - **Streaming SSE**, thinking mode, outbound SOCKS5/HTTP
 - **Portable binary** — SPA admin embed trong binary; cài global không cần clone repo
