@@ -13,6 +13,16 @@ import { useConfirm } from '@/components/shared/ConfirmDialog'
 import { chatExportJSON, chatExportMarkdown, downloadChatExport } from './chatExport'
 import { reduceChatStream, validateChatUploads, type ChatStreamState } from './chatLogic'
 
+interface PendingImageGeneration {
+  prompt: string
+  provider: string
+  model: string
+  size: string
+  quality: string
+  user: ChatMessage
+  assistant: ChatMessage
+}
+
 function requestId() {
   return crypto.randomUUID()
 }
@@ -35,6 +45,7 @@ export default function ChatPage() {
   const [imageSize, setImageSize] = useState('auto')
   const [imageQuality, setImageQuality] = useState('auto')
   const [uploading, setUploading] = useState(false)
+  const [imageGeneration, setImageGeneration] = useState<PendingImageGeneration | null>(null)
   const controller = useRef<AbortController | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
 
@@ -127,16 +138,39 @@ export default function ChatPage() {
     const abort = new AbortController()
     controller.current = abort
     if (imageMode) {
+      if (!model) return toast.error('Select an image generation model first')
+      const now = Date.now()
+      const userId = requestId()
+      const pending: PendingImageGeneration = {
+        prompt: content, provider: model.provider, model: model.model, size: imageSize, quality: imageQuality,
+        user: {
+          id: userId, conversationId, parentMessageId: '', clientRequestId: '', role: 'user', content,
+          provider: model.provider, model: model.model, status: 'complete', errorCode: '', errorMessage: '', requestId: '',
+          inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, createdAt: now, updatedAt: now,
+        },
+        assistant: {
+          id: requestId(), conversationId, parentMessageId: userId, clientRequestId: '', role: 'assistant', content: '',
+          provider: model.provider, model: model.model, status: 'streaming', errorCode: '', errorMessage: '', requestId: '',
+          inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, createdAt: now, updatedAt: now,
+        },
+      }
+      setImageGeneration(pending)
       setUploading(true)
       setDraft('')
       try {
-        await chatService.generateImage(conversationId, {
-          clientRequestId: requestId(), prompt: content, provider: model?.provider, model: model?.model,
+        const result = await chatService.generateImage(conversationId, {
+          clientRequestId: requestId(), prompt: content, provider: model.provider, model: model.model,
           size: imageSize, quality: imageQuality,
         }, abort.signal)
+        setImageGeneration({ ...pending, user: result.userMessage, assistant: { ...result.assistantMessage, attachments: result.attachments } })
       } catch (error) {
+        const stopped = abort.signal.aborted
+        setImageGeneration({ ...pending, assistant: {
+          ...pending.assistant, status: stopped ? 'stopped' : 'error', errorCode: stopped ? 'generation_cancelled' : 'image_generation_failed',
+          errorMessage: stopped ? 'Image generation stopped' : error instanceof Error ? error.message : 'Image generation failed',
+        } })
         setDraft(content)
-        if (!abort.signal.aborted) toast.error(error instanceof Error ? error.message : 'Image generation failed')
+        if (!stopped) toast.error(error instanceof Error ? error.message : 'Image generation failed')
       } finally {
         controller.current = null
         setUploading(false)
@@ -243,11 +277,12 @@ export default function ChatPage() {
         </header>
 
         <div className="flex-1 overflow-y-auto px-4 py-6">
-          {!transcript.length && !streamState ? (
+          {!transcript.length && !streamState && !imageGeneration ? (
             <div className="grid h-full place-items-center text-center text-muted-foreground"><div><Bot className="mx-auto mb-3 size-10" /><p className="font-medium text-foreground">How can I help?</p><p className="text-sm">Choose a provider and model, then start a conversation.</p></div></div>
           ) : (
             <div className="mx-auto max-w-3xl space-y-6">
               {transcript.map((message, index) => <MessageBubble key={message.id} message={message} userPrompt={message.role === 'assistant' ? transcript.slice(0, index).findLast((candidate) => candidate.role === 'user')?.content : undefined} onRetry={(prompt, image) => { setDraft(prompt); setImageMode(image) }} />)}
+              {imageGeneration && <><MessageBubble message={imageGeneration.user} /><MessageBubble message={imageGeneration.assistant} userPrompt={imageGeneration.prompt} onRetry={(prompt) => { setDraft(prompt); setSelectedModel(`${imageGeneration.provider}:${imageGeneration.model}`); setImageSize(imageGeneration.size); setImageQuality(imageGeneration.quality); setImageMode(true) }} /></>}
               {streamState && <><MessageBubble message={streamState.message} />{streamState.reasoning && <p className="text-xs text-muted-foreground">Thinking: {streamState.reasoning}</p>}</>}
             </div>
           )}
@@ -285,7 +320,7 @@ function ImagePreview({ file, onRemove }: { file: File; onRemove: () => void }) 
 
 function MessageBubble({ message, userPrompt, onRetry }: { message: ChatMessage; userPrompt?: string; onRetry?: (prompt: string, image: boolean) => void }) {
   const assistant = message.role === 'assistant'
-  const content = message.content || (message.status === 'streaming' ? '…' : message.errorMessage)
+  const content = message.content || (message.status === 'streaming' ? 'Generating…' : message.status === 'stopped' ? 'Stopped' : message.errorMessage)
   const generatedImage = message.attachments?.some((attachment) => attachment.kind === 'image_output') ?? false
   async function copyPrompt() {
     if (!userPrompt) return
