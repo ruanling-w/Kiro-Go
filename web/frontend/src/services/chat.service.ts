@@ -27,6 +27,22 @@ export async function parseChatSSE(response: Response, onEvent: (event: ChatStre
   }
   if (!response.body) throw new Error('Streaming response has no body')
 
+  let terminal = false
+  let finished = false
+  const dispatchFrame = (frame: string) => {
+    let event = ''
+    const data: string[] = []
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('event:')) event = line.slice(6).trim()
+      if (line.startsWith('data:')) data.push(line.slice(5).trimStart())
+    }
+    if (!event || !data.length) return
+    const parsed = { event, data: JSON.parse(data.join('\n')) } as ChatStreamEvent
+    onEvent(parsed)
+    if (event === 'response.completed' || event === 'response.error') terminal = true
+    if (event === 'done') finished = true
+  }
+
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -35,21 +51,14 @@ export async function parseChatSSE(response: Response, onEvent: (event: ChatStre
     buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, '\n')
     let boundary = buffer.indexOf('\n\n')
     while (boundary >= 0) {
-      const frame = buffer.slice(0, boundary)
+      dispatchFrame(buffer.slice(0, boundary))
       buffer = buffer.slice(boundary + 2)
-      let event = ''
-      const data: string[] = []
-      for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) event = line.slice(6).trim()
-        if (line.startsWith('data:')) data.push(line.slice(5).trimStart())
-      }
-      if (event && data.length) {
-        onEvent({ event, data: JSON.parse(data.join('\n')) } as ChatStreamEvent)
-      }
       boundary = buffer.indexOf('\n\n')
     }
     if (done) break
   }
+  if (buffer.trim()) dispatchFrame(buffer)
+  if (!terminal || !finished) throw new Error('Chat stream ended before completion')
 }
 
 export const chatService = {

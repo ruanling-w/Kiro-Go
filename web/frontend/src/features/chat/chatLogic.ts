@@ -20,15 +20,40 @@ export function validateChatUploads(current: File[], incoming: File[]): ChatUplo
 }
 
 export interface ChatStreamState {
+  user: ChatMessage
   message: ChatMessage
   reasoning: string
   done: boolean
+  persistedIds: boolean
+}
+
+export function pendingChatMessages(transcript: ChatMessage[], state: ChatStreamState | null) {
+  if (!state) return []
+  const ids = new Set(transcript.map((message) => message.id))
+  return [state.user, state.message].filter((message) => !ids.has(message.id))
+}
+
+export function failChatStream(state: ChatStreamState, stopped: boolean, message: string): ChatStreamState {
+  return {
+    ...state,
+    message: {
+      ...state.message,
+      status: stopped ? 'stopped' : 'error',
+      errorCode: stopped ? 'generation_cancelled' : 'stream_interrupted',
+      errorMessage: stopped ? 'Generation stopped' : message,
+    },
+  }
 }
 
 export function reduceChatStream(state: ChatStreamState, event: ChatStreamEvent): ChatStreamState {
   switch (event.event) {
     case 'generation.created':
-      return { ...state, message: { ...state.message, id: event.data.assistantMessageId, parentMessageId: event.data.userMessageId } }
+      return {
+        ...state,
+        persistedIds: true,
+        user: { ...state.user, id: event.data.userMessageId },
+        message: { ...state.message, id: event.data.assistantMessageId, parentMessageId: event.data.userMessageId },
+      }
     case 'response.delta':
       return { ...state, message: { ...state.message, content: state.message.content + event.data.delta } }
     case 'response.reasoning_summary.delta':

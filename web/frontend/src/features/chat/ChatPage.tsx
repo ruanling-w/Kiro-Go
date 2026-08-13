@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { SafeMarkdown } from '@/components/shared/SafeMarkdown'
 import { useConfirm } from '@/components/shared/ConfirmDialog'
 import { chatExportJSON, chatExportMarkdown, downloadChatExport } from './chatExport'
-import { reduceChatStream, validateChatUploads, type ChatStreamState } from './chatLogic'
+import { failChatStream, pendingChatMessages, reduceChatStream, validateChatUploads, type ChatStreamState } from './chatLogic'
 
 interface PendingImageGeneration {
   prompt: string
@@ -66,7 +66,12 @@ export default function ChatPage() {
   useEffect(() => () => controller.current?.abort(), [])
 
   const transcript = useMemo(() => messages.data?.data ?? [], [messages.data])
+  const pendingStreamMessages = useMemo(() => pendingChatMessages(transcript, streamState), [transcript, streamState])
   const activeConversation = conversations.data?.data.find((item) => item.id === activeId)
+
+  useEffect(() => {
+    if (streamState?.persistedIds && pendingStreamMessages.length === 0) setStreamState(null)
+  }, [pendingStreamMessages.length, streamState])
 
   async function renameConversation() {
     if (!activeConversation) return
@@ -197,26 +202,36 @@ export default function ChatPage() {
     setUploading(false)
     setDraft('')
     setPendingImages([])
+    const now = Date.now()
+    const userId = requestId()
+    const userMessage: ChatMessage = {
+      id: userId, conversationId, parentMessageId: '', clientRequestId: '', role: 'user', content,
+      provider: model?.provider ?? '', model: model?.model ?? '', status: 'complete', errorCode: '', errorMessage: '',
+      requestId: '', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+      createdAt: now, updatedAt: now,
+    }
     const initialMessage: ChatMessage = {
-      id: requestId(), conversationId, parentMessageId: '', clientRequestId: '', role: 'assistant', content: '',
+      id: requestId(), conversationId, parentMessageId: userId, clientRequestId: '', role: 'assistant', content: '',
       provider: model?.provider ?? '', model: model?.model ?? '', status: 'streaming', errorCode: '', errorMessage: '',
       requestId: '', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
-      createdAt: Date.now(), updatedAt: Date.now(),
+      createdAt: now, updatedAt: now,
     }
-    setStreamState({ message: initialMessage, reasoning: '', done: false })
+    setStreamState({ user: userMessage, message: initialMessage, reasoning: '', done: false, persistedIds: false })
     try {
       await chatService.generate(conversationId, { clientRequestId: requestId(), content, attachmentIds }, abort.signal, (event: ChatStreamEvent) => {
         setStreamState((current) => current ? reduceChatStream(current, event) : current)
       })
     } catch (error) {
-      if (!abort.signal.aborted) toast.error(error instanceof Error ? error.message : 'Generation failed')
+      const stopped = abort.signal.aborted
+      const message = error instanceof Error ? error.message : 'Generation failed'
+      setStreamState((current) => current ? failChatStream(current, stopped, message) : current)
+      if (!stopped) toast.error(message)
     } finally {
       controller.current = null
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: qk.chatMessages(conversationId) }),
         queryClient.invalidateQueries({ queryKey: qk.chatConversations }),
       ])
-      setStreamState(null)
     }
   }
 
@@ -283,7 +298,8 @@ export default function ChatPage() {
             <div className="mx-auto max-w-3xl space-y-6">
               {transcript.map((message, index) => <MessageBubble key={message.id} message={message} userPrompt={message.role === 'assistant' ? transcript.slice(0, index).findLast((candidate) => candidate.role === 'user')?.content : undefined} onRetry={(prompt, image) => { setDraft(prompt); setImageMode(image) }} />)}
               {imageGeneration && <><MessageBubble message={imageGeneration.user} /><MessageBubble message={imageGeneration.assistant} userPrompt={imageGeneration.prompt} onRetry={(prompt) => { setDraft(prompt); setSelectedModel(`${imageGeneration.provider}:${imageGeneration.model}`); setImageSize(imageGeneration.size); setImageQuality(imageGeneration.quality); setImageMode(true) }} /></>}
-              {streamState && <><MessageBubble message={streamState.message} />{streamState.reasoning && <p className="text-xs text-muted-foreground">Thinking: {streamState.reasoning}</p>}</>}
+              {pendingStreamMessages.map((message) => <MessageBubble key={message.id} message={message} />)}
+              {streamState?.reasoning && pendingStreamMessages.some((message) => message.role === 'assistant') && <p className="text-xs text-muted-foreground">Thinking: {streamState.reasoning}</p>}
             </div>
           )}
         </div>
