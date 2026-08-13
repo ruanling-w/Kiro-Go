@@ -7,8 +7,6 @@ import (
 	"kiro-go/config"
 	"kiro-go/store"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -370,7 +368,6 @@ func (h *Handler) apiDeleteChatConversation(w http.ResponseWriter, id string) {
 	if !ok {
 		return
 	}
-	attachments, _ := st.ListChatAttachments(id)
 	if err := st.DeleteChatConversation(id); err != nil {
 		unlock()
 		writeChatStoreError(w, err)
@@ -378,12 +375,7 @@ func (h *Handler) apiDeleteChatConversation(w http.ResponseWriter, id string) {
 	}
 	unlock()
 	if assets, err := h.chatAssets(); err == nil {
-		for _, attachment := range attachments {
-			if path, pathErr := assets.path(attachment.StorageKey); pathErr == nil {
-				_ = os.Remove(path)
-			}
-		}
-		_ = os.Remove(filepath.Join(assets.root, id))
+		_ = assets.removeConversation(id)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

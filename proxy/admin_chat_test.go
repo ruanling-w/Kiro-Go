@@ -6,6 +6,7 @@ import (
 	"kiro-go/store"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,6 +94,28 @@ func TestAdminChatConversationCRUDAndMessages(t *testing.T) {
 	h.handleAdminAPI(w, chatAdminRequest(http.MethodGet, "/admin/api/chat/conversations/"+created.ID, "", "pw"))
 	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "conversation_not_found") {
 		t.Fatalf("missing status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminChatConversationDeleteRemovesAssetDirectory(t *testing.T) {
+	mustInitConfig(t)
+	setAdminPassword(t, "pw")
+	h := newAdminChatTestHandler(t)
+	h.chatAssetRoot = filepath.Join(t.TempDir(), "assets")
+	conversation := createGenerateTestConversation(t, h, "kiro", "vision")
+	_ = uploadChatImage(t, h, conversation.ID, "photo.png", testPNG(t))
+	dir := filepath.Join(h.chatAssetRoot, conversation.ID)
+	if err := os.WriteFile(filepath.Join(dir, ".orphan.upload"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	h.handleAdminAPI(w, chatAdminRequest(http.MethodDelete, "/admin/api/chat/conversations/"+conversation.ID, "", "pw"))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("asset directory remains: %v", err)
 	}
 }
 

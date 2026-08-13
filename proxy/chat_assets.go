@@ -96,6 +96,25 @@ func (s *chatAssetStore) store(conversationID string, file io.Reader) (string, v
 	return filepath.ToSlash(storageKey), validated, nil
 }
 
+func (s *chatAssetStore) removeConversation(conversationID string) error {
+	path := filepath.Join(s.root, conversationID)
+	rel, err := filepath.Rel(s.root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errInvalidChatImage
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errInvalidChatImage
+	}
+	return os.RemoveAll(path)
+}
+
 func (s *chatAssetStore) path(storageKey string) (string, error) {
 	if filepath.IsAbs(storageKey) {
 		return "", errInvalidChatImage
