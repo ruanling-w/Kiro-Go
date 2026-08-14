@@ -73,7 +73,7 @@ Supported: Linux, macOS, Windows · x64, arm64 · Node ≥ 18.
 KIROPROXY_SKIP_DOWNLOAD=1 npm i -g proxy-kiro
 mkdir -p ~/.kiroproxy/bin
 cp ./kiro-go-linux-amd64 ~/.kiroproxy/bin/kiro-go && chmod +x ~/.kiroproxy/bin/kiro-go
-echo "1.1.5" > ~/.kiroproxy/bin/.version
+echo "1.1.6" > ~/.kiroproxy/bin/.version
 ```
 
 ## Docker

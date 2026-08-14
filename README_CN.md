@@ -11,7 +11,7 @@
 | **作者** | **Vũ Trường（武长）** |
 | **GitHub** | [@vtruong2k3](https://github.com/vtruong2k3) · [Kiro-Go](https://github.com/vtruong2k3/Kiro-Go) |
 | **npm** | [`proxy-kiro`](https://www.npmjs.com/package/proxy-kiro) → CLI 命令 `kiroproxy` |
-| **版本** | `1.1.5` |
+| **版本** | `1.1.6` |
 
 [English README](README.md) | 中文
 
