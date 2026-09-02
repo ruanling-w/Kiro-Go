@@ -96,22 +96,22 @@ export function ModelPickerDialog({ open, onOpenChange, selected, onToggle, max,
               {filtered.map((group) => (
                 <div key={group.key} className="space-y-1.5">
                   <div className="flex items-center gap-2 px-1 text-sm font-medium">
-                    <ProviderIcon provider={group.key} className="size-4" />
-                    <span>{t(group.labelKey)}</span>
+                    <ProviderIcon provider={group.provider} className="size-4" />
+                    <span>{group.label || (group.labelKey ? t(group.labelKey) : group.key)}</span>
                     <span className="text-xs text-muted-foreground">({group.models.length})</span>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {group.models.map((m) => {
-                      const active = selectedSet.has(candidateKey(group.key, m.id))
+                      const active = selectedSet.has(candidateKey(group.targetProvider, m.id))
                       const disabled = !active && !single && atCap
                       // Unselected chips wear their provider palette (same one the
                       // log table uses); selection overrides it with the primary tint.
-                      const brand = brandFor(group.key, m.id, t)
+                      const brand = brandFor(group.provider, m.id, t)
                       return (
                         <button
                           key={`${group.key}:${m.id}`}
                           type="button"
-                          onClick={() => pick(group.key, m.id)}
+                          onClick={() => pick(group.targetProvider, m.id)}
                           disabled={disabled}
                           title={m.description || m.id}
                           aria-pressed={active}
@@ -128,7 +128,7 @@ export function ModelPickerDialog({ open, onOpenChange, selected, onToggle, max,
                           {active ? (
                             <Check className="size-3.5 shrink-0" />
                           ) : (
-                            <ProviderIcon provider={group.key} className="size-3.5 shrink-0" />
+                            <ProviderIcon provider={group.provider} className="size-3.5 shrink-0" />
                           )}
                           <span className="max-w-[16rem] truncate">{m.name || m.id}</span>
                         </button>

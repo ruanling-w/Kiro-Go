@@ -474,3 +474,62 @@ func TestNamespacedAccountRouting(t *testing.T) {
 	}
 }
 
+func TestNamespacedAccountRepeatedIsolation(t *testing.T) {
+	// Two distinct Remote API accounts sharing the exact same model name: "glm-5.3-flash"
+	p := &AccountPool{
+		accounts: []config.Account{
+			{ID: "acc-bai-1", Nickname: "bai", Provider: "remotekiro", Email: "remote@api.b.ai", CustomModels: []string{"glm-5.3-flash", "deepseek-v4-flash"}},
+			{ID: "acc-bai-2", Nickname: "coe", Provider: "remotekiro", Email: "remote@api.coe.ai", CustomModels: []string{"glm-5.3-flash", "gpt-5.6-sol"}},
+		},
+		cooldowns:  map[string]time.Time{},
+		modelLists: map[string]map[string]bool{},
+	}
+	p.totalAccounts = len(p.accounts)
+
+	// 1. Calling "bai/glm-5.3-flash" 50 times consecutively must ALWAYS return acc-bai-1, NEVER acc-bai-2
+	for i := 0; i < 50; i++ {
+		acc := p.GetNextForModel("bai/glm-5.3-flash")
+		if acc == nil || acc.ID != "acc-bai-1" {
+			t.Fatalf("iteration %d: expected strictly acc-bai-1 for 'bai/glm-5.3-flash', got %+v", i, acc)
+		}
+	}
+
+	// 2. Calling "coe/glm-5.3-flash" 50 times consecutively must ALWAYS return acc-bai-2, NEVER acc-bai-1
+	for i := 0; i < 50; i++ {
+		acc := p.GetNextForModel("coe/glm-5.3-flash")
+		if acc == nil || acc.ID != "acc-bai-2" {
+			t.Fatalf("iteration %d: expected strictly acc-bai-2 for 'coe/glm-5.3-flash', got %+v", i, acc)
+		}
+	}
+
+	// 3. Calling via Combo candidate targeting {Provider: "bai", Model: "glm-5.3-flash"}
+	for i := 0; i < 50; i++ {
+		acc := p.GetNextForModelAndProviderExcluding("glm-5.3-flash", "bai", nil)
+		if acc == nil || acc.ID != "acc-bai-1" {
+			t.Fatalf("iteration %d: combo candidate provider 'bai' chose %+v, want acc-bai-1", i, acc)
+		}
+	}
+
+	// 4. Calling via Combo candidate targeting {Provider: "coe", Model: "glm-5.3-flash"}
+	for i := 0; i < 50; i++ {
+		acc := p.GetNextForModelAndProviderExcluding("glm-5.3-flash", "coe", nil)
+		if acc == nil || acc.ID != "acc-bai-2" {
+			t.Fatalf("iteration %d: combo candidate provider 'coe' chose %+v, want acc-bai-2", i, acc)
+		}
+	}
+
+	// 5. Calling un-namespaced "glm-5.3-flash" must rotate between both accounts
+	seen := map[string]int{}
+	for i := 0; i < 50; i++ {
+		acc := p.GetNextForModel("glm-5.3-flash")
+		if acc == nil {
+			t.Fatalf("expected account for unnamespaced model, got nil")
+		}
+		seen[acc.ID]++
+	}
+	if seen["acc-bai-1"] == 0 || seen["acc-bai-2"] == 0 {
+		t.Fatalf("expected unnamespaced calls to rotate across both accounts, got counts: %+v", seen)
+	}
+}
+
+

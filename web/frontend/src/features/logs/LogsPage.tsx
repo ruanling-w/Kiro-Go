@@ -74,9 +74,19 @@ export default function LogsPage() {
   const accountNames = useMemo(() => {
     const map = new Map<string, string>()
     for (const a of accounts.data ?? []) {
-      // Prefer email; fall back to nickname; privacy mode masks email.
-      const raw = a.email || a.nickname || a.userId || ''
-      map.set(a.id, displayEmail(raw, a.id, privacy))
+      const email = a.email ? displayEmail(a.email, a.id, privacy) : ''
+      const nickname = a.nickname?.trim()
+      let label = ''
+      if (nickname && email) {
+        label = `${nickname} (${email})`
+      } else if (nickname) {
+        label = nickname
+      } else if (email) {
+        label = email
+      } else {
+        label = a.userId || a.id
+      }
+      map.set(a.id, label)
     }
     return map
   }, [accounts.data, privacy])

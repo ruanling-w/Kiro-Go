@@ -46,7 +46,12 @@ export function OrderedModelPicker({ models, onChange, error }: Props) {
             <span className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted font-mono text-xs" aria-hidden="true">{index + 1}</span>
             <GripVertical className="hidden size-4 text-muted-foreground sm:block" aria-hidden="true" />
             <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden="true">{candidate.provider ? <ProviderIcon provider={candidate.provider} /> : <ModelIcon model={candidate.model} />}</span>
-            <Input value={candidate.model} onChange={(e) => onChange(models.map((model, i) => i === index ? { model: e.target.value } : model))} placeholder={t('combos.modelPlaceholder')} aria-label={t('combos.modelAt', { position: index + 1 })} />
+            {candidate.provider && (
+              <span className="rounded border border-border/80 bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium text-foreground shrink-0">
+                {candidate.provider}
+              </span>
+            )}
+            <Input value={candidate.model} onChange={(e) => onChange(models.map((model, i) => i === index ? { ...model, model: e.target.value } : model))} placeholder={t('combos.modelPlaceholder')} aria-label={t('combos.modelAt', { position: index + 1 })} />
             <Button type="button" size="icon" variant="ghost" onClick={() => move(index, -1)} disabled={index === 0} aria-label={t('combos.moveUp')}><ArrowUp className="size-4" /></Button>
             <Button type="button" size="icon" variant="ghost" onClick={() => move(index, 1)} disabled={index === models.length - 1} aria-label={t('combos.moveDown')}><ArrowDown className="size-4" /></Button>
             <Button type="button" size="icon" variant="ghost" onClick={() => onChange(models.filter((_, i) => i !== index))} disabled={models.length === 1} aria-label={t('combos.removeModel')}><X className="size-4" /></Button>

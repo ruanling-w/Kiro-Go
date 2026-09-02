@@ -1,17 +1,18 @@
-// Aggregates the models of every logged-in provider into grouped options for the
-// Combo model pickers. A provider bucket is "logged in" when at least one enabled
-// account maps to it (see bucketOf). Each active bucket is fetched via the same
-// /providers/{provider}/models endpoint the Providers page uses.
 import { useMemo } from 'react'
 import type { ProviderKey } from '@/types/account'
 import type { ProviderModel } from '@/types/provider'
 import { bucketOf, providerMeta } from '@/config/providers'
+import { displayEmail } from '@/lib/mask'
 import { useAccounts } from './useAccounts'
 import { useProviderModels } from './useProviderModels'
 
 export interface ComboModelGroup {
-  key: ProviderKey
-  labelKey: string
+  key: string
+  provider: string
+  targetProvider: string
+  label?: string
+  labelKey?: string
+  subLabel?: string
   models: ProviderModel[]
 }
 
@@ -42,24 +43,65 @@ export function useComboModelOptions() {
     remotekiro,
     voyage,
   }
-  const order: ProviderKey[] = ['kiro', 'antigravity', 'grok', 'codex', 'remotekiro', 'voyage']
+  const standardProviders: ProviderKey[] = ['kiro', 'antigravity', 'grok', 'codex', 'voyage']
 
-  const groups = useMemo<ComboModelGroup[]>(
-    () =>
-      order
-        .filter((k) => activeKeys.has(k))
-        .map((k) => ({
+  const groups = useMemo<ComboModelGroup[]>(() => {
+    const result: ComboModelGroup[] = []
+    const enabledAccounts = (accounts ?? []).filter((a) => a.enabled)
+
+    // 1. Standard provider groups
+    for (const k of standardProviders) {
+      if (!activeKeys.has(k)) continue
+      const models = byKey[k].data?.models ?? []
+      if (models.length > 0) {
+        result.push({
           key: k,
+          provider: k,
+          targetProvider: k,
           labelKey: providerMeta(k)?.labelKey ?? k,
-          models: byKey[k].data?.models ?? [],
-        }))
-        .filter((g) => g.models.length > 0),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeKeys, kiro.data, antigravity.data, grok.data, codex.data, remotekiro.data, voyage.data],
-  )
+          models,
+        })
+      }
+    }
 
-  const isLoading = order.some((k) => activeKeys.has(k) && byKey[k].isPending)
+    // 2. Separate groups per Remote Kiro / Custom API account
+    const remoteAccounts = enabledAccounts.filter((a) => bucketOf(a.provider) === 'remotekiro')
+    for (const acc of remoteAccounts) {
+      const customModels = acc.customModels ?? []
+      let models: ProviderModel[] = []
+      if (customModels.length > 0) {
+        models = customModels.map((m) => ({
+          id: m,
+          name: m,
+          description: '',
+          supports_image: false,
+        }))
+      } else {
+        models = remotekiro.data?.models ?? []
+      }
+
+      if (models.length > 0) {
+        const nickname = acc.nickname?.trim()
+        const target = nickname || acc.id
+        const email = acc.email ? displayEmail(acc.email, acc.id, false) : ''
+        const label = nickname ? `${nickname}${email ? ` (${email})` : ''}` : email || acc.id.slice(0, 8)
+
+        result.push({
+          key: acc.id,
+          provider: 'remotekiro',
+          targetProvider: target,
+          label,
+          models,
+        })
+      }
+    }
+
+    return result
+  }, [accounts, activeKeys, kiro.data, antigravity.data, grok.data, codex.data, remotekiro.data, voyage.data])
+
+  const isLoading = Object.values(byKey).some((q) => q.isPending)
   const hasActiveProviders = activeKeys.size > 0
 
   return { groups, isLoading, hasActiveProviders }
 }
+
