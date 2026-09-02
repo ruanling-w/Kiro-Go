@@ -99,7 +99,8 @@ export function useComboModelOptions() {
     return result
   }, [accounts, activeKeys, kiro.data, antigravity.data, grok.data, codex.data, remotekiro.data, voyage.data])
 
-  const isLoading = Object.values(byKey).some((q) => q.isPending)
+  const allProviders: ProviderKey[] = ['kiro', 'antigravity', 'grok', 'codex', 'remotekiro', 'voyage']
+  const isLoading = allProviders.some((k) => activeKeys.has(k) && byKey[k].isPending)
   const hasActiveProviders = activeKeys.size > 0
 
   return { groups, isLoading, hasActiveProviders }
