@@ -60,10 +60,6 @@ export function guessBucket(model?: string, provider?: string): string | null {
   if (s.includes('kiro') || s.includes('codewhisperer') || s.includes('amazonq')) {
     return 'kiro'
   }
-  // Claude/sonnet models often ride on Kiro upstream when provider missing.
-  if (s.includes('claude') || s.includes('sonnet') || s.includes('opus') || s.includes('haiku')) {
-    return 'kiro'
-  }
   return null
 }
 

@@ -1570,6 +1570,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 
 	excluded := map[string]bool{}
 	var lastErr error
+	var lastAccountID, lastProvider string
 	started := time.Now()
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		var account *config.Account
@@ -1580,6 +1581,8 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 			break
 		}
 		provider := providerLabel(account)
+		lastAccountID = account.ID
+		lastProvider = provider
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -1629,7 +1632,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		h.sendClaudeError(w, 503, "api_error", "No available accounts")
 		return
 	}
-	h.recordFailureWithDetailsMeta("claude", model, "", lastErr, clientIP, apiKeyID, "")
+	h.recordFailureWithDetailsMeta("claude", model, lastAccountID, lastErr, clientIP, apiKeyID, lastProvider)
 	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
 }
 
@@ -2498,6 +2501,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 
 	excluded := make(map[string]bool)
 	var lastErr error
+	var lastAccountID, lastProvider string
 	reqStart := time.Now()
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		var account *config.Account
@@ -2508,6 +2512,8 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 			break
 		}
 		usedProvider := providerLabel(account)
+		lastAccountID = account.ID
+		lastProvider = usedProvider
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2607,7 +2613,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	h.recordFailureWithDetailsMeta("claude", model, "", lastErr, clientIP, apiKeyID, "")
+	h.recordFailureWithDetailsMeta("claude", model, lastAccountID, lastErr, clientIP, apiKeyID, lastProvider)
 	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
 }
 
@@ -2895,6 +2901,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	}
 	excluded := make(map[string]bool)
 	var lastErr error
+	var lastAccountID, lastProvider string
 	reqStart := time.Now()
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		var account *config.Account
@@ -2905,6 +2912,8 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 			break
 		}
 		usedProvider := providerLabel(account)
+		lastAccountID = account.ID
+		lastProvider = usedProvider
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2966,7 +2975,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	h.recordFailureWithDetailsMeta("openai", model, "", lastErr, clientIP, apiKeyID, "")
+	h.recordFailureWithDetailsMeta("openai", model, lastAccountID, lastErr, clientIP, apiKeyID, lastProvider)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
@@ -3498,6 +3507,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 
 	excluded := make(map[string]bool)
 	var lastErr error
+	var lastAccountID, lastProvider string
 	reqStart := time.Now()
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		var account *config.Account
@@ -3508,6 +3518,8 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 			break
 		}
 		usedProvider := providerLabel(account)
+		lastAccountID = account.ID
+		lastProvider = usedProvider
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -3601,7 +3613,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	h.recordFailureWithDetailsMeta("openai", model, "", lastErr, clientIP, apiKeyID, "")
+	h.recordFailureWithDetailsMeta("openai", model, lastAccountID, lastErr, clientIP, apiKeyID, lastProvider)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
