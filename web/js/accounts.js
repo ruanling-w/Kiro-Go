@@ -377,6 +377,44 @@ export function renderCodexDetailSection(a, idAttr) {
     '</div>';
 }
 
+export function isRemoteKiroAccountDetail(a) {
+  if (!a) return false;
+  const p = String(a.provider || '').toLowerCase();
+  const m = String(a.authMethod || '').toLowerCase();
+  return p === 'remotekiro' || m === 'remotekiro';
+}
+
+export function renderRemoteKiroDetailSection(a, idAttr) {
+  const models = (a.customModels || []).join(', ');
+  return '' +
+    '<div class="detail-section"><h4>' + escapeHtml(t('modal.remotekiroTitle') || 'Nhập API key') + '</h4>' +
+    '<div class="form-group">' +
+    '<label>' + escapeHtml(t('remotekiro.baseUrlLabel') || 'Base URL') + '</label>' +
+    '<input type="text" id="remoteBaseUrlInput" class="font-mono" value="' + escapeAttr(a.remoteBaseURL || '') + '" placeholder="https://..." />' +
+    '</div>' +
+    '<div class="form-group">' +
+    '<label>' + escapeHtml(t('remotekiro.apiKeyLabel') || 'API Key') + '</label>' +
+    '<input type="password" id="remoteApiKeyInput" class="font-mono" value="' + escapeAttr(a.accessToken || '') + '" placeholder="sk-..." />' +
+    '</div>' +
+    '<div class="form-group">' +
+    '<label>' + escapeHtml(t('remotekiro.checkKeyUrlLabel') || 'Check-key URL') + '</label>' +
+    '<input type="text" id="remoteCheckKeyUrlInput" class="font-mono" value="' + escapeAttr(a.remoteCheckKeyURL || '') + '" placeholder="https://..." />' +
+    '</div>' +
+    '<div class="form-group">' +
+    '<label>' + escapeHtml(t('remotekiro.modelsLabel') || 'Danh sách Model') + '</label>' +
+    '<input type="text" id="remoteCustomModelsInput" class="font-mono" value="' + escapeAttr(models) + '" placeholder="' + escapeAttr(t('remotekiro.modelsPlaceholder') || '') + '" />' +
+    '<div class="model-presets mt-1" style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;padding-top:4px;">' +
+    '<span class="text-xs text-muted">' + escapeHtml(t('remotekiro.priorityModels') || 'Ưu tiên:') + '</span>' +
+    '<button type="button" class="btn btn-xs btn-outline preset-detail-model-btn" data-model="claude-sonnet-4-5">+ claude-sonnet-4-5</button>' +
+    '<button type="button" class="btn btn-xs btn-outline preset-detail-model-btn" data-model="claude-opus-4.8">+ claude-opus-4.8</button>' +
+    '<button type="button" class="btn btn-xs btn-outline preset-detail-model-btn" data-model="claude-haiku-4-5">+ claude-haiku-4-5</button>' +
+    '</div>' +
+    '<small>' + escapeHtml(t('remotekiro.modelsHint') || '') + '</small>' +
+    '</div>' +
+    '<button class="btn btn-sm btn-primary" data-detail-action="saveRemoteKiro" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button>' +
+    '</div>';
+}
+
 export function renderAccounts() {
   const container = $('accountsList');
   if (!container) return;
@@ -649,6 +687,7 @@ export function showDetail(id) {
 
     (isGrokAccountDetail(a) ? renderGrokDetailSection(a, idAttr) : '') +
     (isCodexAccountDetail(a) ? renderCodexDetailSection(a, idAttr) : '') +
+    (isRemoteKiroAccountDetail(a) ? renderRemoteKiroDetailSection(a, idAttr) : '') +
 
     '<div class="detail-section"><h4>' + escapeHtml(t('detail.machineId')) + '</h4><div class="machine-id-row">' +
     '<input type="text" id="machineIdInput" value="' + escapeAttr(a.machineId || '') + '" placeholder="UUID" />' +
@@ -768,6 +807,14 @@ export async function saveMachineId(id) {
 export async function saveWeight(id) {
   const weight = parseInt($('weightInput').value, 10) || 0;
   await putAccount(id, { weight }, t('detail.saved'));
+}
+export async function saveRemoteKiro(id) {
+  const remoteBaseURL = ($('remoteBaseUrlInput') ? $('remoteBaseUrlInput').value : '').trim();
+  const accessToken = ($('remoteApiKeyInput') ? $('remoteApiKeyInput').value : '').trim();
+  const remoteCheckKeyURL = ($('remoteCheckKeyUrlInput') ? $('remoteCheckKeyUrlInput').value : '').trim();
+  const rawModels = ($('remoteCustomModelsInput') ? $('remoteCustomModelsInput').value : '').trim();
+  const customModels = rawModels ? rawModels.split(/[\n,]+/).map(s => s.trim()).filter(Boolean) : [];
+  await putAccount(id, { remoteBaseURL, accessToken, remoteCheckKeyURL, customModels }, t('detail.saved'));
 }
 export function renderOverageBadge(a) {
   const status = (a.overageStatus || '').toUpperCase();

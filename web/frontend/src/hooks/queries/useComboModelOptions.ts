@@ -32,6 +32,7 @@ export function useComboModelOptions() {
   const grok = useProviderModels('grok', activeKeys.has('grok'))
   const codex = useProviderModels('codex', activeKeys.has('codex'))
   const remotekiro = useProviderModels('remotekiro', activeKeys.has('remotekiro'))
+  const voyage = useProviderModels('voyage', activeKeys.has('voyage'))
 
   const byKey: Record<ProviderKey, ReturnType<typeof useProviderModels>> = {
     kiro,
@@ -39,8 +40,9 @@ export function useComboModelOptions() {
     grok,
     codex,
     remotekiro,
+    voyage,
   }
-  const order: ProviderKey[] = ['kiro', 'antigravity', 'grok', 'codex', 'remotekiro']
+  const order: ProviderKey[] = ['kiro', 'antigravity', 'grok', 'codex', 'remotekiro', 'voyage']
 
   const groups = useMemo<ComboModelGroup[]>(
     () =>
@@ -53,7 +55,7 @@ export function useComboModelOptions() {
         }))
         .filter((g) => g.models.length > 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeKeys, kiro.data, antigravity.data, grok.data, codex.data, remotekiro.data],
+    [activeKeys, kiro.data, antigravity.data, grok.data, codex.data, remotekiro.data, voyage.data],
   )
 
   const isLoading = order.some((k) => activeKeys.has(k) && byKey[k].isPending)

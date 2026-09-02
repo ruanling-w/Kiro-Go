@@ -12,6 +12,7 @@ import { StatusBadge, type StatusTone } from '@/components/shared/StatusBadge'
 import { UsageBar } from '@/components/shared/UsageBar'
 import { ProviderIcon } from '@/components/shared/ProviderIcon'
 import { CodexQuota } from './CodexQuota'
+import { VoyageQuota } from './VoyageQuota'
 import { useUiStore } from '@/stores/uiStore'
 import { maskEmail } from '@/lib/mask'
 import { formatNumber, formatRelativeSeconds } from '@/lib/format'
@@ -24,8 +25,10 @@ interface Props {
   onRefresh: (a: AccountListItem) => void
   onDetail: (a: AccountListItem) => void
   onDelete: (a: AccountListItem) => void
+  onResetQuota?: (a: AccountListItem) => void
   refreshing?: boolean
   testing?: boolean
+  resettingQuota?: boolean
 }
 
 function statusTone(a: AccountListItem): { tone: StatusTone; key: string } {
@@ -33,7 +36,12 @@ function statusTone(a: AccountListItem): { tone: StatusTone; key: string } {
     return { tone: 'danger', key: 'accounts.banned' }
   }
   if (!a.enabled) return { tone: 'neutral', key: 'accounts.disabled' }
-  if (!a.hasToken) return { tone: 'warning', key: 'accounts.noToken' }
+  const isKeyBased =
+    a.provider === 'voyage' ||
+    a.authMethod === 'voyage' ||
+    a.authMethod === 'api_key' ||
+    a.authMethod === 'remotekiro'
+  if (!a.hasToken && !isKeyBased) return { tone: 'warning', key: 'accounts.noToken' }
   return { tone: 'success', key: 'accounts.enabled' }
 }
 
@@ -43,8 +51,10 @@ export function AccountCard({
   onRefresh,
   onDetail,
   onDelete,
+  onResetQuota,
   refreshing,
   testing,
+  resettingQuota,
 }: Props) {
   const { t } = useTranslation()
   const privacy = useUiStore((s) => s.privacyMode)
@@ -54,6 +64,7 @@ export function AccountCard({
   const status = statusTone(a)
   const bucket = bucketOf(a.provider)
   const isCodex = bucket === 'codex' || a.authMethod?.toLowerCase() === 'codex'
+  const isVoyage = bucket === 'voyage' || a.authMethod?.toLowerCase() === 'voyage'
   const email = privacy ? maskEmail(a.email || a.id) : a.email || a.id
 
   const SelIcon = selected ? CheckSquare : Square
@@ -124,7 +135,12 @@ export function AccountCard({
           windows={a.codexQuota}
           limitReached={a.codexLimitReached}
           resetCredits={a.codexResetCredits}
+          onResetQuota={onResetQuota ? () => onResetQuota(a) : undefined}
+          resetting={resettingQuota}
         />
+      )}
+      {isVoyage && (
+        <VoyageQuota buckets={a.voyageQuota} />
       )}
 
       <div className="grid grid-cols-4 gap-2 rounded-lg bg-muted/50 p-2 text-center">

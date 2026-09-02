@@ -22,7 +22,7 @@ import {
   closeDetailModal, closeTestModal, copyAccountJSON, deleteAccount, formatAuthMethod, formatNum,
   generateMachineId, getTestModelValue, loadAccounts, loadModels, onFilterChange, refreshAccount,
   refreshAccountModels, refreshAccountOverage, refreshAllModels, renderAccounts, runTestAccount, saveMachineId,
-  saveProxyURL, saveWeight, showDetail, testAccount, toggleAccount, toggleOverageSwitch,
+  saveProxyURL, saveRemoteKiro, saveWeight, showDetail, testAccount, toggleAccount, toggleOverageSwitch,
   toggleSelectAccount, toggleSelectAll,
 } from './js/accounts.js';
 
@@ -1027,12 +1027,26 @@ import {
   function bindDetailEvents() {
     $('detailBody').addEventListener('click', e => {
       if (e.target.id === 'generateMachineIdBtn') { generateMachineId(); return; }
+      const presetBtn = e.target.closest('.preset-detail-model-btn');
+      if (presetBtn) {
+        const model = presetBtn.getAttribute('data-model');
+        const input = $('remoteCustomModelsInput');
+        if (input) {
+          const parts = input.value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+          if (!parts.includes(model)) {
+            parts.push(model);
+            input.value = parts.join(', ');
+          }
+        }
+        return;
+      }
       const b = e.target.closest('[data-detail-action]');
       if (!b) return;
       const id = b.dataset.id;
       const a = b.dataset.detailAction;
       if (a === 'saveMachineId') saveMachineId(id);
       else if (a === 'saveWeight') saveWeight(id);
+      else if (a === 'saveRemoteKiro') saveRemoteKiro(id);
       else if (a === 'toggleOverage') toggleOverageSwitch(id, b);
       else if (a === 'refreshOverage') refreshAccountOverage(id);
       else if (a === 'saveProxyURL') saveProxyURL(id);

@@ -417,3 +417,60 @@ func TestUnavailableReasonNamesTheCause(t *testing.T) {
 		}
 	})
 }
+
+func TestNamespacedAccountRouting(t *testing.T) {
+	p := &AccountPool{
+		accounts: []config.Account{
+			{ID: "acc-bai", Nickname: "bai", Provider: "remotekiro", CustomModels: []string{"gpt-5.6-sol", "deepseek-r1"}},
+			{ID: "acc-coe", Nickname: "coe", Provider: "codex", Email: "einnam20@gmail.com", CustomModels: []string{"gpt-5.6-sol", "claude-sonnet-4.5"}},
+			{ID: "acc-ag", Nickname: "ag1", Provider: "antigravity", CustomModels: []string{"claude-sonnet-4.5"}},
+		},
+		cooldowns:  map[string]time.Time{},
+		modelLists: map[string]map[string]bool{},
+	}
+	p.totalAccounts = len(p.accounts)
+
+	// 1. Direct slash namespace: "bai/gpt-5.6-sol" -> must route to acc-bai
+	acc := p.GetNextForModel("bai/gpt-5.6-sol")
+	if acc == nil || acc.ID != "acc-bai" {
+		t.Fatalf("expected acc-bai, got %+v", acc)
+	}
+
+	// 2. Direct slash namespace: "coe/gpt-5.6-sol" -> must route to acc-coe
+	acc = p.GetNextForModel("coe/gpt-5.6-sol")
+	if acc == nil || acc.ID != "acc-coe" {
+		t.Fatalf("expected acc-coe, got %+v", acc)
+	}
+
+	// 3. Double colon namespace: "bai::deepseek-r1" -> must route to acc-bai
+	acc = p.GetNextForModel("bai::deepseek-r1")
+	if acc == nil || acc.ID != "acc-bai" {
+		t.Fatalf("expected acc-bai, got %+v", acc)
+	}
+
+	// 4. Double colon with email: "einnam20@gmail.com::gpt-5.6-sol" -> must route to acc-coe
+	acc = p.GetNextForModel("einnam20@gmail.com::gpt-5.6-sol")
+	if acc == nil || acc.ID != "acc-coe" {
+		t.Fatalf("expected acc-coe, got %+v", acc)
+	}
+
+	// 5. Provider routing: "antigravity::claude-sonnet-4.5" -> must route to acc-ag
+	acc = p.GetNextForModel("antigravity::claude-sonnet-4.5")
+	if acc == nil || acc.ID != "acc-ag" {
+		t.Fatalf("expected acc-ag, got %+v", acc)
+	}
+
+	// 6. Strict custom models: "bai/claude-sonnet-4.5" -> acc-bai doesn't have it -> returns nil
+	acc = p.GetNextForModel("bai/claude-sonnet-4.5")
+	if acc != nil {
+		t.Fatalf("expected nil for unsupported model on bai, got %+v", acc)
+	}
+
+	// 7. Non-existent namespace with slash model name: "meta-llama/llama-3" -> fallback checks model name
+	p.accounts[0].CustomModels = append(p.accounts[0].CustomModels, "meta-llama/llama-3")
+	acc = p.GetNextForModel("meta-llama/llama-3")
+	if acc == nil || acc.ID != "acc-bai" {
+		t.Fatalf("expected acc-bai for meta-llama/llama-3, got %+v", acc)
+	}
+}
+

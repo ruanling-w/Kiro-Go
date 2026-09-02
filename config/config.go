@@ -117,6 +117,15 @@ type Account struct {
 	RemoteBaseURL     string `json:"remoteBaseURL,omitempty"`
 	RemoteCheckKeyURL string `json:"remoteCheckKeyURL,omitempty"`
 
+	// Voyage AI fields. Provider == "voyage" / AuthMethod == "voyage".
+	// VoyageAPIKey holds the secret key from the Voyage AI dashboard.
+	VoyageAPIKey string              `json:"voyageApiKey,omitempty"`
+	VoyageUsage  map[string]int64    `json:"voyageUsage,omitempty"` // per-model token usage
+	VoyageQuota  []VoyageQuotaBucket `json:"voyageQuota,omitempty"` // computed free tier buckets
+
+	// Custom/priority models configured for this account (e.g. for remotekiro / custom API keys)
+	CustomModels []string `json:"customModels,omitempty"`
+
 	// Per-account outbound proxy (falls back to global ProxyURL if empty)
 	ProxyURL string `json:"proxyURL,omitempty"`
 

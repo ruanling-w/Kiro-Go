@@ -99,7 +99,7 @@ func main() {
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 30 * time.Second,
-		ReadTimeout:       60 * time.Second,
+		ReadTimeout:       5 * time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}
 

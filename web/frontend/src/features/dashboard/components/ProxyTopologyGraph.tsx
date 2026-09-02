@@ -30,6 +30,7 @@ const PROVIDER_HEX: Record<string, string> = {
   grok: '#71717a',
   codex: '#10b981',
   remotekiro: '#14b8a6',
+  voyage: '#3b82f6',
 }
 
 function providerHex(p: string) {

@@ -327,23 +327,34 @@ export async function importKiroApiKey() {
 
 
 export function modalRemoteKiro(title, body) {
-  title.textContent = t('modal.remotekiroTitle') || 'Remote Kiro-Go';
+  title.textContent = t('modal.remotekiroTitle') || 'Nhập API key';
   body.innerHTML =
-    '<p class="help-block">' + escapeHtml(t('modal.remotekiroDesc') || 'Proxy requests through another Kiro-Go instance. Enter its public base URL and a client API key (sk-…). Local and remote may both bill usage.') + '</p>' +
+    '<p class="help-block">' + escapeHtml(t('modal.remotekiroDesc') || 'Proxy qua endpoint khác bằng base URL và API key. Có thể tuỳ chỉnh và ưu tiên các model mong muốn.') + '</p>' +
     '<div class="form-group">' +
     '<label>' + escapeHtml(t('remotekiro.baseUrlLabel') || 'Base URL') + ' <span class="text-danger">*</span></label>' +
     '<input type="text" id="remoteKiroBaseUrl" class="font-mono" placeholder="' + escapeAttr(t('remotekiro.baseUrlPlaceholder') || 'https://host:port') + '" />' +
-    '<p class="help-block text-xs mt-1">' + escapeHtml(t('remotekiro.baseUrlHint') || 'Root URL of the remote Kiro-Go (no trailing /v1).') + '</p>' +
+    '<p class="help-block text-xs mt-1">' + escapeHtml(t('remotekiro.baseUrlHint') || 'Root URL of the remote instance (no trailing /v1).') + '</p>' +
     '</div>' +
     '<div class="form-group">' +
     '<label>' + escapeHtml(t('remotekiro.apiKeyLabel') || 'API Key') + ' <span class="text-danger">*</span></label>' +
     '<input type="password" id="remoteKiroApiKey" class="font-mono" placeholder="' + escapeAttr(t('remotekiro.apiKeyPlaceholder') || 'sk-...') + '" autocomplete="off" />' +
-    '<p class="help-block text-xs mt-1">' + escapeHtml(t('remotekiro.apiKeyHint') || 'API key from the remote instance Settings → API Keys.') + '</p>' +
+    '<p class="help-block text-xs mt-1">' + escapeHtml(t('remotekiro.apiKeyHint') || 'API key from upstream provider.') + '</p>' +
+    '</div>' +
+    '<div class="form-group">' +
+    '<label>' + escapeHtml(t('remotekiro.modelsLabel') || 'Danh sách Model') + '</label>' +
+    '<input type="text" id="remoteKiroModels" class="font-mono" value="claude-sonnet-4-5, claude-opus-4.8, claude-haiku-4-5" placeholder="' + escapeAttr(t('remotekiro.modelsPlaceholder') || 'claude-sonnet-4-5, claude-opus-4.8, claude-haiku-4-5') + '" />' +
+    '<div class="model-presets mt-1" style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;padding-top:4px;">' +
+    '<span class="text-xs text-muted">' + escapeHtml(t('remotekiro.priorityModels') || 'Ưu tiên:') + '</span>' +
+    '<button type="button" class="btn btn-xs btn-outline preset-model-btn" data-model="claude-sonnet-4-5">+ claude-sonnet-4-5</button>' +
+    '<button type="button" class="btn btn-xs btn-outline preset-model-btn" data-model="claude-opus-4.8">+ claude-opus-4.8</button>' +
+    '<button type="button" class="btn btn-xs btn-outline preset-model-btn" data-model="claude-haiku-4-5">+ claude-haiku-4-5</button>' +
+    '</div>' +
+    '<p class="help-block text-xs mt-1">' + escapeHtml(t('remotekiro.modelsHint') || 'Enter model IDs separated by commas.') + '</p>' +
     '</div>' +
     '<div class="form-group">' +
     '<label>' + escapeHtml(t('remotekiro.checkKeyUrlLabel') || 'Check-key URL') + '</label>' +
     '<input type="text" id="remoteKiroCheckKeyUrl" class="font-mono" placeholder="' + escapeAttr(t('remotekiro.checkKeyUrlPlaceholder') || 'https://host/checkkey/info') + '" />' +
-    '<p class="help-block text-xs mt-1">' + escapeHtml(t('remotekiro.checkKeyUrlHint') || 'Optional. Full check-key endpoint of the remote instance so this account can mirror the key credit balance and skip when it runs out.') + '</p>' +
+    '<p class="help-block text-xs mt-1">' + escapeHtml(t('remotekiro.checkKeyUrlHint') || 'Optional. Full check-key endpoint of the remote instance.') + '</p>' +
     '</div>' +
     '<div class="form-group">' +
     '<label>' + escapeHtml(t('detail.nickname') || 'Nickname') + '</label>' +
@@ -355,15 +366,29 @@ export function modalRemoteKiro(title, body) {
     '</div>' +
     '<div class="modal-footer">' +
     '<button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button>' +
-    '<button class="btn btn-primary" id="addRemoteKiroBtn" type="button">' + escapeHtml(t('remotekiro.add') || 'Add Remote Instance') + '</button>' +
+    '<button class="btn btn-primary" id="addRemoteKiroBtn" type="button">' + escapeHtml(t('remotekiro.add') || 'Thêm tài khoản') + '</button>' +
     '</div>';
   $('addRemoteKiroBtn').addEventListener('click', importRemoteKiro);
+  body.querySelectorAll('.preset-model-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const model = btn.getAttribute('data-model');
+      const input = $('remoteKiroModels');
+      if (!input) return;
+      const parts = input.value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+      if (!parts.includes(model)) {
+        parts.push(model);
+        input.value = parts.join(', ');
+      }
+    });
+  });
 }
 export async function importRemoteKiro() {
   const baseURL = ($('remoteKiroBaseUrl').value || '').trim();
   const apiKey = ($('remoteKiroApiKey').value || '').trim();
   const checkKeyURL = ($('remoteKiroCheckKeyUrl').value || '').trim();
   const nickname = ($('remoteKiroNickname').value || '').trim();
+  const rawModels = ($('remoteKiroModels') ? $('remoteKiroModels').value : '').trim();
+  const customModels = rawModels ? rawModels.split(/[\n,]+/).map(s => s.trim()).filter(Boolean) : [];
   const weight = parseInt(($('remoteKiroWeight').value || '1'), 10) || 1;
   if (!baseURL) return toastError((t('remotekiro.baseUrlLabel') || 'Base URL') + ' is required');
   if (!apiKey) return toastError((t('remotekiro.apiKeyLabel') || 'API Key') + ' is required');
@@ -375,7 +400,7 @@ export async function importRemoteKiro() {
   try {
     const res = await api('/auth/remote-kiro', {
       method: 'POST',
-      body: JSON.stringify({ baseURL, apiKey, checkKeyURL, nickname, weight })
+      body: JSON.stringify({ baseURL, apiKey, checkKeyURL, nickname, weight, customModels })
     });
     const d = await res.json().catch(function () { return {}; });
     if (!res.ok || d.error) {
@@ -384,14 +409,14 @@ export async function importRemoteKiro() {
     closeModal();
     await loadAccounts();
     await loadStats();
-    toastPrimary(t('remotekiro.added') || 'Remote Kiro-Go account added');
+    toastPrimary(t('remotekiro.added') || 'Đã thêm tài khoản API key');
     if (d.account && d.account.id) autoRefreshNewAccount(d.account.id);
   } catch (e) {
     toastError(String(e && e.message ? e.message : e));
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = t('remotekiro.add') || 'Add Remote Instance';
+      btn.textContent = t('remotekiro.add') || 'Thêm tài khoản';
     }
   }
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"kiro-go/config"
+	"kiro-go/pool"
 	"net/http"
 	"strings"
 	"time"
@@ -106,29 +107,30 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 
 	requestedModel := req.Model
 	thinkingCfg := config.GetThinkingConfig()
-	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
+	routingModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
 	var comboRoute *comboRouteSnapshot
 	if req.Stream {
-		if _, ok := h.lookupComboSnapshot(actualModel); ok {
-			comboRoute, err = h.resolveComboRoute(actualModel)
+		if _, ok := h.lookupComboSnapshot(routingModel); ok {
+			comboRoute, err = h.resolveComboRoute(routingModel)
 			if err != nil {
 				h.sendOpenAIError(w, http.StatusServiceUnavailable, "invalid_request_error", err.Error())
 				return
 			}
 			if comboRoute.Combo.Strategy == "fusion" {
-				h.sendOpenAIError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo routing is not enabled yet")
+				h.sendOpenAIError(w, http.StatusNotImplemented, "invalid_request_error", "Fusion Combo streaming is not enabled yet")
 				return
 			}
 		}
 	} else {
-		comboRoute, err = h.resolveComboRoute(actualModel)
+		comboRoute, err = h.resolveComboRoute(routingModel)
 		if err != nil {
 			h.sendOpenAIError(w, http.StatusServiceUnavailable, "invalid_request_error", err.Error())
 			return
 		}
 	}
 	comboRoute = h.applyComboRequirements(comboRoute, responsesComboRequirements(req.Input))
-	openaiReq.Model = actualModel
+	upstreamModel := pool.CleanRoutingModel(routingModel)
+	openaiReq.Model = upstreamModel
 
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(openaiReq)
 	kiroPayload := OpenAIToKiro(openaiReq, thinking)
@@ -144,7 +146,7 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 				apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 			return
 		}
-		h.handleResponsesStream(r.Context(), w, kiroPayload, actualModel, thinking, estimatedInputTokens,
+		h.handleResponsesStream(r.Context(), w, kiroPayload, routingModel, thinking, estimatedInputTokens,
 			apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 		return
 	}
@@ -159,7 +161,7 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.handleResponsesNonStream(r.Context(), w, kiroPayload, actualModel, thinking, estimatedInputTokens,
+	h.handleResponsesNonStream(r.Context(), w, kiroPayload, routingModel, thinking, estimatedInputTokens,
 		apiKeyID, clientIP, respID, &req, storedInputCopy, storeResponse)
 }
 
@@ -337,6 +339,7 @@ func (h *Handler) handleResponsesStreamModels(
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

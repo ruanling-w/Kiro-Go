@@ -561,7 +561,7 @@ func requestLogToRow(e RequestLog) store.RequestLogRow {
 
 // backgroundRefresh 后台定时刷新账户信息
 func (h *Handler) backgroundRefresh() {
-	ticker := time.NewTicker(30 * time.Minute) // 每 30 分钟刷新一次
+	ticker := time.NewTicker(1 * time.Minute) // Mỗi 1 phút làm mới tất cả các acc
 	defer ticker.Stop()
 
 	// Startup refresh is cancellable so Close does not wait ten seconds.
@@ -768,6 +768,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.handleImageGenerations(w, ar)
+	case path == "/v1/embeddings" || path == "/embeddings":
+		ar := h.authenticateForOpenAI(w, r)
+		if ar == nil {
+			return
+		}
+		h.handleEmbeddings(w, ar)
+	case path == "/v1/rerank" || path == "/rerank":
+		ar := h.authenticateForOpenAI(w, r)
+		if ar == nil {
+			return
+		}
+		h.handleRerank(w, ar)
 	case path == "/v1/models" || path == "/models":
 		h.handleModels(w, r)
 	case path == "/api/event_logging/batch":
@@ -825,6 +837,8 @@ func isPublicAPIPath(path string) bool {
 		"/v1/responses", "/responses",
 		"/v1/images/generations", "/images/generations",
 		"/v1/images/edits", "/images/edits",
+		"/v1/embeddings", "/embeddings",
+		"/v1/rerank", "/rerank",
 		"/v1/models", "/models",
 		"/v1/stats":
 		return true
@@ -889,19 +903,91 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		models = fallbackAnthropicModels(thinkingSuffix)
 	}
 
-	// 添加别名模型
+	// 添加别名与嵌入/重排模型
 	models = append(models,
 		buildModelInfo("auto", "kiro-proxy", true),
 		buildModelInfo("gpt-4o", "kiro-proxy", true),
 		buildModelInfo("gpt-4", "kiro-proxy", true),
+		buildModelInfo("voyage-4-large", "voyage", false),
+		buildModelInfo("voyage-4", "voyage", false),
+		buildModelInfo("voyage-4-lite", "voyage", false),
+		buildModelInfo("voyage-code-4", "voyage", false),
+		buildModelInfo("voyage-3.5", "voyage", false),
+		buildModelInfo("voyage-3", "voyage", false),
+		buildModelInfo("voyage-finance-2", "voyage", false),
+		buildModelInfo("voyage-law-2", "voyage", false),
+		buildModelInfo("rerank-2.5", "voyage", false),
+		buildModelInfo("rerank-2.5-lite", "voyage", false),
+		buildModelInfo("rerank-2", "voyage", false),
+		buildModelInfo("text-embedding-3-small", "openai", false),
+		buildModelInfo("text-embedding-3-large", "openai", false),
+		buildModelInfo("text-embedding-ada-002", "openai", false),
+		buildModelInfo("text-embedding-004", "google", false),
 	)
 	models = appendAdvertisedCombos(h, models)
+	models = appendNamespacedAccountModels(h, models)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"object": "list",
 		"data":   models,
 	})
 	return
+}
+
+func appendNamespacedAccountModels(h *Handler, models []map[string]interface{}) []map[string]interface{} {
+	if h == nil || h.pool == nil {
+		return models
+	}
+	accounts := config.GetAccounts()
+	seen := make(map[string]bool)
+	for _, m := range models {
+		if id, ok := m["id"].(string); ok {
+			seen[strings.ToLower(id)] = true
+		}
+	}
+
+	for _, acc := range accounts {
+		if !acc.Enabled {
+			continue
+		}
+		tag := strings.TrimSpace(acc.Nickname)
+		if tag == "" {
+			continue
+		}
+		var modelIDs []string
+		if len(acc.CustomModels) > 0 {
+			modelIDs = acc.CustomModels
+		} else {
+			modelIDs = h.pool.GetModelList(acc.ID)
+			if len(modelIDs) == 0 {
+				switch pool.BucketOf(&acc) {
+				case "codex":
+					modelIDs = codexModelIDs()
+				case "antigravity":
+					modelIDs = antigravityModelIDs()
+				case "grok":
+					modelIDs = grokModelIDs()
+				case "voyage":
+					modelIDs = voyageModelIDs()
+				}
+			}
+		}
+
+		owner := pool.BucketOf(&acc)
+		for _, m := range modelIDs {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				continue
+			}
+			namespacedID := tag + "/" + m
+			if !seen[strings.ToLower(namespacedID)] {
+				seen[strings.ToLower(namespacedID)] = true
+				supportsImage := isGrokImageModel(m) || isCodexImageModel(m) || isAntigravityImageModel(m)
+				models = append(models, buildModelInfo(namespacedID, owner, supportsImage))
+			}
+		}
+	}
+	return models
 }
 
 func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []map[string]interface{} {
@@ -937,6 +1023,8 @@ func modelOwnedBy(m ModelInfo) string {
 	switch {
 	case strings.HasPrefix(id, "grok") || strings.Contains(desc, "xai") || strings.Contains(desc, "grok"):
 		return "xai"
+	case strings.HasPrefix(id, "voyage") || strings.HasPrefix(id, "rerank") || strings.Contains(desc, "voyage"):
+		return "voyage"
 	case strings.HasPrefix(id, "gpt-") || strings.HasPrefix(id, "o1") || strings.HasPrefix(id, "o3") || strings.HasPrefix(id, "o4") || strings.Contains(desc, "codex") || strings.Contains(desc, "openai"):
 		return "openai"
 	case strings.HasPrefix(id, "gemini") || strings.Contains(desc, "antigravity") || strings.Contains(desc, "google"):
@@ -1052,13 +1140,27 @@ func (h *Handler) refreshModelsCache() {
 			continue
 		}
 
+		// Voyage AI accounts use a static model catalog for embedding and reranker models.
+		if isVoyageAccount(account) {
+			vModels := voyageModelInfos()
+			h.pool.SetModelList(account.ID, voyageModelIDs())
+			aggregated = mergeUniqueModels(aggregated, vModels)
+			continue
+		}
+
 		// Remote Kiro-Go peers expose OpenAI-compatible /v1/models.
 		if isRemoteKiroAccount(account) {
-			modelIDs, err := FetchRemoteKiroModels(account)
-			if err != nil {
-				logger.Warnf("[ModelsCache] Failed to refresh remote models for %s: %v", account.Email, err)
-				h.handleBackgroundFailure(account, err, "ModelsCache")
-				continue
+			var modelIDs []string
+			if len(account.CustomModels) > 0 {
+				modelIDs = account.CustomModels
+			} else {
+				var err error
+				modelIDs, err = FetchRemoteKiroModels(account)
+				if err != nil {
+					logger.Warnf("[ModelsCache] Failed to refresh remote models for %s: %v", account.Email, err)
+					h.handleBackgroundFailure(account, err, "ModelsCache")
+					continue
+				}
 			}
 			h.pool.SetModelList(account.ID, modelIDs)
 			aggregated = mergeUniqueModels(aggregated, remoteModelInfos(modelIDs))
@@ -1132,11 +1234,29 @@ func (h *Handler) fetchAndCacheAccountModels(account *config.Account) error {
 		return nil
 	}
 
+	// Voyage AI accounts use a static model catalog.
+	if isVoyageAccount(account) {
+		vModels := voyageModelInfos()
+		h.pool.SetModelList(account.ID, modelInfoIDs(vModels))
+		h.modelsCacheMu.Lock()
+		h.cachedModels = mergeUniqueModels(h.cachedModels, vModels)
+		h.modelsCacheTime = time.Now().Unix()
+		h.modelsCacheMu.Unlock()
+		logger.Infof("[ModelsCache] Registered %d Voyage AI models for account %s", len(vModels), account.Email)
+		return nil
+	}
+
 	// Remote Kiro-Go peers: live GET /v1/models.
 	if isRemoteKiroAccount(account) {
-		modelIDs, err := FetchRemoteKiroModels(account)
-		if err != nil {
-			return err
+		var modelIDs []string
+		if len(account.CustomModels) > 0 {
+			modelIDs = account.CustomModels
+		} else {
+			var err error
+			modelIDs, err = FetchRemoteKiroModels(account)
+			if err != nil {
+				return err
+			}
 		}
 		h.pool.SetModelList(account.ID, modelIDs)
 		rModels := remoteModelInfos(modelIDs)
@@ -1357,8 +1477,8 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 
 	requestedModel := req.Model
 	thinkingCfg := config.GetThinkingConfig()
-	actualModel, thinking := resolveClaudeThinkingMode(req.Model, req.Thinking, thinkingCfg.Suffix)
-	comboRoute, err := h.resolveComboRoute(actualModel)
+	routingModel, thinking := resolveClaudeThinkingMode(req.Model, req.Thinking, thinkingCfg.Suffix)
+	comboRoute, err := h.resolveComboRoute(routingModel)
 	if err != nil {
 		h.sendClaudeError(w, http.StatusServiceUnavailable, "api_error", err.Error())
 		return
@@ -1368,7 +1488,8 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 		return
 	}
 	comboRoute = h.applyComboRequirements(comboRoute, claudeComboRequirements(&req))
-	req.Model = actualModel
+	upstreamModel := pool.CleanRoutingModel(routingModel)
+	req.Model = upstreamModel
 	effectiveReq := cloneClaudeRequestForThinking(&req, thinking)
 	thinkingResponseOpts := resolveClaudeThinkingResponseOptions(req.Thinking, thinkingCfg.ClaudeFormat)
 	estimatedInputTokens := estimateClaudeRequestInputTokens(effectiveReq)
@@ -1393,10 +1514,10 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 		}
 	} else if req.Stream {
 		cacheIntent := h.claudeCacheIntent(&req, thinking, apiKeyID)
-		h.handleClaudeStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, cacheIntent, apiKeyID, clientIP)
+		h.handleClaudeStream(r.Context(), w, kiroPayload, routingModel, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, cacheIntent, apiKeyID, clientIP)
 	} else {
 		cacheIntent := h.claudeCacheIntent(&req, thinking, apiKeyID)
-		h.handleClaudeNonStream(r.Context(), w, kiroPayload, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, cacheIntent, apiKeyID, clientIP)
+		h.handleClaudeNonStream(r.Context(), w, kiroPayload, routingModel, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, cacheIntent, apiKeyID, clientIP)
 	}
 }
 
@@ -1427,6 +1548,7 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		h.sendClaudeError(w, 500, "api_error", "Streaming not supported")
@@ -1888,7 +2010,7 @@ func (h *Handler) streamClaudeAttempt(ctx context.Context, account *config.Accou
 		result.writeErr = err
 		return result
 	}
-	if realInputTokens > 0 {
+	if inputTokens <= 0 && realInputTokens > 0 {
 		inputTokens = realInputTokens
 	} else if inputTokens <= 0 {
 		inputTokens = at.estimatedInputTokens
@@ -2447,12 +2569,14 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 			rawThinkingContent = ""
 		}
 
-		if realInputTokens > 0 {
+		if inputTokens <= 0 && realInputTokens > 0 {
 			inputTokens = realInputTokens
 		} else if inputTokens <= 0 {
 			inputTokens = estimatedInputTokens
 		}
-		outputTokens = estimateClaudeOutputTokens(finalContent, rawThinkingContent, toolUses)
+		if outputTokens <= 0 {
+			outputTokens = estimateClaudeOutputTokens(finalContent, rawThinkingContent, toolUses)
+		}
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
@@ -2525,10 +2649,10 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	// Preserve the exact client identity for public Combo responses.
 	requestedModel := req.Model
 	thinkingCfg := config.GetThinkingConfig()
-	actualModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
+	routingModel, thinking := ParseModelAndThinking(req.Model, thinkingCfg.Suffix)
 	// Resolve the Combo once for both stream and non-stream: round-robin
 	// reservation must be consumed exactly once per request.
-	resolved, resolveErr := h.resolveComboRoute(actualModel)
+	resolved, resolveErr := h.resolveComboRoute(routingModel)
 	if resolveErr != nil {
 		h.sendOpenAIError(w, http.StatusServiceUnavailable, "server_error", resolveErr.Error())
 		return
@@ -2538,7 +2662,8 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resolved = h.applyComboRequirements(resolved, openAIComboRequirements(&req))
-	req.Model = actualModel
+	upstreamModel := pool.CleanRoutingModel(routingModel)
+	req.Model = upstreamModel
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
@@ -2559,9 +2684,9 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	kiroPayload := OpenAIToKiro(&req, thinking)
 	cacheIntent := h.openAICacheIntent(&req, thinking, apiKeyID)
 	if req.Stream {
-		h.handleOpenAIStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, cacheIntent, apiKeyID, clientIP)
+		h.handleOpenAIStream(r.Context(), w, kiroPayload, routingModel, thinking, estimatedInputTokens, cacheIntent, apiKeyID, clientIP)
 	} else {
-		h.handleOpenAINonStream(r.Context(), w, kiroPayload, req.Model, thinking, estimatedInputTokens, cacheIntent, apiKeyID, clientIP)
+		h.handleOpenAINonStream(r.Context(), w, kiroPayload, routingModel, thinking, estimatedInputTokens, cacheIntent, apiKeyID, clientIP)
 	}
 }
 
@@ -2678,6 +2803,7 @@ func setOpenAIStreamHeaders(sink http.ResponseWriter) {
 	sink.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	sink.Header().Set("Cache-Control", "no-cache")
 	sink.Header().Set("Connection", "keep-alive")
+	sink.Header().Set("X-Accel-Buffering", "no")
 }
 
 // emitOpenAIStreamTerminalError publishes the mid-stream failure chunk plus the
@@ -3300,7 +3426,7 @@ func (h *Handler) streamOpenAIAttempt(ctx context.Context, account *config.Accou
 		return result
 	}
 
-	if realInputTokens > 0 {
+	if inputTokens <= 0 && realInputTokens > 0 {
 		inputTokens = realInputTokens
 	} else if inputTokens <= 0 {
 		inputTokens = at.estimatedInputTokens
@@ -3313,10 +3439,12 @@ func (h *Handler) streamOpenAIAttempt(ctx context.Context, account *config.Accou
 	if !thinking {
 		reasoningOutput = ""
 	}
-	outputTokens = estimateApproxTokens(outputContent) + estimateApproxTokens(reasoningOutput)
-	for _, tc := range toolCalls {
-		outputTokens += estimateApproxTokens(tc.Function.Name)
-		outputTokens += estimateApproxTokens(tc.Function.Arguments)
+	if outputTokens <= 0 {
+		outputTokens = estimateApproxTokens(outputContent) + estimateApproxTokens(reasoningOutput)
+		for _, tc := range toolCalls {
+			outputTokens += estimateApproxTokens(tc.Function.Name)
+			outputTokens += estimateApproxTokens(tc.Function.Arguments)
+		}
 	}
 
 	finishReason := "stop"
@@ -3433,12 +3561,14 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 			reasoningContent = ""
 		}
 
-		if realInputTokens > 0 {
+		if inputTokens <= 0 && realInputTokens > 0 {
 			inputTokens = realInputTokens
 		} else if inputTokens <= 0 {
 			inputTokens = estimatedInputTokens
 		}
-		outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
+		if outputTokens <= 0 {
+			outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
+		}
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
@@ -3522,6 +3652,10 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 		// Codex "access_token" imports carry a single pasted token with no refresh
 		// token — nothing to refresh. OAuth Codex accounts have a refresh token and
 		// fall through to the normal expiry-based refresh below.
+		return nil
+	}
+	if isVoyageAccount(account) {
+		// Voyage AI uses a static secret API key (pa-...) — nothing to refresh.
 		return nil
 	}
 	if account.ExpiresAt == 0 || time.Now().Unix() < account.ExpiresAt-tokenRefreshSkewSeconds {
@@ -3658,6 +3792,13 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/accounts/"), "/overage")
 		h.apiGetAccountOverage(w, r, id)
 
+	case strings.HasPrefix(path, "/accounts/") && strings.HasSuffix(path, "/codex/reset-credits/consume") && r.Method == "POST":
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/accounts/"), "/codex/reset-credits/consume")
+		h.apiConsumeCodexResetCredit(w, r, id)
+	case strings.HasPrefix(path, "/accounts/") && strings.HasSuffix(path, "/codex/reset-credits") && r.Method == "GET":
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/accounts/"), "/codex/reset-credits")
+		h.apiGetCodexResetCredits(w, r, id)
+
 	case strings.HasPrefix(path, "/accounts/") && strings.HasSuffix(path, "/full") && r.Method == "GET":
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/accounts/"), "/full")
 		h.apiGetAccountFull(w, r, id)
@@ -3679,6 +3820,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiCancelKiroSso(w, r)
 	case path == "/auth/kiro-apikey" && r.Method == "POST":
 		h.apiImportKiroAPIKey(w, r)
+	case path == "/auth/voyage" && r.Method == "POST":
+		h.apiImportVoyage(w, r)
 	case path == "/auth/remote-kiro" && r.Method == "POST":
 		h.apiImportRemoteKiro(w, r)
 	case path == "/auth/antigravity/start" && r.Method == "POST":
@@ -3862,6 +4005,8 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"codexQuota":        a.CodexQuota,
 			"codexLimitReached": a.CodexLimitReached,
 			"codexResetCredits": a.CodexResetCredits,
+			"voyageUsage":       a.VoyageUsage,
+			"voyageQuota":       a.VoyageQuota,
 			"requestCount":      stats.RequestCount,
 			"errorCount":        stats.ErrorCount,
 			"totalTokens":       stats.TotalTokens,
@@ -3901,7 +4046,8 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 			isAntigravityAccount(&account) ||
 			isGrokAccount(&account) ||
 			isCodexAccount(&account) ||
-			isRemoteKiroAccount(&account)
+			isRemoteKiroAccount(&account) ||
+			isVoyageAccount(&account)
 
 		if shouldRefresh {
 			go func(acc config.Account) {
@@ -3948,7 +4094,6 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	}
 
 	// 只更新传入的字段
-	oldEnabled := existing.Enabled
 	if v, ok := updates["enabled"].(bool); ok {
 		existing.Enabled = v
 	}
@@ -3964,6 +4109,46 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	if v, ok := updates["proxyURL"].(string); ok {
 		existing.ProxyURL = v
 	}
+	if v, ok := updates["remoteBaseURL"].(string); ok && strings.TrimSpace(v) != "" {
+		canonical, err := validateRemoteBaseURL(v)
+		if err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		existing.RemoteBaseURL = canonical
+	}
+	if v, ok := updates["accessToken"].(string); ok && strings.TrimSpace(v) != "" {
+		existing.AccessToken = strings.TrimSpace(v)
+	}
+	if v, ok := updates["apiKey"].(string); ok && strings.TrimSpace(v) != "" {
+		existing.AccessToken = strings.TrimSpace(v)
+	}
+	if v, ok := updates["remoteCheckKeyURL"].(string); ok {
+		checkURL := strings.TrimSpace(v)
+		if checkURL != "" {
+			if err := validateRemoteCheckKeyURL(checkURL); err != nil {
+				w.WriteHeader(400)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		existing.RemoteCheckKeyURL = checkURL
+	}
+	if v, ok := updates["customModels"].([]interface{}); ok {
+		models := make([]string, 0, len(v))
+		for _, m := range v {
+			if s, ok := m.(string); ok && strings.TrimSpace(s) != "" {
+				models = append(models, strings.TrimSpace(s))
+			}
+		}
+		existing.CustomModels = models
+		h.pool.SetModelList(existing.ID, models)
+		h.modelsCacheMu.Lock()
+		h.cachedModels = mergeUniqueModels(h.cachedModels, remoteModelInfos(models))
+		h.modelsCacheTime = time.Now().Unix()
+		h.modelsCacheMu.Unlock()
+	}
 
 	if err := config.UpdateAccount(id, *existing); err != nil {
 		w.WriteHeader(500)
@@ -3972,12 +4157,10 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	}
 
 	h.pool.Reload()
-	// 账号从禁用→启用时，自动拉取并缓存模型列表
-	if !oldEnabled && existing.Enabled && existing.AccessToken != "" {
+	// 账号更新且启用时，异步重新拉取并同步模型
+	if existing.Enabled && (existing.AccessToken != "" || isAntigravityAccount(existing) || isGrokAccount(existing) || isCodexAccount(existing) || isRemoteKiroAccount(existing) || isVoyageAccount(existing)) {
 		go func(acc config.Account) {
-			if err := h.fetchAndCacheAccountModels(&acc); err != nil {
-				logger.Warnf("[ModelsCache] Auto-refresh failed for re-enabled account %s: %v", acc.Email, err)
-			}
+			_ = h.fetchAndCacheAccountModels(&acc)
 		}(*existing)
 	}
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
@@ -4072,6 +4255,83 @@ func (h *Handler) apiSetAccountOverage(w http.ResponseWriter, r *http.Request, i
 	})
 }
 
+// apiGetCodexResetCredits GET /admin/api/accounts/{id}/codex/reset-credits
+func (h *Handler) apiGetCodexResetCredits(w http.ResponseWriter, r *http.Request, id string) {
+	accounts := config.GetAccounts()
+	var account *config.Account
+	for i := range accounts {
+		if accounts[i].ID == id {
+			account = &accounts[i]
+			break
+		}
+	}
+	if account == nil {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Account not found"})
+		return
+	}
+	if account.Provider != "codex" && account.AuthMethod != "codex" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Account is not a Codex account"})
+		return
+	}
+
+	res, err := FetchCodexResetCredits(account)
+	if err != nil {
+		w.WriteHeader(502)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(res)
+}
+
+// apiConsumeCodexResetCredit POST /admin/api/accounts/{id}/codex/reset-credits/consume
+func (h *Handler) apiConsumeCodexResetCredit(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		CreditID string `json:"credit_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	accounts := config.GetAccounts()
+	var account *config.Account
+	for i := range accounts {
+		if accounts[i].ID == id {
+			account = &accounts[i]
+			break
+		}
+	}
+	if account == nil {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Account not found"})
+		return
+	}
+	if account.Provider != "codex" && account.AuthMethod != "codex" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Account is not a Codex account"})
+		return
+	}
+
+	res, err := ConsumeCodexResetCredit(account, body.CreditID)
+	if err != nil {
+		w.WriteHeader(502)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	h.pool.Reload()
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":   true,
+		"creditId":  res.CreditID,
+		"accountId": res.AccountID,
+		"usage":     res.Usage,
+	})
+}
+
+
 // apiBatchAccounts 批量操作账号（启用/禁用/刷新）
 func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -4100,8 +4360,8 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 		var toRefreshModels []config.Account
 		for _, a := range accounts {
 			if idSet[a.ID] {
-				// 记录本次从禁用→启用、且有 token 的账号
-				if enabled && !a.Enabled && a.AccessToken != "" {
+				// 记录本次从禁用→启用的有效账号
+				if enabled && !a.Enabled && (a.AccessToken != "" || isAntigravityAccount(&a) || isGrokAccount(&a) || isCodexAccount(&a) || isRemoteKiroAccount(&a) || isVoyageAccount(&a)) {
 					toRefreshModels = append(toRefreshModels, a)
 				}
 				a.Enabled = enabled
@@ -5173,12 +5433,14 @@ func (h *Handler) apiImportKiroAPIKey(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) apiImportRemoteKiro(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BaseURL     string `json:"baseURL"`
-		APIKey      string `json:"apiKey"`
-		Nickname    string `json:"nickname"`
-		Weight      int    `json:"weight"`
-		ProxyURL    string `json:"proxyURL"`
-		CheckKeyURL string `json:"checkKeyURL"`
+		BaseURL      string   `json:"baseURL"`
+		APIKey       string   `json:"apiKey"`
+		Nickname     string   `json:"nickname"`
+		Weight       int      `json:"weight"`
+		ProxyURL     string   `json:"proxyURL"`
+		CheckKeyURL  string   `json:"checkKeyURL"`
+		CustomModels []string `json:"customModels"`
+		Models       []string `json:"models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -5186,7 +5448,12 @@ func (h *Handler) apiImportRemoteKiro(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canonical, modelIDs, err := ValidateRemoteKiro(req.BaseURL, req.APIKey, req.ProxyURL)
+	customModels := req.CustomModels
+	if len(customModels) == 0 && len(req.Models) > 0 {
+		customModels = req.Models
+	}
+
+	canonical, modelIDs, err := ValidateRemoteKiro(req.BaseURL, req.APIKey, req.ProxyURL, customModels)
 	if err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -5224,6 +5491,7 @@ func (h *Handler) apiImportRemoteKiro(w http.ResponseWriter, r *http.Request) {
 		Provider:          "remotekiro",
 		RemoteBaseURL:     canonical,
 		RemoteCheckKeyURL: checkKeyURL,
+		CustomModels:      modelIDs,
 		ProxyURL:          strings.TrimSpace(req.ProxyURL),
 		Weight:            weight,
 		ExpiresAt:         0,
@@ -5264,6 +5532,71 @@ func (h *Handler) apiImportRemoteKiro(w http.ResponseWriter, r *http.Request) {
 			"remoteCheckKeyURL": account.RemoteCheckKeyURL,
 			"modelCount":        len(modelIDs),
 			"nickname":          account.Nickname,
+		},
+	})
+}
+
+func (h *Handler) apiImportVoyage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		APIKey   string `json:"apiKey"`
+		Nickname string `json:"nickname"`
+		ProxyURL string `json:"proxyURL"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	apiKey := strings.TrimSpace(req.APIKey)
+	if apiKey == "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "API Key is required"})
+		return
+	}
+
+	keyPrefix := apiKey
+	if len(keyPrefix) > 8 {
+		keyPrefix = keyPrefix[:8]
+	}
+	email := "voyage@" + keyPrefix + ".ai"
+
+	nickname := strings.TrimSpace(req.Nickname)
+	if nickname == "" {
+		nickname = "Voyage AI"
+	}
+
+	account := config.Account{
+		ID:           auth.GenerateAccountID(),
+		Email:        email,
+		Nickname:     nickname,
+		VoyageAPIKey: apiKey,
+		AuthMethod:   "voyage",
+		Provider:     "voyage",
+		ProxyURL:     strings.TrimSpace(req.ProxyURL),
+		Enabled:      true,
+		VoyageUsage:  make(map[string]int64),
+		VoyageQuota:  config.CalculateVoyageBuckets(nil),
+	}
+
+	if err := config.AddAccount(account); err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	h.pool.Reload()
+	go func(acc config.Account) {
+		_ = h.fetchAndCacheAccountModels(&acc)
+	}(account)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"account": map[string]interface{}{
+			"id":       account.ID,
+			"email":    account.Email,
+			"nickname": account.Nickname,
+			"provider": account.Provider,
 		},
 	})
 }
@@ -5841,6 +6174,50 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 		Model string `json:"model"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
+
+	// Voyage accounts test embedding or rerank models
+	if isVoyageAccount(account) {
+		if req.Model == "" || !IsVoyageModel(req.Model) {
+			req.Model = "voyage-4-large"
+		}
+		if IsVoyageRerankModel(req.Model) {
+			docsJSON, _ := json.Marshal([]string{"test document 1", "test document 2"})
+			rerankResp, err := CallVoyageRerank(r.Context(), account, &RerankRequest{
+				Model:     req.Model,
+				Query:     "test query",
+				Documents: json.RawMessage(docsJSON),
+			})
+			if err != nil {
+				w.WriteHeader(500)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"reply":   fmt.Sprintf("Reranked %d documents successfully", len(rerankResp.Results)),
+				"model":   req.Model,
+			})
+			return
+		} else {
+			inputJSON, _ := json.Marshal("test embedding string")
+			embResp, err := CallVoyageEmbedding(r.Context(), account, &EmbeddingRequest{
+				Model: req.Model,
+				Input: json.RawMessage(inputJSON),
+			})
+			if err != nil {
+				w.WriteHeader(500)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"reply":   fmt.Sprintf("Embedding generated successfully (%d vectors)", len(embResp.Data)),
+				"model":   req.Model,
+			})
+			return
+		}
+	}
+
 	if req.Model == "" {
 		req.Model = "claude-sonnet-4"
 	}
@@ -6065,6 +6442,9 @@ func (h *Handler) apiGetAccountFull(w http.ResponseWriter, r *http.Request, id s
 		"codexQuota":        account.CodexQuota,
 		"codexLimitReached": account.CodexLimitReached,
 		"codexResetCredits": account.CodexResetCredits,
+		"voyageApiKey":      account.VoyageAPIKey,
+		"voyageUsage":       account.VoyageUsage,
+		"voyageQuota":       account.VoyageQuota,
 		"requestCount":      stats.RequestCount,
 		"errorCount":        stats.ErrorCount,
 		"totalTokens":       stats.TotalTokens,
@@ -6130,14 +6510,32 @@ func (h *Handler) apiGetAccountModels(w http.ResponseWriter, r *http.Request, id
 
 	// Remote Kiro-Go peers: live OpenAI-compatible model list.
 	if isRemoteKiroAccount(account) {
-		modelIDs, err := FetchRemoteKiroModels(account)
-		if err != nil {
-			w.WriteHeader(500)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
+		var modelIDs []string
+		if len(account.CustomModels) > 0 {
+			modelIDs = account.CustomModels
+		} else {
+			var err error
+			modelIDs, err = FetchRemoteKiroModels(account)
+			if err != nil {
+				w.WriteHeader(500)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
 		}
 		models := remoteModelInfos(modelIDs)
 		h.pool.SetModelList(id, modelIDs)
+		h.modelsCacheMu.Lock()
+		h.cachedModels = mergeUniqueModels(h.cachedModels, models)
+		h.modelsCacheTime = time.Now().Unix()
+		h.modelsCacheMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "models": models})
+		return
+	}
+
+	// Voyage AI accounts serve embedding and reranker models.
+	if isVoyageAccount(account) {
+		models := voyageModelInfos()
+		h.pool.SetModelList(id, voyageModelIDs())
 		h.modelsCacheMu.Lock()
 		h.cachedModels = mergeUniqueModels(h.cachedModels, models)
 		h.modelsCacheTime = time.Now().Unix()
@@ -6199,6 +6597,10 @@ func (h *Handler) apiGetProviderModels(w http.ResponseWriter, r *http.Request, p
 	case "antigravity":
 		infos = antigravityModelInfos()
 		source = "static"
+	case "voyage", "voyageai":
+		infos = voyageModelInfos()
+		source = "static"
+		key = "voyage"
 	case "remotekiro":
 		infos, source = h.remoteKiroProviderModelInfos()
 		key = "remotekiro"
@@ -6293,6 +6695,14 @@ func (h *Handler) remoteKiroProviderModelInfos() ([]ModelInfo, string) {
 		a := &accounts[i]
 		if !isRemoteKiroAccount(a) {
 			continue
+		}
+		for _, id := range a.CustomModels {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			ids = append(ids, id)
 		}
 		for _, id := range h.pool.GetModelList(a.ID) {
 			id = strings.TrimSpace(id)

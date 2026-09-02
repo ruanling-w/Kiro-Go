@@ -12,8 +12,9 @@ services:
     env_file:
       - /home/ruanling/.kirogo/.env
     environment:
-      - CONFIG_PATH=/app/data/config.json
-      - KIRO_SSO_CALLBACK_BIND=0.0.0.0
-      - ANTIGRAVITY_CALLBACK_BIND=0.0.0.0
-      - XAI_CALLBACK_BIND=0.0.0.0
+      CONFIG_PATH: /app/data/config.json
+      LOG_LEVEL: debug
+      KIRO_SSO_CALLBACK_BIND: 0.0.0.0
+      ANTIGRAVITY_CALLBACK_BIND: 0.0.0.0
+      XAI_CALLBACK_BIND: 0.0.0.0
     restart: unless-stopped

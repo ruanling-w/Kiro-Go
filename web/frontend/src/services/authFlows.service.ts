@@ -83,6 +83,15 @@ export function completeIamSso(sessionId: string, callbackUrl: string): Promise<
 }
 
 // --- Direct imports (no session) ---
+export interface VoyageImport {
+  apiKey: string
+  nickname?: string
+  proxyURL?: string
+}
+export function importVoyage(body: VoyageImport): Promise<CompleteResponse> {
+  return http.post<CompleteResponse>('/auth/voyage', body)
+}
+
 export interface KiroApiKeyImport {
   apiKey: string
   region?: string
@@ -99,6 +108,8 @@ export interface RemoteKiroImport {
   weight?: number
   proxyURL?: string
   checkKeyURL?: string
+  customModels?: string[]
+  models?: string[]
 }
 export function importRemoteKiro(body: RemoteKiroImport): Promise<CompleteResponse> {
   return http.post<CompleteResponse>('/auth/remote-kiro', body)

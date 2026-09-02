@@ -12,6 +12,7 @@ export function useAccounts() {
   return useQuery({
     queryKey: qk.accounts,
     queryFn: listAccounts,
+    refetchInterval: 60_000,
   })
 }
 

@@ -42,8 +42,8 @@ const (
 	adminCSRFHeader    = "X-CSRF-Token"
 
 	// Absolute cap on a session's life; the idle window slides on each use.
-	adminSessionAbsoluteTTL = 24 * time.Hour
-	adminSessionIdleTTL     = 30 * time.Minute
+	adminSessionAbsoluteTTL = 7 * 24 * time.Hour
+	adminSessionIdleTTL     = 24 * time.Hour
 
 	// Login brute-force policy.
 	loginMaxFails    = 5

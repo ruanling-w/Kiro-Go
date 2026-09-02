@@ -13,6 +13,7 @@ import { useApiKeys } from '@/hooks/queries/useApiKeys'
 import { useAccounts } from '@/hooks/queries/useAccounts'
 import { useUiStore } from '@/stores/uiStore'
 import { displayEmail } from '@/lib/mask'
+import { formatNumber } from '@/lib/format'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { Button } from '@/components/ui/button'
@@ -27,6 +28,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Card } from '@/components/ui/card'
+import { sortModelTokenSummary, summarizeModelTokens } from './modelTokenSummary'
 import { LogsTable } from './components/LogsTable'
 
 type StatusFilter = 'all' | 'success' | 'error'
@@ -37,6 +40,10 @@ export default function LogsPage() {
   const [live, setLive] = useState(true)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [search, setSearch] = useState('')
+  const [modelFilter, setModelFilter] = useState('')
+  const [summarySort, setSummarySort] = useState<'total-desc' | 'total-asc' | 'avg-desc' | 'avg-asc' | 'requests-desc' | 'model-asc'>('total-desc')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
   const [clearOpen, setClearOpen] = useState(false)
 
   const stream = useLogStream(!live)
@@ -76,10 +83,14 @@ export default function LogsPage() {
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
+    const modelTerm = modelFilter.trim().toLowerCase()
     return stream.logs.filter((log) => {
       if (statusFilter === 'success' && log.status !== 'success') return false
       if (statusFilter === 'error' && log.status === 'success') return false
       if (apiKeyFilter && log.apiKeyId !== apiKeyFilter) return false
+      if (startDate && log.time < Math.floor(new Date(`${startDate}T00:00:00`).getTime() / 1000)) return false
+      if (endDate && log.time > Math.floor(new Date(`${endDate}T23:59:59.999`).getTime() / 1000)) return false
+      if (modelTerm && !String(log.model ?? '').toLowerCase().includes(modelTerm)) return false
       if (term) {
         const keyName = log.apiKeyId ? keyNames.get(log.apiKeyId) ?? '' : ''
         const accountName = log.accountId ? accountNames.get(log.accountId) ?? '' : ''
@@ -101,7 +112,12 @@ export default function LogsPage() {
       }
       return true
     })
-  }, [stream.logs, statusFilter, apiKeyFilter, search, keyNames, accountNames])
+  }, [stream.logs, statusFilter, apiKeyFilter, search, modelFilter, startDate, endDate, keyNames, accountNames])
+
+  const modelSummary = useMemo(() => {
+    const rows = summarizeModelTokens(filtered, startDate, endDate)
+    return sortModelTokenSummary(rows, summarySort)
+  }, [filtered, startDate, endDate, summarySort])
 
   const statusBadge = {
     connecting: { variant: 'secondary' as const, label: t('logs.reconnecting') },
@@ -168,6 +184,26 @@ export default function LogsPage() {
           </Select>
 
           <div className="flex items-center gap-2">
+            <label className="text-xs text-muted-foreground">Model</label>
+            <Input
+              value={modelFilter}
+              onChange={(e) => setModelFilter(e.target.value)}
+              placeholder="e.g. gpt-5.6-luna"
+              className="w-[180px]"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-muted-foreground">From</label>
+            <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-[150px]" />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-muted-foreground">To</label>
+            <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-[150px]" />
+          </div>
+
+          <div className="flex items-center gap-2">
             <Switch id="live" checked={live} onCheckedChange={setLive} />
             <Label htmlFor="live" className="text-sm">
               {t('logs.autoRefresh')}
@@ -175,6 +211,63 @@ export default function LogsPage() {
           </div>
         </div>
       </div>
+
+      <Card className="p-3">
+        <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <h3 className="text-sm font-medium">Model token summary</h3>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-muted-foreground">Sort</label>
+            <Select value={summarySort} onValueChange={(v) => setSummarySort(v as typeof summarySort)}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="total-desc">Total tokens ↓</SelectItem>
+                <SelectItem value="total-asc">Total tokens ↑</SelectItem>
+                <SelectItem value="avg-desc">Avg tokens ↓</SelectItem>
+                <SelectItem value="avg-asc">Avg tokens ↑</SelectItem>
+                <SelectItem value="requests-desc">Requests ↓</SelectItem>
+                <SelectItem value="model-asc">Model A–Z</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        {(startDate || endDate) && (
+          <div className="mb-2 text-xs text-muted-foreground">
+            {startDate || '—'} → {endDate || '—'}
+          </div>
+        )}
+        <div className="overflow-auto">
+          <table className="w-full border-collapse text-left font-mono text-xs">
+            <thead>
+              <tr className="border-b text-muted-foreground">
+                <th className="px-2 py-1.5 text-left">Model</th>
+                <th className="px-2 py-1.5 text-right">Requests</th>
+                <th className="px-2 py-1.5 text-right">Total</th>
+                <th className="px-2 py-1.5 text-right">Cache read</th>
+                <th className="px-2 py-1.5 text-right">Cache write</th>
+              </tr>
+            </thead>
+            <tbody>
+              {modelSummary.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-2 py-3 text-muted-foreground">No model data for this range</td>
+                </tr>
+              ) : (
+                modelSummary.map((row) => (
+                  <tr key={row.model} className="border-b border-border/40">
+                    <td className="px-2 py-1.5 font-medium">{row.model}</td>
+                    <td className="px-2 py-1.5 text-right">{formatNumber(row.requests)}</td>
+                    <td className="px-2 py-1.5 text-right">{formatNumber(row.totalTokens)}</td>
+                    <td className="px-2 py-1.5 text-right">{formatNumber(row.cacheReadTokens)}</td>
+                    <td className="px-2 py-1.5 text-right">{formatNumber(row.cacheCreationTokens)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
       <LogsTable
         logs={filtered}

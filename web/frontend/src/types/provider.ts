@@ -6,6 +6,7 @@ export type ProviderKey =
   | 'grok'
   | 'codex'
   | 'remotekiro'
+  | 'voyage'
 
 export interface ProviderModel {
   id: string

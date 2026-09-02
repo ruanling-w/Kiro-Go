@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"kiro-go/config"
 	"strings"
 )
@@ -40,6 +41,9 @@ func CallProvider(ctx context.Context, account *config.Account, payload *KiroPay
 	}
 	if account != nil && isRemoteKiroAccount(account) {
 		return CallRemoteKiroAPI(ctx, account, payload, callback)
+	}
+	if account != nil && isVoyageAccount(account) {
+		return fmt.Errorf("account %s (%s) is a Voyage AI embedding/rerank account and cannot serve chat/completions requests", account.ID, account.Email)
 	}
 	return CallKiroAPI(ctx, account, payload, callback)
 }
@@ -114,3 +118,18 @@ func isGrokOAuthAccount(account *config.Account) bool {
 	}
 	return false
 }
+
+// isVoyageAccount reports whether an account is configured for Voyage AI.
+func isVoyageAccount(account *config.Account) bool {
+	if account == nil {
+		return false
+	}
+	if strings.EqualFold(account.Provider, "voyage") ||
+		strings.EqualFold(account.Provider, "voyageai") ||
+		strings.EqualFold(account.AuthMethod, "voyage") ||
+		strings.EqualFold(account.AuthMethod, "voyageai") {
+		return true
+	}
+	return account.VoyageAPIKey != ""
+}
+

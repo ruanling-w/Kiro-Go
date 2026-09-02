@@ -8,6 +8,7 @@ import {
   Bot,
   Terminal,
   Cloud,
+  Compass,
   KeyRound,
   Fingerprint,
   ShieldCheck,
@@ -32,6 +33,7 @@ import {
   SsoTokenFlow,
   CredentialsFlow,
   CodexImportFlow,
+  VoyageFlow,
 } from './ImportFlows'
 
 export interface FlowEntry {
@@ -39,7 +41,7 @@ export interface FlowEntry {
   labelKey: string
   icon: LucideIcon
   /** Which provider bucket this flow belongs under (for grouping in the picker). */
-  group: 'kiro' | 'antigravity' | 'grok' | 'codex' | 'remotekiro'
+  group: 'kiro' | 'antigravity' | 'grok' | 'codex' | 'remotekiro' | 'voyage'
   Component: ComponentType<FlowComponentProps>
 }
 
@@ -60,6 +62,8 @@ export const FLOW_ENTRIES: FlowEntry[] = [
   // Codex
   { id: 'codex', labelKey: 'addAccount.codex', icon: Terminal, group: 'codex', Component: CodexFlow },
   { id: 'codex-import', labelKey: 'addAccount.codexImport', icon: FileKey, group: 'codex', Component: CodexImportFlow },
+  // Voyage
+  { id: 'voyage', labelKey: 'addAccount.voyage', icon: Compass, group: 'voyage', Component: VoyageFlow },
   // Remote Kiro
   { id: 'remote-kiro', labelKey: 'addAccount.remoteKiro', icon: Cloud, group: 'remotekiro', Component: RemoteKiroFlow },
 ]
@@ -70,4 +74,5 @@ export const GROUP_ICON: Record<FlowEntry['group'], LucideIcon> = {
   grok: Bot,
   codex: Terminal,
   remotekiro: Cloud,
+  voyage: Compass,
 }

@@ -183,3 +183,36 @@ func TestParseCodexWhamUsage_EmptyPrimaryFallsBack(t *testing.T) {
 		t.Fatalf("expected fallback window, got %#v", snap.Windows)
 	}
 }
+
+func TestCodexResetCreditsJSONParsing(t *testing.T) {
+	raw := []byte(`{
+		"credits": [
+			{
+				"id": "RateLimitResetCredit_12345",
+				"reset_type": "codex_rate_limits",
+				"status": "available",
+				"granted_at": "2026-08-21T22:56:29Z",
+				"expires_at": "2026-09-20T22:56:29Z",
+				"title": "Full reset (Weekly + 5 hr)",
+				"description": "Thanks for using Codex!"
+			}
+		],
+		"available_count": 1
+	}`)
+
+	var res CodexResetCreditsResponse
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("failed to unmarshal reset credits response: %v", err)
+	}
+	if res.AvailableCount != 1 {
+		t.Fatalf("expected AvailableCount=1, got %d", res.AvailableCount)
+	}
+	if len(res.Credits) != 1 {
+		t.Fatalf("expected 1 credit, got %d", len(res.Credits))
+	}
+	c := res.Credits[0]
+	if c.ID != "RateLimitResetCredit_12345" || c.Status != "available" || c.Title != "Full reset (Weekly + 5 hr)" {
+		t.Fatalf("unexpected credit content: %+v", c)
+	}
+}
+

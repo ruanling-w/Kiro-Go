@@ -116,6 +116,12 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 			continue
 		}
 
+		// Skip accounts that do not support text generation (e.g. Voyage AI embeddings/rerank only)
+		if BucketOf(acc) == "voyage" {
+			seen[acc.ID] = true
+			continue
+		}
+
 		return acc
 	}
 
@@ -128,6 +134,9 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 			continue
 		}
 		if isQuotaBlocked(*acc, allowOverUsage) {
+			continue
+		}
+		if BucketOf(acc) == "voyage" {
 			continue
 		}
 		if cooldown, ok := p.cooldowns[acc.ID]; ok {
@@ -186,43 +195,106 @@ func BucketOf(account *config.Account) string {
 	}
 	p := strings.ToLower(strings.TrimSpace(account.Provider))
 	switch p {
-	case "antigravity", "grok", "xai", "codex", "remotekiro", "remote-kiro":
+	case "antigravity", "grok", "xai", "codex", "remotekiro", "remote-kiro", "voyage", "voyageai":
 		if p == "xai" {
 			return "grok"
 		}
 		if p == "remote-kiro" {
 			return "remotekiro"
 		}
+		if p == "voyageai" {
+			return "voyage"
+		}
 		return p
 	}
 
 	a := strings.ToLower(strings.TrimSpace(account.AuthMethod))
 	switch a {
-	case "antigravity", "grok", "codex", "remotekiro", "remote-kiro":
+	case "antigravity", "grok", "codex", "remotekiro", "remote-kiro", "voyage", "voyageai":
 		if a == "remote-kiro" {
 			return "remotekiro"
+		}
+		if a == "voyageai" {
+			return "voyage"
 		}
 		return a
 	}
 
+	if account.VoyageAPIKey != "" {
+		return "voyage"
+	}
 	if account.RemoteBaseURL != "" {
 		return "remotekiro"
 	}
 	return "kiro"
 }
 
-// parseModelRouting extracts an optional provider constraint from a Combo candidate.
+// parseModelRouting extracts an optional provider/account constraint from a model or Combo candidate.
+// Supports both "::" and "/" as delimiters (e.g. "bai::gpt-4o", "bai/gpt-4o", "codex.einnam::gpt-5.3").
 func parseModelRouting(candidate string) (targetProvider, targetModel string) {
-	targetProvider, targetModel, qualified := strings.Cut(strings.TrimSpace(candidate), "::")
-	if !qualified {
-		return "", targetModel
-	}
-	targetProvider = strings.ToLower(strings.TrimSpace(targetProvider))
-	targetModel = strings.TrimSpace(targetModel)
-	if targetProvider == "" || targetModel == "" || strings.Contains(targetModel, "::") {
+	raw := strings.TrimSpace(candidate)
+	if raw == "" {
 		return "", ""
 	}
-	return targetProvider, targetModel
+
+	// 1. Explicit "::" delimiter
+	if before, after, ok := strings.Cut(raw, "::"); ok {
+		targetProvider = strings.ToLower(strings.TrimSpace(before))
+		targetModel = strings.TrimSpace(after)
+		if targetProvider == "" || targetModel == "" || strings.Contains(targetModel, "::") {
+			return "", ""
+		}
+		return targetProvider, targetModel
+	}
+
+	// 2. Namespace "/" delimiter (e.g. "bai/gpt-5.6-sol")
+	if before, after, ok := strings.Cut(raw, "/"); ok {
+		prefix := strings.ToLower(strings.TrimSpace(before))
+		model := strings.TrimSpace(after)
+		if prefix != "" && model != "" {
+			return prefix, model
+		}
+	}
+
+	return "", raw
+}
+
+// isVoyageModel reports whether the given model name is a Voyage AI embedding/reranking model.
+func isVoyageModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(m, "voyage-") || strings.HasPrefix(m, "voyage_") || strings.HasPrefix(m, "rerank-") || strings.HasPrefix(m, "rerank_")
+}
+
+// accountMatchesModel checks if an account supports the given model.
+func (p *AccountPool) accountMatchesModel(acc *config.Account, model string) bool {
+	if acc == nil {
+		return false
+	}
+	cleanModel := strings.ToLower(strings.TrimSpace(model))
+
+	// If account has explicit CustomModels (Strict Whitelist), enforce it strictly
+	if len(acc.CustomModels) > 0 {
+		for _, cm := range acc.CustomModels {
+			if strings.EqualFold(strings.TrimSpace(cm), cleanModel) {
+				return true
+			}
+		}
+		return false
+	}
+
+	isVoyage := BucketOf(acc) == "voyage"
+	isVoyageMod := isVoyageModel(model)
+	if isVoyage && !isVoyageMod {
+		return false
+	}
+	if !isVoyage && isVoyageMod {
+		list, ok := p.modelLists[acc.ID]
+		if !ok || len(list) == 0 {
+			return false
+		}
+		return list[cleanModel]
+	}
+	return p.accountHasModel(acc.ID, cleanModel)
 }
 
 // GetNextForModel 获取下一个支持指定模型的可用账号。
@@ -238,7 +310,7 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 }
 
 // GetNextForModelAndProviderExcluding selects an account that supports model and
-// belongs to provider. An empty provider preserves legacy cross-provider routing.
+// belongs to target provider/account. An empty provider preserves legacy cross-provider routing.
 func (p *AccountPool) GetNextForModelAndProviderExcluding(model, provider string, excluded map[string]bool) *config.Account {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -257,6 +329,22 @@ func (p *AccountPool) GetNextForModelAndProviderExcluding(model, provider string
 		return nil
 	}
 
+	// If targetProvider was parsed from a slash (like "meta-llama/llama-3") but no account matches it,
+	// fall back to treating the entire candidate as the model name.
+	if targetProvider != "" && targetProvider != provider {
+		matchedAny := false
+		for i := range p.accounts {
+			if accountMatchesTarget(&p.accounts[i], targetProvider) {
+				matchedAny = true
+				break
+			}
+		}
+		if !matchedAny && !strings.Contains(model, "::") {
+			targetProvider = ""
+			targetModel = model
+		}
+	}
+
 	for i := 0; i < n; i++ {
 		idx := atomic.AddUint64(&p.currentIndex, 1) % uint64(n)
 		acc := &p.accounts[idx]
@@ -272,11 +360,11 @@ func (p *AccountPool) GetNextForModelAndProviderExcluding(model, provider string
 		if targetProvider == "" {
 			targetProvider = provider
 		}
-		if targetProvider != "" && !accountMatchesProvider(acc, targetProvider) {
+		if targetProvider != "" && !accountMatchesTarget(acc, targetProvider) {
 			seen[acc.ID] = true
 			continue
 		}
-		if !p.accountHasModel(acc.ID, targetModel) {
+		if !p.accountMatchesModel(acc, targetModel) {
 			seen[acc.ID] = true
 			continue
 		}
@@ -306,10 +394,10 @@ func (p *AccountPool) GetNextForModelAndProviderExcluding(model, provider string
 		if targetProvider == "" {
 			targetProvider = provider
 		}
-		if targetProvider != "" && !accountMatchesProvider(acc, targetProvider) {
+		if targetProvider != "" && !accountMatchesTarget(acc, targetProvider) {
 			continue
 		}
-		if !p.accountHasModel(acc.ID, targetModel) {
+		if !p.accountMatchesModel(acc, targetModel) {
 			continue
 		}
 		if isQuotaBlocked(*acc, allowOverUsage) {
@@ -364,7 +452,7 @@ func (p *AccountPool) UnavailableReason(model string, excluded map[string]bool) 
 		switch {
 		case excluded != nil && excluded[acc.ID]:
 			skipExcluded++
-		case model != "" && !p.accountHasModel(acc.ID, model):
+		case model != "" && !p.accountMatchesModel(acc, model):
 			skipModel++
 		case isQuotaBlocked(*acc, allowOverUsage):
 			skipQuota++
@@ -644,7 +732,77 @@ func isUpstreamOverageEnabled(acc config.Account) bool {
 	return strings.EqualFold(acc.OverageStatus, "ENABLED")
 }
 
+// accountMatchesTarget checks if an account matches a routing target, which can be:
+// 1. Account Nickname / Prefix (e.g. "bai", "coe", "keycrop")
+// 2. Account ID (e.g. "c46f8591-b394-40ed-ad19-4babaebc7880")
+// 3. Account Email or Email username (e.g. "einnam20@gmail.com", "einnam20")
+// 4. Composite "<provider>.<identifier>" (e.g. "codex.einnam20", "remotekiro.bai")
+// 5. Provider bucket name (e.g. "antigravity", "codex", "remotekiro", "grok", "voyage", "kiro")
+func accountMatchesTarget(account *config.Account, target string) bool {
+	target = strings.ToLower(strings.TrimSpace(target))
+	if target == "" {
+		return true
+	}
+	if account == nil {
+		return false
+	}
+
+	// 1. Match by Nickname
+	if account.Nickname != "" && strings.EqualFold(strings.TrimSpace(account.Nickname), target) {
+		return true
+	}
+
+	// 2. Match by Account ID
+	if strings.EqualFold(strings.TrimSpace(account.ID), target) {
+		return true
+	}
+
+	// 3. Match by Email or Email prefix
+	if account.Email != "" {
+		email := strings.TrimSpace(account.Email)
+		if strings.EqualFold(email, target) {
+			return true
+		}
+		if username, _, ok := strings.Cut(email, "@"); ok && strings.EqualFold(username, target) {
+			return true
+		}
+	}
+
+	// 4. Match by Composite format "<provider>.<identifier>"
+	if prov, ident, found := strings.Cut(target, "."); found {
+		if accountMatchesProvider(account, prov) {
+			if strings.EqualFold(strings.TrimSpace(account.ID), ident) {
+				return true
+			}
+			if account.Nickname != "" && strings.EqualFold(strings.TrimSpace(account.Nickname), ident) {
+				return true
+			}
+			if account.Email != "" {
+				email := strings.TrimSpace(account.Email)
+				if strings.EqualFold(email, ident) {
+					return true
+				}
+				if username, _, ok := strings.Cut(email, "@"); ok && strings.EqualFold(username, ident) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	// 5. Match by Provider
+	return AccountMatchesProvider(account, target)
+}
+
+func AccountMatchesTarget(account *config.Account, target string) bool {
+	return accountMatchesTarget(account, target)
+}
+
 func accountMatchesProvider(account *config.Account, provider string) bool {
+	return AccountMatchesProvider(account, provider)
+}
+
+func AccountMatchesProvider(account *config.Account, provider string) bool {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if provider == "" {
 		return true
@@ -663,9 +821,39 @@ func accountMatchesProvider(account *config.Account, provider string) bool {
 		return provider == "antigravity"
 	case accountProvider == "grok" || accountProvider == "xai" || authMethod == "grok" || account.GrokAPIKey != "":
 		return provider == "grok"
+	case accountProvider == "voyage" || accountProvider == "voyageai" || authMethod == "voyage" || account.VoyageAPIKey != "":
+		return provider == "voyage"
 	default:
 		return provider == "kiro"
 	}
+}
+
+// CleanRoutingModel strips any namespace or provider prefix (e.g. "bai/", "coe::", "codex/").
+func CleanRoutingModel(candidate string) string {
+	raw := strings.TrimSpace(candidate)
+	if raw == "" {
+		return ""
+	}
+	if _, after, ok := strings.Cut(raw, "::"); ok {
+		if strings.TrimSpace(after) != "" {
+			return strings.TrimSpace(after)
+		}
+	}
+	if before, after, ok := strings.Cut(raw, "/"); ok {
+		prefix := strings.ToLower(strings.TrimSpace(before))
+		model := strings.TrimSpace(after)
+		if prefix != "" && model != "" {
+			for _, acc := range config.GetAccounts() {
+				if AccountMatchesTarget(&acc, prefix) {
+					return model
+				}
+			}
+			if AccountMatchesProvider(nil, prefix) || prefix == "antigravity" || prefix == "codex" || prefix == "remotekiro" || prefix == "grok" || prefix == "voyage" || prefix == "kiro" || prefix == "openai" || prefix == "anthropic" || prefix == "google" || prefix == "xai" || prefix == "voyageai" {
+				return model
+			}
+		}
+	}
+	return raw
 }
 
 func effectiveWeight(weight int) int {

@@ -66,43 +66,62 @@ const minRecentHistoryTurns = 4
 
 // ParseModelAndThinking resolves a client-supplied model name to a Kiro model ID
 // and reports whether thinking mode was requested via the configured suffix.
+// It preserves any routing target prefix (e.g. "bai/", "coe::", "antigravity::").
 func ParseModelAndThinking(model string, thinkingSuffix string) (string, bool) {
-	lower := strings.ToLower(model)
 	thinking := false
 
 	// Strip the configured thinking suffix (e.g. "-thinking") if present.
 	suffixLower := strings.ToLower(thinkingSuffix)
-	if strings.HasSuffix(lower, suffixLower) {
+	if suffixLower != "" && strings.HasSuffix(strings.ToLower(model), suffixLower) {
 		thinking = true
 		model = model[:len(model)-len(thinkingSuffix)]
-		lower = strings.ToLower(model)
 	}
 
-	// 0) Antigravity / Gemini model ids pass through untouched. They must not be
-	//    rewritten to Claude ids by the alias/version logic below, so requests for
-	//    gemini-* route to Antigravity accounts (which register these ids).
+	prefix := ""
+	clean := model
+	delimiter := ""
+	if before, after, ok := strings.Cut(model, "::"); ok {
+		prefix = before
+		delimiter = "::"
+		clean = after
+	} else if before, after, ok := strings.Cut(model, "/"); ok {
+		prefix = before
+		delimiter = "/"
+		clean = after
+	}
+
+	lower := strings.ToLower(clean)
+
+	// 0) Antigravity / Gemini model ids pass through untouched.
 	if strings.HasPrefix(lower, "gemini-") {
-		return model, thinking
+		if prefix != "" {
+			return prefix + delimiter + clean, thinking
+		}
+		return clean, thinking
 	}
 
-	// 1) Explicit aliases: dated snapshots, cross-family legacy IDs, non-Anthropic fallbacks.
+	// 1) Explicit aliases
 	for _, m := range modelAliases {
 		if strings.Contains(lower, m.key) {
+			if prefix != "" {
+				return prefix + delimiter + m.value, thinking
+			}
 			return m.value, thinking
 		}
 	}
 
 	// 2) Format normalization: claude-{family}-N-M → claude-{family}-N.M.
-	//    New versions (claude-opus-4-8, etc.) flow through here without code changes.
 	if claudeVersionPattern.MatchString(lower) {
-		return claudeVersionPattern.ReplaceAllString(lower, "claude-$1-$2.$3"), thinking
+		normalized := claudeVersionPattern.ReplaceAllString(lower, "claude-$1-$2.$3")
+		if prefix != "" {
+			return prefix + delimiter + normalized, thinking
+		}
+		return normalized, thinking
 	}
 
-	// 3) Already a valid Kiro model (dot form or bare family like claude-sonnet-4): pass through.
-	if strings.HasPrefix(lower, "claude-") {
-		return model, thinking
+	if prefix != "" {
+		return prefix + delimiter + clean, thinking
 	}
-
 	return model, thinking
 }
 

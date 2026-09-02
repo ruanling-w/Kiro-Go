@@ -1,7 +1,7 @@
 // Provider bucket metadata: the 5 real provider buckets + the synthetic "all"
 // bucket used by the Providers landing / Accounts filter. `labelKey`/`descKey`
 // are i18n keys; `color` is a Tailwind text class for the ProviderIcon tint.
-import { Boxes, Sparkles, Bot, Terminal, Cloud, Layers, type LucideIcon } from 'lucide-react'
+import { Boxes, Sparkles, Bot, Terminal, Cloud, Layers, Compass, type LucideIcon } from 'lucide-react'
 import type { ProviderKey } from '@/types/account'
 
 export interface ProviderMeta {
@@ -60,6 +60,14 @@ export const PROVIDERS: ProviderMeta[] = [
     icon: Cloud,
     color: 'text-teal-500',
     match: (p) => p === 'remotekiro' || p === 'remote-kiro',
+  },
+  {
+    key: 'voyage',
+    labelKey: 'provider.voyage',
+    descKey: 'providerDesc.voyage',
+    icon: Compass,
+    color: 'text-blue-500',
+    match: (p) => p === 'voyage' || p === 'voyageai',
   },
 ]
 

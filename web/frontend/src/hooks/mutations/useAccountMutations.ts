@@ -10,6 +10,7 @@ import {
   refreshAccountModels,
   refreshAllAccountsModels,
   setAccountOverage,
+  consumeCodexResetCredit,
 } from '@/services/accounts.service'
 import type { AccountUpdate, BatchRequest } from '@/types/account'
 
@@ -76,3 +77,16 @@ export function useSetAccountOverage() {
     },
   })
 }
+
+export function useConsumeCodexResetCredit() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, creditId }: { id: string; creditId?: string }) =>
+      consumeCodexResetCredit(id, creditId),
+    onSuccess: (_d, { id }) => {
+      void qc.invalidateQueries({ queryKey: qk.accounts })
+      void qc.invalidateQueries({ queryKey: qk.accountFull(id) })
+    },
+  })
+}
+

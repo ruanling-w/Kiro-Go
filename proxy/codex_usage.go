@@ -8,6 +8,7 @@ package proxy
 // Source of truth: 9router open-sse/services/usage/codex.js
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,9 +21,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
-const codexWhamUsageURL = "https://chatgpt.com/backend-api/wham/usage"
+const (
+	codexWhamUsageURL              = "https://chatgpt.com/backend-api/wham/usage"
+	codexWhamResetCreditsURL       = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	codexWhamConsumeResetCreditURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+)
 
 // CodexUsageHTTPError describes an HTTP failure returned by ChatGPT WHAM.
 // The body is intentionally truncated so upstream responses cannot leak large
@@ -410,3 +417,182 @@ func asString(v interface{}) string {
 		return ""
 	}
 }
+
+// CodexResetCreditItem describes an individual rate limit reset credit.
+type CodexResetCreditItem struct {
+	ID              string `json:"id"`
+	ResetType       string `json:"reset_type"`
+	Status          string `json:"status"`
+	GrantedAt       string `json:"granted_at"`
+	ExpiresAt       string `json:"expires_at"`
+	Title           string `json:"title"`
+	Description     string `json:"description"`
+	ProfileImageURL string `json:"profile_image_url,omitempty"`
+}
+
+// CodexResetCreditsResponse is the response from /backend-api/wham/rate-limit-reset-credits.
+type CodexResetCreditsResponse struct {
+	Credits        []CodexResetCreditItem `json:"credits"`
+	AvailableCount int                    `json:"available_count"`
+}
+
+// ConsumeResetCreditResult describes the result of consuming a reset credit.
+type ConsumeResetCreditResult struct {
+	Success   bool                `json:"success"`
+	CreditID  string              `json:"creditId,omitempty"`
+	AccountID string              `json:"accountId"`
+	Usage     *CodexUsageSnapshot `json:"usage,omitempty"`
+}
+
+// FetchCodexResetCredits calls ChatGPT WHAM rate-limit-reset-credits endpoint.
+func FetchCodexResetCredits(account *config.Account) (*CodexResetCreditsResponse, error) {
+	if account == nil {
+		return nil, fmt.Errorf("codex reset credits: account is nil")
+	}
+	bearer := strings.TrimSpace(account.AccessToken)
+	if bearer == "" {
+		return nil, fmt.Errorf("codex reset credits: no access token")
+	}
+
+	client := GetClientForProxy(ResolveAccountProxyURL(account))
+	req, err := http.NewRequest(http.MethodGet, codexWhamResetCreditsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("codex reset credits: new request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", codexUserAgent)
+	req.Header.Set("originator", codexOriginator)
+	req.Header.Set("version", codexVersion)
+
+	accountID := strings.TrimSpace(account.CodexAccountID)
+	if accountID == "" {
+		_, accountID, _ = auth.DecodeCodexIDToken(account.CodexIDToken)
+	}
+	if accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("codex reset credits: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, fmt.Errorf("codex reset credits: read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &CodexUsageHTTPError{
+			Status: resp.StatusCode,
+			Body:   truncateForErr(string(body), 240),
+		}
+	}
+
+	var res CodexResetCreditsResponse
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("codex reset credits: invalid JSON: %w", err)
+	}
+	return &res, nil
+}
+
+// ConsumeCodexResetCredit redeems a rate limit reset credit for the given account.
+// If creditID is empty, it queries available credits and picks the first available one.
+func ConsumeCodexResetCredit(account *config.Account, creditID string) (*ConsumeResetCreditResult, error) {
+	if account == nil {
+		return nil, fmt.Errorf("codex consume reset credit: account is nil")
+	}
+	bearer := strings.TrimSpace(account.AccessToken)
+	if bearer == "" {
+		return nil, fmt.Errorf("codex consume reset credit: no access token")
+	}
+
+	if creditID == "" {
+		creditsRes, err := FetchCodexResetCredits(account)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch reset credits: %w", err)
+		}
+		if creditsRes.AvailableCount <= 0 && len(creditsRes.Credits) == 0 {
+			return nil, fmt.Errorf("no available reset credits for this account")
+		}
+		for _, c := range creditsRes.Credits {
+			if c.Status == "available" || c.Status == "" {
+				creditID = c.ID
+				break
+			}
+		}
+		if creditID == "" && len(creditsRes.Credits) > 0 {
+			creditID = creditsRes.Credits[0].ID
+		}
+		if creditID == "" {
+			return nil, fmt.Errorf("no available reset credit found")
+		}
+	}
+
+	redeemReqID := uuid.New().String()
+	payload := map[string]string{
+		"credit_id":         creditID,
+		"redeem_request_id": redeemReqID,
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal consume payload: %w", err)
+	}
+
+	client := GetClientForProxy(ResolveAccountProxyURL(account))
+	req, err := http.NewRequest(http.MethodPost, codexWhamConsumeResetCreditURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("new consume request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", codexUserAgent)
+	req.Header.Set("originator", codexOriginator)
+	req.Header.Set("version", codexVersion)
+
+	accountID := strings.TrimSpace(account.CodexAccountID)
+	if accountID == "" {
+		_, accountID, _ = auth.DecodeCodexIDToken(account.CodexIDToken)
+	}
+	if accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("consume request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, &CodexUsageHTTPError{
+			Status: resp.StatusCode,
+			Body:   truncateForErr(string(respBody), 240),
+		}
+	}
+
+	logger.Infof("[CodexUsage] Successfully consumed reset credit %s for account %s", creditID, account.Email)
+
+	// Fetch updated usage snapshot immediately
+	snap, snapErr := FetchCodexUsage(account)
+	if snapErr == nil && snap != nil {
+		if strings.TrimSpace(snap.Plan) != "" {
+			account.CodexPlanType = strings.TrimSpace(snap.Plan)
+		}
+		account.CodexLimitReached = snap.LimitReached
+		account.CodexResetCredits = snap.ResetCredits
+		account.CodexQuota = snap.Windows
+		_ = config.UpdateAccount(account.ID, *account)
+	}
+
+	return &ConsumeResetCreditResult{
+		Success:   true,
+		CreditID:  creditID,
+		AccountID: account.ID,
+		Usage:     snap,
+	}, nil
+}
+

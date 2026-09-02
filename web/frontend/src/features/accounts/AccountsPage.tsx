@@ -1,16 +1,14 @@
-// Accounts — the full CRUD list: search/filter (uiStore) + client-side paging +
-// batch selection + per-card actions. Add-account and detail dialogs land in
-// GĐ 3; here the buttons are wired to the mutations + shared ConfirmDialog.
 import { useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Plus, Eye, EyeOff } from 'lucide-react'
+import { Plus, Eye, EyeOff, RotateCw, Download } from 'lucide-react'
 import type { AccountListItem, ProviderKey } from '@/types/account'
 import { useAccounts } from '@/hooks/queries/useAccounts'
 import {
   useDeleteAccount,
   useRefreshAccount,
   useBatchAccounts,
+  useConsumeCodexResetCredit,
 } from '@/hooks/mutations/useAccountMutations'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { HamsterLoader } from '@/components/shared/HamsterLoader'
@@ -29,7 +27,6 @@ import { AccountDetailDialog } from './components/AccountDetailDialog'
 import { TestAccountDialog } from './components/TestAccountDialog'
 import { ExportDialog } from './components/ExportDialog'
 import { AddAccountDialog } from '@/features/auth-modals/AddAccountDialog'
-import { Download } from 'lucide-react'
 
 const PAGE_SIZE = 24
 
@@ -63,11 +60,14 @@ export default function AccountsPage() {
 
   const [page, setPage] = useState(0)
   const [pendingDelete, setPendingDelete] = useState<AccountListItem | null>(null)
+  const [pendingResetQuota, setPendingResetQuota] = useState<AccountListItem | null>(null)
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
   const [testTarget, setTestTarget] = useState<AccountListItem | null>(null)
   const [detailTarget, setDetailTarget] = useState<AccountListItem | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
+
+  const consumeResetCredit = useConsumeCodexResetCredit()
 
   const list = accounts.data ?? []
 
@@ -95,6 +95,24 @@ export default function AccountsPage() {
       onSuccess: () => toast.success(t('common.saved')),
       onError: () => toast.error(t('accounts.refreshFailed')),
     })
+  }
+
+  function confirmResetQuota() {
+    if (!pendingResetQuota) return
+    const a = pendingResetQuota
+    consumeResetCredit.mutate(
+      { id: a.id },
+      {
+        onSuccess: () => {
+          toast.success(t('codex.resetSuccess'))
+          setPendingResetQuota(null)
+        },
+        onError: (err: any) => {
+          toast.error(err?.message || t('codex.resetFailed'))
+          setPendingResetQuota(null)
+        },
+      }
+    )
   }
 
   function confirmDelete() {
@@ -130,12 +148,33 @@ export default function AccountsPage() {
     setBatchDeleteOpen(false)
   }
 
+  function handleRefreshAll() {
+    const allIds = list.map((a) => a.id)
+    if (allIds.length === 0) return
+    batch.mutate(
+      { ids: allIds, action: 'refresh' },
+      {
+        onSuccess: () => toast.success(t('accounts.refreshAllSuccess') || 'Đã làm mới tất cả tài khoản'),
+        onError: () => toast.error(t('accounts.refreshFailed')),
+      },
+    )
+  }
+
   return (
     <div className="space-y-5">
       <PageHeader
         title={lockedMeta ? t(lockedMeta.labelKey) : t('accounts.title')}
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={handleRefreshAll}
+              disabled={batch.isPending || list.length === 0}
+              aria-label={t('accounts.refreshAll') || 'Làm mới tất cả'}
+            >
+              <RotateCw className={`size-4 ${batch.isPending ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{t('accounts.refreshAll') || 'Làm mới tất cả'}</span>
+            </Button>
             <Button variant="outline" size="icon" aria-label={t('theme.status')} onClick={togglePrivacy}>
               {privacy ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
             </Button>
@@ -181,7 +220,9 @@ export default function AccountsPage() {
                 onRefresh={handleRefresh}
                 onDetail={setDetailTarget}
                 onDelete={setPendingDelete}
+                onResetQuota={setPendingResetQuota}
                 refreshing={refreshAccount.isPending && refreshAccount.variables === a.id}
+                resettingQuota={consumeResetCredit.isPending && consumeResetCredit.variables?.id === a.id}
               />
             ))}
           </div>
@@ -199,6 +240,15 @@ export default function AccountsPage() {
           )}
         </>
       )}
+
+      <ConfirmDialog
+        open={!!pendingResetQuota}
+        onOpenChange={(o) => !o && setPendingResetQuota(null)}
+        title={t('codex.confirmResetTitle')}
+        description={t('codex.confirmResetDesc')}
+        confirmLabel={t('codex.consumeReset')}
+        onConfirm={confirmResetQuota}
+      />
 
       <ConfirmDialog
         open={!!pendingDelete}

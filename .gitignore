@@ -36,3 +36,5 @@ Thumbs.db
 # Local backups / scratch
 backup*/
 PR-*.md
+auth_*.json
+codex-import*.json

@@ -1,13 +1,17 @@
 import { useTranslation } from 'react-i18next'
+import { RotateCcw } from 'lucide-react'
 import type { CodexQuotaWindow } from '@/types/account'
 import { tp } from '@/lib/t'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 
 interface Props {
   windows?: CodexQuotaWindow[]
   limitReached?: boolean
   resetCredits?: number
   detail?: boolean
+  onResetQuota?: () => void
+  resetting?: boolean
 }
 
 function percent(value: unknown): number {
@@ -23,7 +27,7 @@ function resetLabel(value: string | undefined): string {
   return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-export function CodexQuota({ windows, limitReached, resetCredits, detail = false }: Props) {
+export function CodexQuota({ windows, limitReached, resetCredits, detail = false, onResetQuota, resetting = false }: Props) {
   const { t } = useTranslation()
   const items = Array.isArray(windows) ? windows : []
   const credits = Number.isFinite(resetCredits) ? Number(resetCredits) : 0
@@ -96,10 +100,29 @@ export function CodexQuota({ windows, limitReached, resetCredits, detail = false
       </div>
 
       {credits > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {detail ? `${t('codex.resetCreditsLabel')}: ${credits}` : tp(t, 'codex.resetCredits', credits)}
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/40">
+          <p className="text-xs text-muted-foreground font-medium flex items-center gap-1.5">
+            <RotateCcw className="size-3.5 text-primary" />
+            {detail ? `${t('codex.resetCreditsLabel')}: ${credits}` : tp(t, 'codex.resetCredits', credits)}
+          </p>
+          {onResetQuota && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation()
+                onResetQuota()
+              }}
+              disabled={resetting}
+              className="h-7 text-xs gap-1.5 border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 hover:text-primary font-medium"
+            >
+              <RotateCcw className={cn('size-3.5', resetting && 'animate-spin')} />
+              {t('codex.consumeReset')}
+            </Button>
+          )}
+        </div>
       )}
     </section>
   )
 }
+

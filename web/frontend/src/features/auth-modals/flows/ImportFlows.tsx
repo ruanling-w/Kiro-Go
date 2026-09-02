@@ -13,6 +13,7 @@ import {
   importSsoToken,
   importAccountsJson,
   importCodex,
+  importVoyage,
   type CodexImport,
 } from '@/services/authFlows.service'
 import { Button } from '@/components/ui/button'
@@ -26,6 +27,59 @@ import { HelpBlock, Steps, Code } from './HelpBlock'
 import { Done, ErrorNote, useImport } from './importShared'
 import { parseCredentialsInput, normalizeForPost } from './parseCredentials'
 import { tp } from '@/lib/t'
+
+// --- Voyage AI API key import ---
+export function VoyageFlow({ onDone }: FlowComponentProps) {
+  const { t } = useTranslation()
+  const m = useImport(importVoyage)
+  const [apiKey, setApiKey] = useState('')
+  const [nickname, setNickname] = useState('')
+
+  if (m.isSuccess) return <Done onDone={onDone} label={t('accounts.testSuccess')} />
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    m.mutate({ apiKey: apiKey.trim(), nickname: nickname.trim() || undefined })
+  }
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="space-y-2">
+        <Label>Voyage API Key</Label>
+        <PasswordInput
+          placeholder="pa-..."
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          autoFocus
+        />
+      </div>
+      <div className="space-y-2">
+        <Label>{t('detail.nickname')}</Label>
+        <Input placeholder="Voyage AI (Free Tier)" value={nickname} onChange={(e) => setNickname(e.target.value)} />
+      </div>
+      <HelpBlock title="Voyage AI Dashboard">
+        <Steps>
+          <li>
+            1. Truy cập{' '}
+            <a
+              href="https://dash.voyageai.com/api-keys"
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary underline"
+            >
+              dash.voyageai.com/api-keys
+            </a>
+          </li>
+          <li>2. Tạo mới Secret Key có dạng <code>pa-...</code>.</li>
+          <li>3. Tự động tính hạn mức Embeddings (200M/50M free tokens) và Reranker (200M free tokens).</li>
+        </Steps>
+      </HelpBlock>
+      <ErrorNote error={m.error} />
+      <Button type="submit" className="w-full" disabled={!apiKey.trim() || m.isPending}>
+        {m.isPending ? <HamsterWheel size="sm" /> : t('accounts.add')}
+      </Button>
+    </form>
+  )
+}
 
 // --- Kiro API key import ---
 export function KiroApiKeyFlow({ onDone }: FlowComponentProps) {
@@ -63,7 +117,9 @@ export function KiroApiKeyFlow({ onDone }: FlowComponentProps) {
   )
 }
 
-// --- Remote Kiro import ---
+// --- Remote Kiro / API key import ---
+const PRIORITY_MODELS = ['claude-sonnet-4-5', 'claude-opus-4.8', 'claude-haiku-4-5']
+
 export function RemoteKiroFlow({ onDone }: FlowComponentProps) {
   const { t } = useTranslation()
   const m = useImport(importRemoteKiro)
@@ -71,27 +127,84 @@ export function RemoteKiroFlow({ onDone }: FlowComponentProps) {
   const [apiKey, setApiKey] = useState('')
   const [nickname, setNickname] = useState('')
   const [checkKeyURL, setCheckKeyURL] = useState('')
+  const [modelsText, setModelsText] = useState('claude-sonnet-4-5, claude-opus-4.8, claude-haiku-4-5')
 
   if (m.isSuccess) return <Done onDone={onDone} label={t('accounts.testSuccess')} />
 
+  function togglePresetModel(model: string) {
+    const list = modelsText
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (list.includes(model)) {
+      setModelsText(list.filter((m) => m !== model).join(', '))
+    } else {
+      setModelsText([...list, model].join(', '))
+    }
+  }
+
   function submit(e: FormEvent) {
     e.preventDefault()
+    const customModels = modelsText
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+
     m.mutate({
       baseURL: baseURL.trim(),
       apiKey: apiKey.trim(),
       nickname: nickname.trim() || undefined,
       checkKeyURL: checkKeyURL.trim() || undefined,
+      customModels: customModels.length > 0 ? customModels : undefined,
     })
   }
+
+  const currentModels = modelsText
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
   return (
     <form onSubmit={submit} className="space-y-4">
       <div className="space-y-2">
-        <Label>Base URL</Label>
+        <Label>Base URL <span className="text-destructive">*</span></Label>
         <Input value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="https://..." autoFocus />
       </div>
       <div className="space-y-2">
-        <Label>API Key</Label>
+        <Label>API Key <span className="text-destructive">*</span></Label>
         <PasswordInput value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+      </div>
+      <div className="space-y-2">
+        <Label>{t('remotekiro.modelsLabel')}</Label>
+        <Input
+          value={modelsText}
+          onChange={(e) => setModelsText(e.target.value)}
+          placeholder={t('remotekiro.modelsPlaceholder')}
+        />
+        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+          <span className="text-xs text-muted-foreground">{t('remotekiro.priorityModels')}</span>
+          {PRIORITY_MODELS.map((pm) => {
+            const active = currentModels.includes(pm)
+            return (
+              <button
+                type="button"
+                key={pm}
+                onClick={() => togglePresetModel(pm)}
+                className={`text-xs px-2 py-0.5 rounded border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-primary/15 border-primary text-primary font-medium'
+                    : 'bg-muted/40 border-border text-muted-foreground hover:bg-muted'
+                }`}
+              >
+                {active ? '✓ ' : '+ '}
+                {pm}
+              </button>
+            )
+          })}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {t('remotekiro.modelsHint')}
+        </p>
       </div>
       <div className="space-y-2">
         <Label>{t('detail.nickname')}</Label>
@@ -103,7 +216,7 @@ export function RemoteKiroFlow({ onDone }: FlowComponentProps) {
       </div>
       <ErrorNote error={m.error} />
       <Button type="submit" className="w-full" disabled={!baseURL.trim() || !apiKey.trim() || m.isPending}>
-        {m.isPending ? <HamsterWheel size="sm" /> : t('accounts.add')}
+        {m.isPending ? <HamsterWheel size="sm" /> : (t('remotekiro.add') || t('accounts.add'))}
       </Button>
     </form>
   )

@@ -36,12 +36,17 @@ const PROVIDER_STYLE: Record<
     chip: 'border-teal-500/25 bg-teal-500/10',
     text: 'text-teal-700 dark:text-teal-300',
   },
+  voyage: {
+    chip: 'border-blue-500/25 bg-blue-500/10',
+    text: 'text-blue-700 dark:text-blue-300',
+  },
 }
 
 /** Guess bucket from the model id (and provider hint when present). */
 export function guessBucket(model?: string, provider?: string): string | null {
   const s = `${provider || ''} ${model || ''}`.toLowerCase()
   if (!s.trim()) return null
+  if (s.includes('voyage') || s.includes('rerank')) return 'voyage'
   if (s.includes('grok') || s.includes('xai')) return 'grok'
   if (s.includes('gemini') || s.includes('antigravity')) return 'antigravity'
   if (

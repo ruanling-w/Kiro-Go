@@ -48,7 +48,7 @@ func TestValidateComboRejectsReservedUnknownEmptyAndNestedJudge(t *testing.T) {
 
 func TestValidateComboAcceptsProviderQualifiedModel(t *testing.T) {
 	h := comboValidationHandler()
-	req := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []string{"grok::grok-4"}}
+	req := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []comboCandidate{{Model: "grok::grok-4"}}}
 	if errors := h.validateCombo(req, ""); len(errors) != 0 {
 		t.Fatalf("provider-qualified model rejected: %+v", errors)
 	}
@@ -60,7 +60,7 @@ func TestValidateComboAcceptsProviderQualifiedModel(t *testing.T) {
 func TestValidateComboRejectsMalformedProviderQualifiedModel(t *testing.T) {
 	h := comboValidationHandler()
 	for _, model := range []string{"unknown::grok-4", "grok::", "grok::grok-4::extra"} {
-		req := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []string{model}}
+		req := comboRequest{Name: "safe", Strategy: "fallback", StickyLimit: 1, Models: []comboCandidate{{Model: model}}}
 		if !hasComboFieldError(h.validateCombo(req, ""), "models") {
 			t.Fatalf("model %q was accepted", model)
 		}
@@ -123,14 +123,14 @@ func TestValidateComboUsesProviderAndModelIdentity(t *testing.T) {
 		Strategy:    "fallback",
 		StickyLimit: 1,
 		Models: []comboCandidate{
-			{Provider: "kiro", Model: "gpt-4"},
-			{Provider: "codex", Model: "gpt-4"},
+			{Provider: "kiro", Model: "claude-sonnet-4.5"},
+			{Provider: "codex", Model: "gpt-5.6-sol"},
 		},
 	}
 	if errors := h.validateCombo(req, ""); hasComboFieldError(errors, "models") {
 		t.Fatalf("different providers rejected: %+v", errors)
 	}
-	req.Models[1].Provider = "KIRO"
+	req.Models[1] = comboCandidate{Provider: "KIRO", Model: "claude-sonnet-4.5"}
 	if errors := h.validateCombo(req, ""); !hasComboFieldError(errors, "models") {
 		t.Fatalf("duplicate provider/model accepted: %+v", errors)
 	}

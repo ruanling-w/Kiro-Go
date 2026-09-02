@@ -5,7 +5,20 @@
 //    fields plus real secrets (accessToken/refreshToken/clientId/clientSecret),
 //    no `hasToken`.
 
-export type ProviderKey = 'kiro' | 'antigravity' | 'grok' | 'codex' | 'remotekiro'
+export type ProviderKey = 'kiro' | 'antigravity' | 'grok' | 'codex' | 'remotekiro' | 'voyage'
+
+export interface VoyageQuotaBucket {
+  model: string
+  displayName?: string
+  category?: string
+  usedTokens: number
+  freeLimitTokens: number
+  remainingFreeTokens: number
+  usedPercent: number
+  costUsd: number
+  pricePerMillion: number
+  isFreeExhausted: boolean
+}
 
 export interface CodexQuotaWindow {
   key: string
@@ -32,6 +45,7 @@ export interface AccountListItem {
   hasToken: boolean
   remoteBaseURL: string
   remoteCheckKeyURL: string
+  customModels?: string[]
   machineId: string
   weight: number
 
@@ -72,6 +86,10 @@ export interface AccountListItem {
   codexLimitReached?: boolean
   codexResetCredits?: number
 
+  voyageApiKey?: string
+  voyageUsage?: Record<string, number>
+  voyageQuota?: VoyageQuotaBucket[]
+
   // Runtime stats from the pool.
   requestCount: number
   errorCount: number
@@ -94,6 +112,11 @@ export interface AccountUpdate {
   machineId?: string
   weight?: number
   proxyURL?: string
+  customModels?: string[]
+  remoteBaseURL?: string
+  accessToken?: string
+  apiKey?: string
+  remoteCheckKeyURL?: string
 }
 
 export type BatchAction = 'enable' | 'disable' | 'refresh'

@@ -214,7 +214,7 @@ func (h *Handler) executeClaudeComboAttempt(ctx context.Context, account *config
 	if !thinking {
 		result.thinking = ""
 	}
-	if realInput > 0 {
+	if result.inputTokens <= 0 && realInput > 0 {
 		result.inputTokens = realInput
 	} else if result.inputTokens <= 0 {
 		result.inputTokens = estimatedInput
@@ -222,6 +222,8 @@ func (h *Handler) executeClaudeComboAttempt(ctx context.Context, account *config
 	if result.content == "" && result.thinking == "" && len(result.toolUses) == 0 {
 		return claudeComboResult{}, errors.New("provider returned an empty response")
 	}
-	result.outputTokens = estimateClaudeOutputTokens(result.content, result.thinking, result.toolUses)
+	if result.outputTokens <= 0 {
+		result.outputTokens = estimateClaudeOutputTokens(result.content, result.thinking, result.toolUses)
+	}
 	return result, nil
 }

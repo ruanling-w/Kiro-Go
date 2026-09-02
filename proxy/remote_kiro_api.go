@@ -170,6 +170,11 @@ func CallRemoteKiroAPI(ctx context.Context, account *config.Account, payload *Ki
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
+		if claude && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed) {
+			// Remote peer does not support Anthropic /v1/messages (e.g. OpenAI-compatible proxies like Genspark, OneAPI, LiteLLM).
+			// Fallback to OpenAI chat completions via ClaudeToOpenAI.
+			return callRemoteKiroAsOpenAI(ctx, client, base, bearer, payload, callback, model, stream)
+		}
 		return newUpstreamError("remotekiro", resp.StatusCode, string(errBody), "")
 	}
 
@@ -186,6 +191,66 @@ func CallRemoteKiroAPI(ctx context.Context, account *config.Account, payload *Ki
 		}
 		return parseRemoteClaudeResponse(idleReader, callback, model)
 	}
+	if stream {
+		return parseGrokOpenAISSE(idleReader, callback, model)
+	}
+	return parseGrokOpenAIResponse(idleReader, callback, model)
+}
+
+func callRemoteKiroAsOpenAI(ctx context.Context, client *http.Client, base, bearer string, payload *KiroPayload, callback *KiroStreamCallback, model string, stream bool) error {
+	reqBody, err := ClaudeToOpenAI(payload.SourceClaude, payload.SourceThinking)
+	if err != nil {
+		return fmt.Errorf("remotekiro: convert claude to openai: %w", err)
+	}
+	if model != "" {
+		reqBody["model"] = model
+	}
+	reqBody["stream"] = stream
+	if stream {
+		reqBody["stream_options"] = map[string]interface{}{"include_usage": true}
+	} else {
+		delete(reqBody, "stream_options")
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("remotekiro: marshal openai request: %w", err)
+	}
+
+	url := remoteChatURL(base)
+	if logger.GetLevel() == logger.LevelDebug {
+		logger.Debugf("[RemoteKiro] Fallback to OpenAI endpoint %s (model=%s, stream=%v)", url, model, stream)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("remotekiro: new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("User-Agent", fmt.Sprintf("%s (%s/%s)", remoteKiroUserAgent, runtime.GOOS, runtime.GOARCH))
+	req.Header.Set("Accept", "application/json")
+	if stream {
+		req.Header.Set("Accept", "text/event-stream")
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("remotekiro: openai request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(resp.Body)
+		return newUpstreamError("remotekiro", resp.StatusCode, string(errBody), "")
+	}
+
+	idleReader := newIdleTimeoutReader(resp.Body, streamIdleTimeout, cancel)
+	defer idleReader.Stop()
+
 	if stream {
 		return parseGrokOpenAISSE(idleReader, callback, model)
 	}
@@ -474,9 +539,54 @@ func FetchRemoteKiroModels(account *config.Account) ([]string, error) {
 	return ids, nil
 }
 
+// DefaultPriorityRemoteModels are the default models prioritized for custom API key accounts.
+var DefaultPriorityRemoteModels = []string{
+	"claude-sonnet-4-5",
+	"claude-opus-4.8",
+	"claude-haiku-4-5",
+}
+
+// PrioritizeRemoteModels unions custom models and remote fetched models,
+// placing custom models first in specified order and avoiding duplicates.
+func PrioritizeRemoteModels(customModels []string, fetchedModels []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, m := range customModels {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		low := strings.ToLower(m)
+		if !seen[low] {
+			seen[low] = true
+			result = append(result, m)
+		}
+	}
+
+	for _, m := range fetchedModels {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		low := strings.ToLower(m)
+		if !seen[low] {
+			seen[low] = true
+			result = append(result, m)
+		}
+	}
+
+	if len(result) == 0 {
+		return append([]string(nil), DefaultPriorityRemoteModels...)
+	}
+
+	return result
+}
+
 // ValidateRemoteKiro validates base URL + sk by probing GET /v1/models.
-// Returns the canonical base URL and non-empty model id list.
-func ValidateRemoteKiro(baseURL, apiKey, proxyURL string) (canonical string, modelIDs []string, err error) {
+// If customModels are provided, it prioritizes them and falls back to them if GET /v1/models fails.
+// Returns the canonical base URL and model id list.
+func ValidateRemoteKiro(baseURL, apiKey, proxyURL string, customModels []string) (canonical string, modelIDs []string, err error) {
 	canonical, err = validateRemoteBaseURL(baseURL)
 	if err != nil {
 		return "", nil, err
@@ -493,13 +603,16 @@ func ValidateRemoteKiro(baseURL, apiKey, proxyURL string) (canonical string, mod
 		Provider:      "remotekiro",
 		ProxyURL:      strings.TrimSpace(proxyURL),
 	}
-	modelIDs, err = FetchRemoteKiroModels(probe)
-	if err != nil {
-		return "", nil, err
+	fetchedIDs, fetchErr := FetchRemoteKiroModels(probe)
+	if fetchErr != nil || len(fetchedIDs) == 0 {
+		if len(customModels) > 0 {
+			return canonical, PrioritizeRemoteModels(customModels, nil), nil
+		}
+		// If remote /v1/models failed and no custom models specified, fallback to default priority models
+		return canonical, append([]string(nil), DefaultPriorityRemoteModels...), nil
 	}
-	if len(modelIDs) == 0 {
-		return "", nil, fmt.Errorf("remote /v1/models returned no models")
-	}
+
+	modelIDs = PrioritizeRemoteModels(customModels, fetchedIDs)
 	return canonical, modelIDs, nil
 }
 

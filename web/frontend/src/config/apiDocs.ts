@@ -6,6 +6,7 @@ import {
   Box,
   Code2,
   MonitorSmartphone,
+  Compass,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -82,6 +83,31 @@ export const API_ENDPOINTS: ApiEndpointDoc[] = [
     descKey: 'apiDocs.ep.imagesEdit',
   },
   {
+    method: 'POST',
+    path: '/v1/embeddings',
+    aliases: ['/embeddings'],
+    auth: true,
+    group: 'openai',
+    descKey: 'apiDocs.ep.embeddings',
+    sampleBody: `{
+  "model": "voyage-4-large",
+  "input": "Text to embed"
+}`,
+  },
+  {
+    method: 'POST',
+    path: '/v1/rerank',
+    aliases: ['/rerank'],
+    auth: true,
+    group: 'openai',
+    descKey: 'apiDocs.ep.rerank',
+    sampleBody: `{
+  "model": "rerank-2.5",
+  "query": "query string",
+  "documents": ["doc 1", "doc 2"]
+}`,
+  },
+  {
     method: 'GET',
     path: '/v1/models',
     aliases: ['/models'],
@@ -116,7 +142,7 @@ export interface DocBlock {
 }
 
 export interface ToolGuide {
-  id: 'claude-code' | 'codex' | 'curl' | 'sdk' | 'gui'
+  id: 'claude-code' | 'codex' | 'curl' | 'sdk' | 'embeddings' | 'gui'
   labelKey: string
   icon: LucideIcon
   logo?: string
@@ -146,6 +172,127 @@ export function fillSnippet(code: string, v: SnippetVars): string {
 }
 
 export const TOOL_GUIDES: ToolGuide[] = [
+  {
+    id: 'embeddings',
+    labelKey: 'apiDocs.tools.embeddings',
+    icon: Compass,
+    blocks: [
+      {
+        titleKey: 'apiDocs.tools.embCurl',
+        lang: 'bash',
+        code: `# 1. Tạo Embeddings (Voyage AI / OpenAI / Gemini)
+curl -sS "{{BASE}}/v1/embeddings" \\
+  -H "content-type: application/json" \\
+  -H "authorization: Bearer {{KEY}}" \\
+  -d '{
+    "model": "voyage-4-large",
+    "input": ["Tìm kiếm ngữ nghĩa", "Semantic search with Voyage AI"]
+  }'
+
+# 2. Xếp hạng lại kết quả (Voyage AI Reranker)
+curl -sS "{{BASE}}/v1/rerank" \\
+  -H "content-type: application/json" \\
+  -H "authorization: Bearer {{KEY}}" \\
+  -d '{
+    "model": "rerank-2.5",
+    "query": "Thủ đô của Việt Nam là gì?",
+    "documents": [
+      "Hà Nội là thủ đô của Việt Nam.",
+      "Thành phố Hồ Chí Minh là trung tâm kinh tế lớn nhất.",
+      "Đà Nẵng là thành phố đáng sống."
+    ],
+    "top_k": 2
+  }'`,
+        noteKey: 'apiDocs.tools.embCurlNote',
+      },
+      {
+        titleKey: 'apiDocs.tools.embPython',
+        filename: 'python',
+        lang: 'python',
+        code: `from openai import OpenAI
+import requests
+
+client = OpenAI(
+    base_url="{{BASE}}/v1",
+    api_key="{{KEY}}",
+)
+
+# --- 1. Tạo Embeddings (Hỗ trợ voyage-4-large, text-embedding-3-small, text-embedding-004...) ---
+emb_res = client.embeddings.create(
+    model="voyage-4-large",
+    input=[
+        "Khám phá trí tuệ nhân tạo",
+        "Machine learning and vector embeddings",
+    ],
+)
+for item in emb_res.data:
+    print(f"Index {item.index}: Vector chiều dài = {len(item.embedding)}")
+
+# --- 2. Reranking (Hỗ trợ rerank-2.5, rerank-2.5-lite, rerank-2...) ---
+rerank_res = requests.post(
+    "{{BASE}}/v1/rerank",
+    headers={
+        "Authorization": "Bearer {{KEY}}",
+        "Content-Type": "application/json",
+    },
+    json={
+        "model": "rerank-2.5",
+        "query": "Thủ đô của Việt Nam là gì?",
+        "documents": [
+            "Hà Nội là thủ đô của Việt Nam.",
+            "Hồ Chí Minh là thành phố đông dân nhất.",
+            "Đà Lạt nổi tiếng với khí hậu mát mẻ quanh năm."
+        ],
+        "top_k": 2,
+    },
+)
+
+results = rerank_res.json()
+print("\\nKết quả xếp hạng Rerank:")
+for r in results.get("results", []):
+    print(f"Vị trí {r['index']} (Điểm: {r['relevance_score']:.4f}): {r.get('document')}")`,
+        noteKey: 'apiDocs.tools.embPythonNote',
+      },
+      {
+        titleKey: 'apiDocs.tools.embNode',
+        filename: 'node / typescript',
+        lang: 'ts',
+        code: `import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "{{BASE}}/v1",
+  apiKey: "{{KEY}}",
+});
+
+// 1. Tạo Embeddings
+const embeddings = await client.embeddings.create({
+  model: "voyage-4-large",
+  input: ["Vector search integration", "Học máy hiện đại"],
+});
+console.log("Vector length:", embeddings.data[0].embedding.length);
+
+// 2. Rerank via HTTP POST /v1/rerank
+const rerankResponse = await fetch("{{BASE}}/v1/rerank", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer {{KEY}}",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    model: "rerank-2.5",
+    query: "What is Kiro Proxy?",
+    documents: [
+      "Kiro Proxy is a high-performance AI API gateway.",
+      "The sky is blue and sunny today."
+    ],
+    top_k: 1,
+  }),
+});
+const rerankData = await rerankResponse.json();
+console.log("Top result:", rerankData.results?.[0]);`,
+      },
+    ],
+  },
   {
     id: 'claude-code',
     labelKey: 'apiDocs.tools.claudeCode',
@@ -262,6 +409,29 @@ model = "{{MODEL}}"`,
     "input": "Hello"
   }'`,
       },
+      {
+        titleKey: 'apiDocs.tools.curlEmbeddings',
+        lang: 'bash',
+        code: `curl -sS "{{BASE}}/v1/embeddings" \\
+  -H "content-type: application/json" \\
+  -H "authorization: Bearer {{KEY}}" \\
+  -d '{
+    "model": "voyage-4-large",
+    "input": "Text to vectorize"
+  }'`,
+      },
+      {
+        titleKey: 'apiDocs.tools.curlRerank',
+        lang: 'bash',
+        code: `curl -sS "{{BASE}}/v1/rerank" \\
+  -H "content-type: application/json" \\
+  -H "authorization: Bearer {{KEY}}" \\
+  -d '{
+    "model": "rerank-2.5",
+    "query": "query question",
+    "documents": ["doc 1", "doc 2", "doc 3"]
+  }'`,
+      },
     ],
   },
   {
@@ -270,8 +440,39 @@ model = "{{MODEL}}"`,
     icon: Code2,
     blocks: [
       {
+        titleKey: 'apiDocs.tools.sdkEmbeddings',
+        filename: 'python (voyage & openai)',
+        lang: 'python',
+        code: `import openai
+
+client = openai.OpenAI(
+    base_url="{{BASE}}/v1",
+    api_key="{{KEY}}",
+)
+
+# 1. Embeddings (Voyage AI / OpenAI / Gemini)
+emb = client.embeddings.create(
+    model="voyage-4-large",
+    input=["Hello world", "Artificial intelligence"],
+)
+print("Vector length:", len(emb.data[0].embedding))
+
+# 2. Reranking (Voyage AI) via HTTP POST /v1/rerank
+import requests
+resp = requests.post(
+    "{{BASE}}/v1/rerank",
+    headers={"Authorization": "Bearer {{KEY}}"},
+    json={
+        "model": "rerank-2.5",
+        "query": "What is AI?",
+        "documents": ["AI is machine intelligence.", "Apples are fruits."],
+    },
+)
+print("Rerank results:", resp.json())`,
+      },
+      {
         titleKey: 'apiDocs.tools.sdkPython',
-        filename: 'python',
+        filename: 'python (anthropic)',
         lang: 'python',
         code: `from anthropic import Anthropic
 

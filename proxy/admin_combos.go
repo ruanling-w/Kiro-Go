@@ -75,68 +75,170 @@ var comboProviders = map[string]bool{
 	"remotekiro":  true,
 }
 
-func parseComboCandidate(value string) (provider, model string, qualified bool) {
+func parseComboCandidate(value string) (target, model string, qualified bool) {
 	value = strings.TrimSpace(value)
-	provider, model, qualified = strings.Cut(value, "::")
-	if !qualified {
-		return "", value, false
+	if before, after, ok := strings.Cut(value, "::"); ok {
+		return strings.ToLower(strings.TrimSpace(before)), strings.TrimSpace(after), true
 	}
-	return strings.ToLower(strings.TrimSpace(provider)), strings.TrimSpace(model), true
+	if before, after, ok := strings.Cut(value, "/"); ok {
+		prefix := strings.ToLower(strings.TrimSpace(before))
+		m := strings.TrimSpace(after)
+		if prefix != "" && m != "" {
+			return prefix, m, true
+		}
+	}
+	return "", value, false
 }
 
 func comboUpstreamModel(candidate string) string {
-	provider, model, qualified := parseComboCandidate(candidate)
-	if qualified && comboProviders[provider] && model != "" && !strings.Contains(model, "::") {
+	_, model, qualified := parseComboCandidate(candidate)
+	if qualified && model != "" && !strings.Contains(model, "::") {
 		return model
 	}
 	return strings.TrimSpace(candidate)
 }
 
 func (h *Handler) isKnownComboCandidate(candidate string, known map[string]bool) bool {
-	provider, model, qualified := parseComboCandidate(candidate)
-	if model == "" || (qualified && (!comboProviders[provider] || strings.Contains(model, "::"))) {
+	target, model, qualified := parseComboCandidate(candidate)
+	if model == "" || (qualified && strings.Contains(model, "::")) {
 		return false
 	}
 	if !qualified {
 		return known[strings.ToLower(model)]
 	}
-	for _, account := range config.GetAccounts() {
-		if h.pool == nil || pool.BucketOf(&account) != provider {
+
+	// 1. Check matching accounts by Target (Nickname, ID, Email, Composite, or Provider)
+	accounts := config.GetAccounts()
+	cleanModel := strings.ToLower(strings.TrimSpace(model))
+	for _, account := range accounts {
+		if !accountMatchesTargetForCombo(&account, target) {
 			continue
 		}
-		for _, id := range h.pool.GetModelList(account.ID) {
-			if strings.EqualFold(strings.TrimSpace(id), model) {
-				return true
+		// If account has explicit custom models, check strictly
+		if len(account.CustomModels) > 0 {
+			for _, cm := range account.CustomModels {
+				if strings.EqualFold(strings.TrimSpace(cm), cleanModel) {
+					return true
+				}
+			}
+			continue
+		}
+		if h.pool != nil {
+			for _, id := range h.pool.GetModelList(account.ID) {
+				if strings.EqualFold(strings.TrimSpace(id), model) {
+					return true
+				}
+			}
+		}
+		// Fallback to provider default catalogs
+		switch pool.BucketOf(&account) {
+		case "grok":
+			for _, id := range grokModelIDs() {
+				if strings.EqualFold(id, model) {
+					return true
+				}
+			}
+		case "codex":
+			for _, id := range codexModelIDs() {
+				if strings.EqualFold(id, model) {
+					return true
+				}
+			}
+		case "antigravity":
+			for _, id := range antigravityModelIDs() {
+				if strings.EqualFold(id, model) {
+					return true
+				}
+			}
+		case "voyage":
+			for _, id := range voyageModelIDs() {
+				if strings.EqualFold(id, model) {
+					return true
+				}
 			}
 		}
 	}
-	switch provider {
-	case "grok":
-		for _, id := range grokModelIDs() {
-			if strings.EqualFold(id, model) {
-				return true
+
+	// 2. Direct provider catalog check if target is a known provider
+	if comboProviders[target] {
+		switch target {
+		case "grok":
+			for _, id := range grokModelIDs() {
+				if strings.EqualFold(id, model) {
+					return true
+				}
 			}
-		}
-	case "codex":
-		for _, id := range codexModelIDs() {
-			if strings.EqualFold(id, model) {
-				return true
+		case "codex":
+			for _, id := range codexModelIDs() {
+				if strings.EqualFold(id, model) {
+					return true
+				}
 			}
-		}
-	case "antigravity":
-		for _, id := range antigravityModelIDs() {
-			if strings.EqualFold(id, model) {
-				return true
+		case "antigravity":
+			for _, id := range antigravityModelIDs() {
+				if strings.EqualFold(id, model) {
+					return true
+				}
 			}
-		}
-	case "kiro":
-		for _, id := range fallbackAnthropicModels("-thinking") {
-			if candidateID, ok := id["id"].(string); ok && strings.EqualFold(candidateID, model) {
-				return true
+		case "voyage":
+			for _, id := range voyageModelIDs() {
+				if strings.EqualFold(id, model) {
+					return true
+				}
+			}
+		case "kiro":
+			for _, id := range fallbackAnthropicModels("-thinking") {
+				if candidateID, ok := id["id"].(string); ok && strings.EqualFold(candidateID, model) {
+					return true
+				}
 			}
 		}
 	}
+
 	return false
+}
+
+func accountMatchesTargetForCombo(account *config.Account, target string) bool {
+	target = strings.ToLower(strings.TrimSpace(target))
+	if target == "" || account == nil {
+		return false
+	}
+	if account.Nickname != "" && strings.EqualFold(strings.TrimSpace(account.Nickname), target) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(account.ID), target) {
+		return true
+	}
+	if account.Email != "" {
+		email := strings.TrimSpace(account.Email)
+		if strings.EqualFold(email, target) {
+			return true
+		}
+		if username, _, ok := strings.Cut(email, "@"); ok && strings.EqualFold(username, target) {
+			return true
+		}
+	}
+	if prov, ident, found := strings.Cut(target, "."); found {
+		if strings.EqualFold(pool.BucketOf(account), prov) {
+			if strings.EqualFold(strings.TrimSpace(account.ID), ident) {
+				return true
+			}
+			if account.Nickname != "" && strings.EqualFold(strings.TrimSpace(account.Nickname), ident) {
+				return true
+			}
+			if account.Email != "" {
+				email := strings.TrimSpace(account.Email)
+				if strings.EqualFold(email, ident) {
+					return true
+				}
+				if username, _, ok := strings.Cut(email, "@"); ok && strings.EqualFold(username, ident) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return strings.EqualFold(pool.BucketOf(account), target)
 }
 
 func (h *Handler) knownComboModels() map[string]bool {

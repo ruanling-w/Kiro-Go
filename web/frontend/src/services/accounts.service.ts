@@ -85,6 +85,34 @@ export function setAccountOverage(id: string, enabled: boolean): Promise<Success
   return http.post<SuccessEnvelope>(`/accounts/${encodeURIComponent(id)}/overage`, { enabled })
 }
 
+export interface CodexResetCreditItem {
+  id: string
+  reset_type: string
+  status: string
+  granted_at: string
+  expires_at: string
+  title: string
+  description: string
+  profile_image_url?: string
+}
+
+export interface CodexResetCreditsResponse {
+  credits: CodexResetCreditItem[]
+  available_count: number
+}
+
+export function getCodexResetCredits(id: string): Promise<CodexResetCreditsResponse> {
+  return http.get<CodexResetCreditsResponse>(`/accounts/${encodeURIComponent(id)}/codex/reset-credits`)
+}
+
+export function consumeCodexResetCredit(id: string, creditId?: string): Promise<SuccessEnvelope & { creditId?: string; usage?: any }> {
+  return http.post<SuccessEnvelope & { creditId?: string; usage?: any }>(
+    `/accounts/${encodeURIComponent(id)}/codex/reset-credits/consume`,
+    { credit_id: creditId },
+  )
+}
+
 export function generateMachineId(): Promise<{ machineId: string }> {
   return http.get<{ machineId: string }>('/generate-machine-id')
 }
+

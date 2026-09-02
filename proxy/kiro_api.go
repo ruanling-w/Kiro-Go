@@ -485,6 +485,11 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 		return refreshRemoteKiroInfo(account, info)
 	}
 
+	// Voyage AI accounts have no AWS getUsageLimits endpoint.
+	if isVoyageAccount(account) {
+		return refreshVoyageInfo(account, info)
+	}
+
 	// 获取使用量和订阅信息
 	usage, err := GetUsageLimits(account)
 	if err != nil {
