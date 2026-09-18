@@ -460,13 +460,15 @@ func TestClaudeStopReasonFromFinish(t *testing.T) {
 func TestParseGrokOpenAISSEReportsUsageAndFinishReason(t *testing.T) {
 	stream := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":17,"completion_tokens":3}}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":17,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":10}}}`,
 		`data: [DONE]`, "",
 	}, "\n\n")
 	var text, finish string
 	var inTok, outTok int
+	var capturedUsage tokenUsage
 	err := parseGrokOpenAISSE(strings.NewReader(stream), &KiroStreamCallback{
 		OnText:         func(s string, _ bool) { text += s },
+		OnUsage:        func(u tokenUsage) { capturedUsage = u },
 		OnComplete:     func(in, out int) { inTok, outTok = in, out },
 		OnFinishReason: func(reason string) { finish = reason },
 	}, "grok-4")
@@ -475,6 +477,9 @@ func TestParseGrokOpenAISSEReportsUsageAndFinishReason(t *testing.T) {
 	}
 	if text != "hello" || finish != "length" || inTok != 17 || outTok != 3 {
 		t.Fatalf("text=%q finish=%q usage=%d/%d", text, finish, inTok, outTok)
+	}
+	if capturedUsage.Input != 17 || capturedUsage.Output != 3 || capturedUsage.CacheRead != 10 {
+		t.Fatalf("capturedUsage mismatch: %+v", capturedUsage)
 	}
 }
 

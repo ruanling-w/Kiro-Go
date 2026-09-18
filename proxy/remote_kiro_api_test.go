@@ -136,7 +136,10 @@ func TestCallRemoteKiroAPINonStreamOpenAI(t *testing.T) {
 func TestCallRemoteKiroAPIStream(t *testing.T) {
 	withPrivateRemoteAllowed(t)
 	ensureConfigForRemoteTests(t)
+	var gotBody map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
 		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
@@ -164,15 +167,22 @@ func TestCallRemoteKiroAPIStream(t *testing.T) {
 	payload.ConversationState.CurrentMessage.UserInputMessage.ModelID = "m"
 
 	var text strings.Builder
+	var completedIn, completedOut int
 	err := CallRemoteKiroAPI(context.Background(), acc, payload, &KiroStreamCallback{
 		OnText:     func(s string, _ bool) { text.WriteString(s) },
-		OnComplete: func(in, out int) {},
+		OnComplete: func(in, out int) { completedIn, completedOut = in, out },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if text.String() != "hi" {
 		t.Fatalf("text=%q", text.String())
+	}
+	if completedIn != 1 || completedOut != 1 {
+		t.Fatalf("usage=%d/%d, want 1/1", completedIn, completedOut)
+	}
+	if so, ok := gotBody["stream_options"].(map[string]interface{}); !ok || so["include_usage"] != true {
+		t.Fatalf("expected stream_options.include_usage: true, got: %v", gotBody["stream_options"])
 	}
 }
 

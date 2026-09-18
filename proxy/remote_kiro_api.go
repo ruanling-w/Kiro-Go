@@ -126,6 +126,11 @@ func CallRemoteKiroAPI(ctx context.Context, account *config.Account, payload *Ki
 			asMap["model"] = model
 		}
 		asMap["stream"] = stream
+		if stream {
+			asMap["stream_options"] = map[string]interface{}{"include_usage": true}
+		} else {
+			delete(asMap, "stream_options")
+		}
 		bodyBytes, err = json.Marshal(asMap)
 		if err != nil {
 			return fmt.Errorf("remotekiro: marshal openai request: %w", err)
@@ -268,9 +273,10 @@ func parseRemoteClaudeSSE(body io.Reader, callback *KiroStreamCallback, model st
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var (
-		eventName                  string
-		inputTokens, outputTokens  int
-		gotText, gotThinking, gotTool bool
+		eventName                             string
+		inputTokens, outputTokens             int
+		cacheReadTokens, cacheCreationTokens  int
+		gotText, gotThinking, gotTool         bool
 		// tool_use blocks stream as content_block_start (id/name) then
 		// input_json_delta fragments, then content_block_stop.
 		toolID, toolName string
@@ -400,6 +406,12 @@ func parseRemoteClaudeSSE(body io.Reader, callback *KiroStreamCallback, model st
 					if v, ok := usage["output_tokens"].(float64); ok && v > 0 {
 						outputTokens = int(v)
 					}
+					if v, ok := usage["cache_read_input_tokens"].(float64); ok {
+						cacheReadTokens = int(v)
+					}
+					if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
+						cacheCreationTokens = int(v)
+					}
 				}
 			}
 		case "error":
@@ -430,6 +442,15 @@ func parseRemoteClaudeSSE(body io.Reader, callback *KiroStreamCallback, model st
 			callback.OnError(err)
 		}
 		return err
+	}
+
+	if callback.OnUsage != nil {
+		callback.OnUsage(tokenUsage{
+			Input:         inputTokens,
+			Output:        outputTokens,
+			CacheRead:     cacheReadTokens,
+			CacheCreation: cacheCreationTokens,
+		})
 	}
 
 	if callback.OnComplete != nil {
@@ -491,6 +512,19 @@ func parseRemoteClaudeResponse(body io.Reader, callback *KiroStreamCallback, mod
 
 	if !gotText && !gotThinking && !gotTool {
 		return fmt.Errorf("remotekiro: empty claude response (model=%s)", model)
+	}
+
+	if callback.OnUsage != nil {
+		cacheCreation := resp.Usage.CacheCreationInputTokens
+		if resp.Usage.CacheCreation != nil {
+			cacheCreation += resp.Usage.CacheCreation.Ephemeral5mInputTokens + resp.Usage.CacheCreation.Ephemeral1hInputTokens
+		}
+		callback.OnUsage(tokenUsage{
+			Input:         resp.Usage.InputTokens,
+			Output:        resp.Usage.OutputTokens,
+			CacheRead:     resp.Usage.CacheReadInputTokens,
+			CacheCreation: cacheCreation,
+		})
 	}
 
 	if callback.OnComplete != nil {

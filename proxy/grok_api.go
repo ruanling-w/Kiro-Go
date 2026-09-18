@@ -313,8 +313,9 @@ func parseGrokOpenAISSE(body io.Reader, callback *KiroStreamCallback, model stri
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var fullContent strings.Builder
 	var fullReasoning strings.Builder
-	var inputTokens, outputTokens int
+	var inputTokens, outputTokens, cachedTokens int
 	var lastFinish string
+	var hasUsage bool
 
 	// Accumulate streamed tool calls by their delta index. OpenAI-style SSE
 	// sends the id/name in the first delta and appends argument fragments in
@@ -382,8 +383,12 @@ func parseGrokOpenAISSE(body io.Reader, callback *KiroStreamCallback, model stri
 		}
 
 		if chunk.Usage != nil {
+			hasUsage = true
 			inputTokens = chunk.Usage.PromptTokens
 			outputTokens = chunk.Usage.CompletionTokens
+			if chunk.Usage.PromptTokensDetails != nil {
+				cachedTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+			}
 		}
 	}
 
@@ -416,6 +421,14 @@ func parseGrokOpenAISSE(body io.Reader, callback *KiroStreamCallback, model stri
 				Input:     input,
 			})
 		}
+	}
+
+	if hasUsage && callback.OnUsage != nil {
+		callback.OnUsage(tokenUsage{
+			Input:     inputTokens,
+			Output:    outputTokens,
+			CacheRead: cachedTokens,
+		})
 	}
 
 	// Finalize. With stream_options.include_usage the final chunk always carries
@@ -476,6 +489,18 @@ func parseGrokOpenAIResponse(body io.Reader, callback *KiroStreamCallback, model
 
 	if len(resp.Choices) > 0 && callback.OnFinishReason != nil {
 		callback.OnFinishReason(resp.Choices[0].FinishReason)
+	}
+
+	if (resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0) && callback.OnUsage != nil {
+		cached := 0
+		if resp.Usage.PromptTokensDetails != nil {
+			cached = resp.Usage.PromptTokensDetails.CachedTokens
+		}
+		callback.OnUsage(tokenUsage{
+			Input:     resp.Usage.PromptTokens,
+			Output:    resp.Usage.CompletionTokens,
+			CacheRead: cached,
+		})
 	}
 
 	if callback.OnComplete != nil {

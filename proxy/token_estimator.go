@@ -160,6 +160,7 @@ func estimateOpenAIRequestInputTokens(req *OpenAIRequest) int {
 
 	for _, msg := range req.Messages {
 		total += estimateOpenAIContentTokens(msg.Content)
+		total += estimateApproxTokens(msg.ReasoningContent)
 		total += estimateApproxTokens(msg.ToolCallID)
 		for _, tc := range msg.ToolCalls {
 			total += estimateApproxTokens(tc.Function.Name)

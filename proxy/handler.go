@@ -1533,6 +1533,7 @@ type claudeStreamAttempt struct {
 type claudeStreamAttemptResult struct {
 	started, finished         bool
 	inputTokens, outputTokens int
+	usage                     tokenUsage
 	credits                   float64
 	upstreamErr, writeErr     error
 	// Semantic answer captured for the response cache. content is the
@@ -1612,7 +1613,15 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, r.inputTokens+r.outputTokens, r.credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLogMeta("claude", model, account.ID, logTokens{Input: r.inputTokens, Output: r.outputTokens, CacheRead: cu.CacheReadInputTokens, CacheCreation: cu.CacheCreationInputTokens}, r.credits, time.Since(started).Milliseconds(), clientIP, apiKeyID, provider)
+		cacheRead := cu.CacheReadInputTokens
+		if r.usage.CacheRead > 0 {
+			cacheRead = r.usage.CacheRead
+		}
+		cacheCreation := cu.CacheCreationInputTokens
+		if r.usage.CacheCreation > 0 {
+			cacheCreation = r.usage.CacheCreation
+		}
+		h.recordSuccessLogMeta("claude", model, account.ID, logTokens{Input: r.inputTokens, Output: r.outputTokens, CacheRead: cacheRead, CacheCreation: cacheCreation}, r.credits, time.Since(started).Milliseconds(), clientIP, apiKeyID, provider)
 		// Store for replay. streamClaudeAttempt sets hasToolUses when the turn
 		// produced tool calls; store() drops "length" (truncated) turns.
 		if !r.hasToolUses {
@@ -1980,6 +1989,9 @@ func (h *Handler) streamClaudeAttempt(ctx context.Context, account *config.Accou
 			inputTokens = inTok
 			outputTokens = outTok
 		},
+		OnUsage: func(u tokenUsage) {
+			result.usage = u
+		},
 		OnFinishReason: func(reason string) {
 			upstreamFinishReason = reason
 		},
@@ -2026,7 +2038,9 @@ func (h *Handler) streamClaudeAttempt(ctx context.Context, account *config.Accou
 	if !at.thinking {
 		thought = ""
 	}
-	outputTokens = estimateClaudeOutputTokens(content, thought, toolUses)
+	if outputTokens <= 0 {
+		outputTokens = estimateClaudeOutputTokens(content, thought, toolUses)
+	}
 	stopReason := "end_turn"
 	if len(toolUses) > 0 {
 		stopReason = "tool_use"
